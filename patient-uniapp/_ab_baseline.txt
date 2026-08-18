@@ -1,0 +1,45 @@
+﻿
+===== test:ui =====
+  exit=1 stdout=108786B stderr=0B
+  stdout tail: .value) return;\n  pickerOpen.value = true;\n}\n\nfunction closeDoctorPicker() {\n  pickerOpen.value = false;\n}\n\nasync function selectDoctor(option: DoctorOption) {\n  if (switching.value) return;\n  if (option.doctorId === selectedDoctorId.value) {\n    closeDoctorPicker();\n    return;\n  }\n  switching.value = true;\n  try {\n    appStore.setSourceFromQuery({ doctorI'... 16462 more characters,
+    expected: /AppHeroPanel|报告解读服务|category-grid/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+
+===== test:icons =====
+  exit=1 stdout=24810B stderr=0B
+  stdout tail: ey.value, auth.avatarUrl);\n  }\n  clearPendingAvatarData();\n}\n\nasync function syncPendingAvatar() {\n  if (syncingAvatar.value || !getMpToken()) return;\n  const pending = loadPendingAvatarData();\n  if (!pending) return;\n  syncingAvatar.value = true;\n  try {\n    await syncAvatarData(pending);\n  } catch (e) {\n    console.warn("[mine] pending avatar sync failed", e);\n  } finally {\n  '... 9381 more characters,
+    expected: /name="camera"/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+
+===== type-check =====
+  exit=2 stdout=7645B stderr=0B
+  stdout tail: ) => OrderLine): OrderLine; (callbackfn: (previousValue: OrderLine, currentValue: OrderLine, currentIndex: number, array: OrderLine[]) => OrderLine, initialValue: OrderLine): OrderLine; <U>(callbackfn: (previou...' has signatures, but none of those signatures are compatible with each other.
+src/pages/services/mine-services.vue(493,45): error TS7006: Parameter 'n' implicitly has an 'any' type.
+src/pages/services/mine-services.vue(493,48): error TS7006: Parameter 'l' implicitly has an 'any' type.
+
+
+===== build:h5 =====
+  exit=0 stdout=375B stderr=0B
+  stdout tail: 
+> chunyu-patient-uniapp@0.0.0 build:h5
+> uni build
+
+Compiler version: 4.84（vue3）
+Compiling...
+Compiler version: 4.84（vue3）
+Compiling...
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+DONE  Build complete.
+
+[SKIP] design-qa
+
+[save] C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\_ssh_out\ab_baseline.txt

@@ -1,0 +1,3 @@
+mine team: profile-panel__team data-v-0b62a9ce">{{g}}</text>
+bad: none
+scrubMpBootstrap in build: False

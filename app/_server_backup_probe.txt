@@ -1,0 +1,40 @@
+$ ls /var/www/chunyu-doctor-review/backup-code-20260723-124432
+agent
+community_group_doctors.js
+community.js
+db.js
+message_log.js
+modules
+public
+qiwe_bridge.js
+qiwe_sync.js
+routes
+server.js
+shared
+welcome.js
+
+
+$ find /var/www/chunyu-doctor-review/backup-code-20260723-124432 -path '*admin-ui*' -name 'faq*' 2>/dev/null | head
+
+
+$ find /var/www/chunyu-doctor-review/backup-code-20260723-124432 -name 'HealthCategoryGrid.vue' 2>/dev/null
+
+
+$ find /var/www/chunyu-doctor-review/backup-code-20260723-124432 -path '*subs/index.vue' 2>/dev/null
+
+
+$ find /var/www/chunyu-doctor-review/backups -name '*.vue' 2>/dev/null | head -30
+
+
+$ ls /var/www/chunyu-doctor-review/backups
+fix123-20260724-113016
+fix123-20260724-113028
+
+
+$ find /var/www/chunyu-doctor-review/backup-code-20260723-124432 -type d -name 'chunyu' 2>/dev/null | head
+
+
+$ find /tmp -name 'cdr-app.tgz' 2>/dev/null; ls -la /tmp/cdr-app.tgz 2>/dev/null
+/tmp/cdr-app.tgz
+-rw-r--r-- 1 root root 7364014 Jul 21 15:06 /tmp/cdr-app.tgz
+

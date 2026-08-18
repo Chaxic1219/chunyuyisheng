@@ -1,0 +1,21 @@
+{
+  "appid": "wx2ad967ec3c627676",
+  "projectname": "patient-mp",
+  "compileType": "miniprogram",
+  "libVersion": "3.8.12",
+  "setting": {
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "urlCheck": false,
+    "coverView": true,
+    "lazyloadPlaceholderEnable": false,
+    "ignoreUploadUnusedFiles": true
+  },
+  "condition": {},
+  "editorSetting": {
+    "tabIndent": "insertSpaces",
+    "tabSize": 2
+  }
+}

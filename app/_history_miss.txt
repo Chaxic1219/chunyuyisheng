@@ -1,0 +1,1 @@
+faq/index.vue => file:///c:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/src/pages/faq/index.vue dir=5f5f1a53

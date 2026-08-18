@@ -1,0 +1,98 @@
+$ ls /var/www/chunyu-doctor-review/app/public/admin-v2/assets/*.map 2>/dev/null | head -5
+
+
+
+$ ls /var/www/chunyu-doctor-review/app/public/admin-v2/assets/*.js 2>/dev/null | wc -l
+276
+
+
+
+$ find /var/www/chunyu-doctor-review -name 'index.vue' 2>/dev/null | head -40
+
+
+
+$ ls -la /var/www/chunyu-doctor-review
+total 26824
+drwxr-xr-x 14      501 staff      20480 Jul 24 11:30 .
+drwxr-xr-x  5 root     root        4096 Jul 24 13:59 ..
+drwxr-xr-x  9      501 staff      12288 Jul 24 16:05 app
+drwxr-xr-x  4 root     root        4096 Jul 22 17:08 backup-code-20260722-170817
+drwxr-xr-x  4 root     root        4096 Jul 22 17:11 backup-code-20260722-171100
+drwxr-xr-x  4 root     root        4096 Jul 22 17:16 backup-code-20260722-171603
+drwxr-xr-x  4 root     root        4096 Jul 22 17:18 backup-code-20260722-171858
+drwxr-xr-x  4 root     root        4096 Jul 23 11:40 backup-code-20260723-114030
+drwxr-xr-x  7 root     root        4096 Jul 23 11:47 backup-code-20260723-114711
+drwxr-xr-x  7 root     root        4096 Jul 23 11:51 backup-code-20260723-115124
+drwxr-xr-x  7 root     root        4096 Jul 23 11:59 backup-code-20260723-115939
+drwxr-xr-x  7 root     root        4096 Jul 23 12:35 backup-code-20260723-123508
+drwxr-xr-x  7 root     root        4096 Jul 23 12:44 backup-code-20260723-124432
+-rw-rw-r--  1 root     root     1916928 Jul 22 16:47 backup-data-20260722-165035.db
+-rw-rw-r--  1 root     root     1929216 Jul 22 17:12 backup-data-20260722-171603.db
+-rw-rw-r--  1 root     root     1929216 Jul 22 17:12 backup-data-20260722-171858.db
+-rw-r--r--  1 root     root      823296 Jul 23 08:58 backup-data-20260723-114030-app-local.db
+-rw-rw-r--  1 root     root     1961984 Jul 22 17:38 backup-data-20260723-114030.db
+-rw-r--r--  1 root     root      823296 Jul 23 08:58 backup-data-20260723-114711-app-local.db
+-rw-rw-r--  1 root     root     1961984 Jul 22 17:38 backup-data-20260723-114711.db
+-rw-r--r--  1 root     root      823296 Jul 23 08:58 backup-data-20260723-115124-app-local.db
+-rw-rw-r--  1 root     root     2007040 Jul 23 11:48 backup-data-20260723-115124.db
+-rw-r--r--  1 root     root      823296 Jul 23 08:58 backup-data-20260723-115939-app-local.db
+-rw-rw-r--  1 root     root     2007040 Jul 23 11:48 backup-data-20260723-115939.db
+-rw-r--r--  1 root     root      823296 Jul 23 08:58 backup-data-20260723-123508-app-local.db
+-rw-rw-r--  1 root     root     2007040 Jul 23 11:48 backup-data-20260723-123508.db
+-rw-r--r--  1 root     root      823296 Jul 23 08:58 backup-data-20260723-124432-app-local.db
+-rw-rw-r--  1 root     root     2039808 Jul 23 12:37 backup-data-20260723-124432.db
+drwxr-xr-x  4 root     root        4096 Jul 24 11:30 backups
+-rw-r--r--  1 root     root      786432 Jul 21 11:49 data-BEFORE-FULL-RESTORE-20260721-114917.db
+-rw-r--r--  1 root     root      806912 Jul 21 12:09 data-CORRUPTED-20260721-120947.db
+-rw-rw-rw-  1 www-data www-data 1576960 Jul 21 15:54 data.db
+-rw-r--r--  1 root     root     1441792 Jul 21 14:51 data.db.bak-20260721-145152
+-rw-rw-rw-  1 www-data www-data   32768 Jul 24 11:10 data.db-shm
+-rw-rw-rw-  1 www-data www-data       0 Jul 24 11:10 data.db-wal
+-rw-------  1      501 staff       7761 Jul  7 18:27 分角色使用指南.md
+-rw-------  1      501 staff      15403 Jul  7 18:22 功能手册.md
+-rw-------  1      501 staff      15556 Jul 13 17:20 医患通介绍.html
+
+
+
+$ ls /tmp 2>/dev/null | head -30
+808_out.txt
+add_admin.js
+add_admin_out.txt
+add_missing.js
+add_out.txt
+b
+bootstrap.out
+cap_raw.txt
+cdr-app.tgz
+cdr-data.db
+cfg_out.txt
+cgd2_out.txt
+cgd3_out.txt
+cgd_out.txt
+check_808.js
+check_all.js
+check_bootstrap.js
+check_cb.js
+check_configs.js
+check_engine.js
+check_fields.js
+check_groups.js
+check.js
+check_match.js
+check_messages.js
+check_more.js
+check_msgs.js
+check_outbound.js
+check_out.txt
+check_qiwe_cfg.js
+
+
+
+$ find /root -name 'subs' -type d 2>/dev/null | head
+
+
+
+$ find /var/backups -name '*chunyu*' 2>/dev/null | head
+/var/backups/chunyu
+
+

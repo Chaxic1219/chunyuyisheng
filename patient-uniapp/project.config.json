@@ -1,0 +1,31 @@
+{
+  "description": "春雨患者端：请用本目录打开，或直接打开 dist/build/mp-weixin",
+  "miniprogramRoot": "dist/build/mp-weixin/",
+  "setting": {
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "ignoreDevUnusedFiles": false,
+    "uglifyFileName": false,
+    "enhance": true,
+    "packNpmRelationList": [],
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    },
+    "useCompilerPlugins": false,
+    "minifyWXML": true,
+    "urlCheck": false
+  },
+  "compileType": "miniprogram",
+  "libVersion": "3.14.1",
+  "simulatorPluginLibVersion": {},
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "appid": "wx2ad967ec3c627676",
+  "projectname": "chunyu-patient",
+  "editorSetting": {}
+}

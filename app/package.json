@@ -1,0 +1,22 @@
+{
+  "name": "chunyuyisheng-patient-center-local",
+  "version": "2.0.0",
+  "private": true,
+  "description": "春雨医生 · 患者服务中心（本地全栈，纯 Node 零运行时依赖）",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node server.js --demo",
+    "test": "node _unittest.js && node _fulltest.js && node _uitest.js && node _mall_product_test.js",
+    "test:unit": "node _unittest.js && node _qiwe_business_test.js && node _science_reminder_v2_test.js && node _video_channel_test.js && node _video_channel_ui_test.js",
+    "test:agent": "node _agent_test.js",
+    "demo:agent": "node _agent_demo.js",
+    "test:api": "node _fulltest.js",
+    "test:ui": "node _uitest.js",
+    "shots": "node _shots.js"
+  },
+  "comment": "应用零依赖。生产：node server.js（短信不返回明文 code；用 ADMIN_PASSWORD 环境变量设后台口令）。本地演示/跑测试：node server.js --demo（短信明文返回 code 便于体验，_fulltest/_uitest/_shots 依赖此模式）。测试/截图需 npm i jsdom puppeteer-core。",
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "puppeteer-core": "^25.1.0"
+  }
+}

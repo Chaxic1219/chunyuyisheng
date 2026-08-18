@@ -1,0 +1,354 @@
+﻿鉁?01.鎵瑰噯绋裤€佽璁¤鑼冨拰瀹炴柦钃濆浘鏂囦欢瀹屾暣瀛樺湪 (0.9995ms)
+鉁?02.鏂扮増浠ょ墝浣跨敤娴呴紶灏捐崏缁?#0B6B47) + 澶у渾瑙?+ 48px 瑙︽帶 (0.4036ms)
+鉁?02.tokens.json 涓?CSS 鍚屾簮鍊硷紙棰滆壊/鍦嗚/瑙︽帶锛?(0.2348ms)
+鉁?02.寰俊 WXSS 浠嶄粎浣跨敤 page 椤跺眰閫夋嫨鍣紙闃?:root 涓嶅吋瀹癸級 (0.4408ms)
+鉁?03.鏍稿績鍖荤枟 / 鏈嶅姟 PNG 鍥炬爣宸插鍑?(0.513ms)
+鉁?03.搴曢儴 Tab 涓夌瓑瀹?PNG 璧勪骇宸插氨缁?(0.2454ms)
+鉁?03.鍥炬爣鎬婚绠?鈮?400 KB (5.2071ms)
+鉁?04.鏂扮増绫诲瀷涓庨€傞厤鍣ㄧ函鍑€鍑芥暟鍙敤 (152.8788ms)
+鉁?04.棣栭〉浠诲姟鎺掑簭锛氱揣鎬?> 閲嶈 > 鏅€?(13.0263ms)
+鉁?05.涔濅釜鍏叡 UI 缁勪欢鏂囦欢瀛樺湪 (0.4581ms)
+鉁?05.AppStatePanel 鏆撮湶鐘舵€佹満鍥涙€?+ actionLabel (0.2295ms)
+鉁?05.AppBottomSheet 鏆撮湶 v-model 鍙屽悜缁戝畾 (0.1995ms)
+鉁?05.AppFormField 鍖呭惈 label / error / hint 璇箟 (0.1648ms)
+鉁?05.鎵€鏈?UI 缁勪欢鏈€灏忚Е鎺ч珮搴?鈮?48px (1.3652ms)
+鉁?06.搴曢儴瀵艰埅鍥哄畾 3 涓?Tab锛堥椤?/ 鍋ュ悍鏈嶅姟 / 鎴戠殑锛?(0.4372ms)
+鉁?06.tabBar 涓嶅嚭鐜版偓娴?/ 鎶崌 / 涓棿鎸夐挳 (0.3552ms)
+鉁?06.鍋ュ悍鏈嶅姟 Tab 宸插湪 tabBar 椤跺眰锛堜笉鍦?subpackage 鍐咃級 (0.2363ms)
+鉁?07.瀹跺涵鎴愬憳 store 鏆撮湶 current / list / setCurrent / setList (0.3573ms)
+鉁?07.useCurrentMember 鏆撮湶褰撳墠鎴愬憳 + 鍒囨崲鍑芥暟 (0.1554ms)
+鈩?tests 19
+鈩?suites 0
+鈩?pass 11
+鈩?fail 8
+鈩?cancelled 0
+鈩?skipped 0
+鈩?todo 0
+鈩?duration_ms 259.5705
+
+鉁?failing tests:
+
+test at tests\redesign-contract.test.mjs:30:1
+鉁?01.鎵瑰噯绋裤€佽璁¤鑼冨拰瀹炴柦钃濆浘鏂囦欢瀹屾暣瀛樺湪 (0.9995ms)
+  AssertionError [ERR_ASSERTION]: ../patient-redesign-handoff-2026-08-10/redesign-2026-08/01-home-approved.png
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:39:12)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.start (node:internal/test_runner/test:1015:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:358:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:67:1
+鉁?02.寰俊 WXSS 浠嶄粎浣跨敤 page 椤跺眰閫夋嫨鍣紙闃?:root 涓嶅吋瀹癸級 (0.4408ms)
+  AssertionError [ERR_ASSERTION]: The input was expected to not match the regular expression /:root/. Input:
+  
+  '/* 鏄ラ洦鎮ｈ€呯 路 璁捐浠ょ墝锛?026-08-10 鍏ㄩ潰鏀圭増鎵瑰噯鐗堬級\n' +
+    ' * 婧愮爜锛歞esign/redesign-2026-08/DESIGN-SPEC.md\n' +
+    ' * 钃濈豢涓昏壊 + 娴呴紶灏捐崏缁?+ 澶у渾瑙?+ 48px 瑙︽帶\n' +
+    ' * 浠呬娇鐢?page 椤跺眰閫夋嫨鍣紙WXSS 涓嶆敮鎸?:root锛?*/\n' +
+    '\n' +
+    'page {\n' +
+    '  /* 鍝佺墝涓昏壊锛堟繁澧ㄧ豢锛?*/\n' +
+    '  --primary: #0b6b47;\n' +
+    '  --primary-deep: #084f36;\n' +
+    '  --primary-soft: #e8f2eb;\n' +
+    '  --success: #278b5b;\n' +
+    '  --accent-violet: #0b6b47;\n' +
+    '  --accent-teal: #278b5b;\n' +
+    '\n' +
+    '  /* 鍖荤枟椋庨櫓鑹?*/\n' +
+    '  --warning: #d97706;\n' +
+    '  --warning-soft: #fff4e8;\n' +
+    '  --danger: #b44942;\n' +
+    '  --danger-soft: #fde7e3;\n' +
+    '\n' +
+    '  /* 鑳屾櫙涓庤〃闈?*/\n' +
+    '  --page-bg: #f3f7f3;\n' +
+    '  --surface: #ffffff;\n' +
+    '  --surface-soft: #f8faf8;\n' +
+    '  --surface-muted: #f2f5f2;\n' +
+    '  --mist-blue: #eef2f7;\n' +
+    '\n' +
+    '  /* 鏂囧瓧 */\n' +
+    '  --text-strong: #13251b;\n' +
+    '  --text-secondary: #68726e;\n' +
+    '  --text-placeholder: #8b948f;\n' +
+    '\n' +
+    '  /* 绾挎潯 */\n' +
+    '  --line: #e4eae5;\n' +
+    '  --line-soft: #edf1ed;\n' +
+    '  --card-border: #e4eae5;\n' +
+    '\n' +
+    '  /* 4pt 闂磋窛 */\n' +
+    '  --sp-1: 4px;\n' +
+    '  --sp-2: 8px;\n' +
+    '  --sp-3: 12px;\n' +
+    '  --sp-4: 16px;\n' +
+    '  --sp-5: 24px;\n' +
+    '  --sp-6: 32px;\n' +
+    '  --sp-7: 48px;\n' +
+    '  --sp-8: 64px;\n' +
+    '\n' +
+    '  /* 鍦嗚锛氬ぇ鍦嗚 / 娴呭ⅷ缁夸富鑹?/ 鍏嬪埗闃村奖 */\n' +
+    '  --r-sm: 10px;\n' +
+    '  --r-md: 16px;\n' +
+    '  --r-lg: 20px;\n' +
+    '  --r-card: 24px;\n' +
+    '  --r-hero: 28px;\n' +
+    '  --r-xl: var(--r-card);\n' +
+    '  --r-pill: 999px;\n' +
+    '\n' +
+    '  /* 闃村奖锛堣交灞傜骇銆佷笉鍒堕€犳偓娴晢鍩庢劅锛?*/\n' +
+    '  --shadow-card: 0 6px 20px rgba(18, 55, 38, 0.055);\n' +
+    '  --shadow-floating: 0 16px 42px rgba(18, 55, 38, 0.14);\n' +
+    '\n' +
+    '  /* 瀛楀彿锛堥粯璁ゆ櫘閫氭ā寮忥級 */\n' +
+    '  --font-caption: 14px;\n' +
+    '  --font-secondary: 16px;\n' +
+    '  --font-body: 17px;\n' +
+    '  --font-subheading: 20px;\n' +
+    '  --font-heading: 28px;\n' +
+    '  --line-compact: 1.4;\n' +
+    '  --line-body: 1.55;\n' +
+    '\n' +
+    '  /* 瑙︽帶涓庢寜閽?*/\n' +
+    '  --touch-target: 48px;\n' +
+    '  --btn-height-sm: 48px;\n' +
+    '  --btn-height-md: 54px;\n' +
+    '  --icon-scale: 1;\n' +
+    '\n' +
+    '  /* 鍏煎鏃у埆鍚嶏紙鏃ч〉闈㈢户缁敤锛?*/\n' +
+    '  --primary-d: var(--primary-deep);\n' +
+    '  --primary-50: var(--primary-soft);\n' +
+    '  --primary-light-9: var(--primary-soft);\n' +
+    '  --teal: var(--success);\n' +
+    '  --teal-50: #e8faf6;\n' +
+    '  --warning-50: var(--warning-soft);\n' +
+    '  --danger-50: var(--danger-soft);\n' +
+    '  --ink: var(--text-strong);\n' +
+    '  --ink-2: var(--text-secondary);\n' +
+    '  --line-2: var(--line-soft);\n' +
+    '  --bg: var(--page-bg);\n' +
+    '  --card: var(--surface);\n' +
+    '  --sh-1: var(--shadow-card);\n' +
+    '  --font-base: var(--font-body);\n' +
+    '}\n' +
+    '\n' +
+    '/* 闀胯緢妯″紡锛氭鏂?/ 鎺т欢鏀惧ぇ绾?15%锛屼繚鐣欐崲琛屼笌瑙︽帶缁撴瀯 */\n' +
+    '.elder {\n' +
+    '  --font-caption: 16px;\n' +
+    '  --font-secondary: 18px;\n' +
+    '  --font-body: 20px;\n' +
+    '  --font-subheading: 23px;\n' +
+    '  --font-heading: 32px;\n' +
+    '  --line-compact: 1.45;\n' +
+    '  --line-body: 1.6;\n' +
+    '  --touch-target: 56px;\n' +
+    '  --btn-height-sm: 52px;\n' +
+    '  --btn-height-md: 60px;\n' +
+    '  --icon-scale: 1.18;\n' +
+    '}\n'
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:69:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '/* 鏄ラ洦鎮ｈ€呯 路 璁捐浠ょ墝锛?026-08-10 鍏ㄩ潰鏀圭増鎵瑰噯鐗堬級\n * 婧愮爜锛歞esign/redesign-2026-08/DESIGN-SPEC.md\n * 钃濈豢涓昏壊 + 娴呴紶灏捐崏缁?+ 澶у渾瑙?+ 48px 瑙︽帶\n * 浠呬娇鐢?page 椤跺眰閫夋嫨鍣紙WXSS 涓嶆敮鎸?:root锛?*/\n\npage {\n  /* 鍝佺墝涓昏壊锛堟繁澧ㄧ豢锛?*/\n  --primary: #0b6b47;\n  --primary-deep: #084f36;\n  --primary-soft: #e8f2eb;\n  --success: #278b5b;\n  --accent-violet: #0b6b47;\n  --accent-teal: #278b5b;\n\n  /* 鍖荤枟椋庨櫓鑹?*/\n  --warning: #d97706;\n  --warning-soft: #fff4e8;\n  --danger: #b44942;\n  --danger-soft: #fde7e3;\n\n  /* 鑳屾櫙涓庤〃闈?*/\n  --page-bg: #f3f7f3;\n  --surface: #ffffff;\n  --surface-soft: #f8faf8;\n  --surface-muted: #f2f5f2;\n  --mist-blue: #eef2f7;\n\n  /* 鏂囧瓧 */\n  --text-strong: #13251b;\n  --text-secondary: #68726e;\n  --text-placeholder: #8b948f;\n\n  /* 绾挎潯 */\n  --line: #e4eae5;\n  --line-soft: #edf1ed;\n  --card-border: #e4eae5;\n\n  /* 4pt 闂磋窛 */\n  --sp-1: 4px;\n  --sp-2: 8px;\n  --sp-3: 12px;\n  --sp-4: 16px;\n  --sp-5: 24px;\n  --sp-6: 32px;\n  --sp-7: 48px;\n  --sp-8: 64px;\n\n  /* 鍦嗚锛氬ぇ鍦嗚 / 娴呭ⅷ缁夸富鑹?/ 鍏嬪埗闃村奖 */\n  --r-sm: 10px;\n  --r-md: 16px;\n  --r-lg: 20px;\n  --r-card: 24px;\n  --r-hero: 28px;\n  --r-xl: var(--r-card);\n  --r-pill: 999px;\n\n  /* 闃村奖锛堣交灞傜骇銆佷笉鍒堕€犳偓娴晢鍩庢劅锛?*/\n  --shadow-card: 0 6px 20px rgba(18, 55, 38, 0.055);\n  --shadow-floating: 0 16px 42px rgba(18, 55, 38, 0.14);\n\n  /* 瀛楀彿锛堥粯璁ゆ櫘閫氭ā寮忥級 */\n  --font-caption: 14px;\n  --font-secondary: 16px;\n  --font-body: 17px;\n  --font-subheading: 20px;\n  --font-heading: 28px;\n  --line-compact: 1.4;\n  --line-body: 1.55;\n\n  /* 瑙︽帶涓庢寜閽?*/\n  --touch-target: 48px;\n  --btn-height-sm: 48px;\n  --btn-height-md: 54px;\n  --icon-scale: 1;\n\n  /* 鍏煎鏃у埆鍚嶏紙鏃ч〉闈㈢户缁敤锛?*/\n  --primary-d: var(--primary-deep);\n  --primary-50: var(--primary-soft);\n  --primary-light-9: var(--primary-soft);\n  --teal: var(--success);\n  --teal-50: #e8faf6;\n  --warning-50: var(--warning-soft);\n  --danger-50: var(--danger-soft);\n  --ink: var(--text-strong);\n  --ink-2: var(--text-secondary);\n  --line-2: var(--line-soft);\n  --bg: var(--page-bg);\n  --card: var(--surface);\n  --sh-1: var(--shadow-card);\n  --font-base: var(--font-body);\n}\n\n/* 闀胯緢妯″紡锛氭鏂?/ 鎺т欢鏀惧ぇ绾?15%锛屼繚鐣欐崲琛屼笌瑙︽帶缁撴瀯 */\n.elder {\n  --font-caption: 16px;\n  --font-secondary: 18px;\n  --font-body: 20px;\n  --font-subheading: 23px;\n  --font-heading: 32px;\n  --line-compact: 1.45;\n  --line-body: 1.6;\n  --touch-target: 56px;\n  --btn-height-sm: 52px;\n  --btn-height-md: 60px;\n  --icon-scale: 1.18;\n}\n',
+    expected: /:root/,
+    operator: 'doesNotMatch',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:156:1
+鉁?05.鎵€鏈?UI 缁勪欢鏈€灏忚Е鎺ч珮搴?鈮?48px (1.3652ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /min-height:\s*48px|height:\s*48px|touch-target/. Input:
+  
+  '<template>\r\n' +
+    '  <view v-if="modelValue" class="app-sheet__mask" @click.self="onMask">\r\n' +
+    `    <view class="app-sheet" role="dialog" aria-modal="true" :style="{ minHeight: height + 'rpx' }">\r\n` +
+    '      <view class="app-sheet__handle" />\r\n' +
+    '      <slot />\r\n' +
+    '    </view>\r\n' +
+    '  </view>\r\n' +
+    '</template>\r\n' +
+    '\r\n' +
+    '<script setup lang="ts">\r\n' +
+    'const props = defineProps<{\r\n' +
+    '  modelValue: boolean;\r\n' +
+    '  height?: number; // rpx\r\n' +
+    '  closeOnMask?: boolean;\r\n' +
+    '}>();\r\n' +
+    'const emit = defineEmits<{\r\n' +
+    '  (e: "update:modelValue", v: boolean): void;\r\n' +
+    '}>();\r\n' +
+    '\r\n' +
+    'function onMask() {\r\n' +
+    '  if (props.closeOnMask) emit("update:modelValue", false);\r\n' +
+    '}\r\n' +
+    '</script>\r\n' +
+    '\r\n' +
+    '<style scoped>\r\n' +
+    '.app-sheet__mask {\r\n' +
+    '  position: fixed;\r\n' +
+    '  inset: 0;\r\n' +
+    '  background: rgba(19, 37, 27, 0.45);\r\n' +
+    '  display: flex;\r\n' +
+    '  align-items: flex-end;\r\n' +
+    '  z-index: 180;\r\n' +
+    '}\r\n' +
+    '.app-sheet {\r\n' +
+    '  width: 100%;\r\n' +
+    '  background: var(--surface);\r\n' +
+    '  border-top-left-radius: var(--r-hero);\r\n' +
+    '  border-top-right-radius: var(--r-hero);\r\n' +
+    '  padding: var(--sp-4) var(--sp-4) calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));\r\n' +
+    '  box-shadow: var(--shadow-floating);\r\n' +
+    '  max-height: 80vh;\r\n' +
+    '  overflow-y: auto;\r\n' +
+    '}\r\n' +
+    '.app-sheet__handle {\r\n' +
+    '  width: 36px;\r\n' +
+    '  height: 4px;\r\n' +
+    '  background: var(--line);\r\n' +
+    '  border-radius: var(--r-pill);\r\n' +
+    '  margin: 0 auto var(--sp-4);\r\n' +
+    '}\r\n' +
+    '</style>\r\n'
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:160:14)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: `<template>\r\n  <view v-if="modelValue" class="app-sheet__mask" @click.self="onMask">\r\n    <view class="app-sheet" role="dialog" aria-modal="true" :style="{ minHeight: height + 'rpx' }">\r\n      <view class="app-sheet__handle" />\r\n      <slot />\r\n    </view>\r\n  </view>\r\n</template>\r\n\r\n<script setup lang="ts">\r\nconst props = defineProps<{\r\n  modelValue: boolean;\r\n  height?: number; // rpx\r\n  closeOnMask?: boolean;\r\n}>();\r\nconst emit = defineEmits<{\r\n  (e: "update:modelValue", v: boolean): void;\r\n}>();\r\n\r\nfunction onMask() {\r\n  if (props.closeOnMask) emit("update:modelValue", false);\r\n}\r\n</script>\r\n\r\n<style scoped>\r\n.app-sheet__mask {\r\n  position: fixed;\r\n  inset: 0;\r\n  background: rgba(19, 37, 27, 0.45);\r\n  display: flex;\r\n  align-items: flex-end;\r\n  z-index: 180;\r\n}\r\n.app-sheet {\r\n  width: 100%;\r\n  background: var(--surface);\r\n  border-top-left-radius: var(--r-hero);\r\n  border-top-right-radius: var(--r-hero);\r\n  padding: var(--sp-4) var(--sp-4) calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));\r\n  box-shadow: var(--shadow-floating);\r\n  max-height: 80vh;\r\n  overflow-y: auto;\r\n}\r\n.app-sheet__handle {\r\n  width: 36px;\r\n  height: 4px;\r\n  background: var(--line);\r\n  border-radius: var(--r-pill);\r\n  margin: 0 auto var(--sp-4);\r\n}\r\n</style>\r\n`,
+    expected: /min-height:\s*48px|height:\s*48px|touch-target/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:166:1
+鉁?06.搴曢儴瀵艰埅鍥哄畾 3 涓?Tab锛堥椤?/ 鍋ュ悍鏈嶅姟 / 鎴戠殑锛?(0.4372ms)
+  SyntaxError: Unexpected token '锘?, "锘縶
+    "pag"... is not valid JSON
+      at JSON.parse (<anonymous>)
+      at readJson (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:14:41)
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:167:17)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7)
+
+test at tests\redesign-contract.test.mjs:176:1
+鉁?06.tabBar 涓嶅嚭鐜版偓娴?/ 鎶崌 / 涓棿鎸夐挳 (0.3552ms)
+  AssertionError [ERR_ASSERTION]: The input was expected to not match the regular expression /elevated|pedestal|fab|center.*fab/i. Input:
+  
+  `<view class="tab-bar {{elder ? 'tab-bar--elder' : ''}} {{reducedMotion ? 'tab-bar--reduced-motion' : ''}}">\n` +
+    '  <view\n' +
+    '    wx:for="{{list}}"\n' +
+    '    wx:key="pagePath"\n' +
+    `    class="tab-bar__item {{item.elevated ? 'tab-bar__item--elevated' : ''}} {{selected === index ? 'is-active' : ''}}"\n` +
+    '    data-index="{{index}}"\n' +
+    '    data-path="{{item.pagePath}}"\n' +
+    '    bindtap="onSwitch"\n' +
+    '  >\n' +
+    '    <view wx:if="{{item.elevated}}" class="tab-bar__center">\n' +
+    '      <image\n' +
+    '        class="tab-bar__pedestal"\n' +
+    '        src="{{item.pedestalPath}}"\n' +
+    '        mode="aspectFit"\n' +
+    '      />\n' +
+    '      <view class="tab-bar__fab">\n' +
+    '        <image class="tab-bar__fab-icon" src="{{item.fabIconPath}}" mode="aspectFit" />\n' +
+    '      </view>\n' +
+    '    </view>\n' +
+    '    <image\n' +
+    '      wx:else\n' +
+    '      class="tab-bar__icon"\n' +
+    '      src="{{selected === index ? item.selectedIconPath : item.iconPath}}"\n' +
+    '      mode="aspectFit"\n' +
+    '    />\n' +
+    '    <text\n' +
+    '      class="tab-bar__text"\n' +
+    '      style="color: {{selected === index ? selectedColor : color}}"\n' +
+    '    >{{item.text}}</text>\n' +
+    '  </view>\n' +
+    '</view>\n'
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:178:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: `<view class="tab-bar {{elder ? 'tab-bar--elder' : ''}} {{reducedMotion ? 'tab-bar--reduced-motion' : ''}}">\n  <view\n    wx:for="{{list}}"\n    wx:key="pagePath"\n    class="tab-bar__item {{item.elevated ? 'tab-bar__item--elevated' : ''}} {{selected === index ? 'is-active' : ''}}"\n    data-index="{{index}}"\n    data-path="{{item.pagePath}}"\n    bindtap="onSwitch"\n  >\n    <view wx:if="{{item.elevated}}" class="tab-bar__center">\n      <image\n        class="tab-bar__pedestal"\n        src="{{item.pedestalPath}}"\n        mode="aspectFit"\n      />\n      <view class="tab-bar__fab">\n        <image class="tab-bar__fab-icon" src="{{item.fabIconPath}}" mode="aspectFit" />\n      </view>\n    </view>\n    <image\n      wx:else\n      class="tab-bar__icon"\n      src="{{selected === index ? item.selectedIconPath : item.iconPath}}"\n      mode="aspectFit"\n    />\n    <text\n      class="tab-bar__text"\n      style="color: {{selected === index ? selectedColor : color}}"\n    >{{item.text}}</text>\n  </view>\n</view>\n`,
+    expected: /elevated|pedestal|fab|center.*fab/i,
+    operator: 'doesNotMatch',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:181:1
+鉁?06.鍋ュ悍鏈嶅姟 Tab 宸插湪 tabBar 椤跺眰锛堜笉鍦?subpackage 鍐咃級 (0.2363ms)
+  SyntaxError: Unexpected token '锘?, "锘縶
+    "pag"... is not valid JSON
+      at JSON.parse (<anonymous>)
+      at readJson (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:14:41)
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:182:17)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7)
+
+test at tests\redesign-contract.test.mjs:191:1
+鉁?07.瀹跺涵鎴愬憳 store 鏆撮湶 current / list / setCurrent / setList (0.3573ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\stores\memberContext.ts'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at importTypeScript (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:20:37)
+      at async TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:192:18)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\stores\\memberContext.ts'
+  }
+
+test at tests\redesign-contract.test.mjs:201:1
+鉁?07.useCurrentMember 鏆撮湶褰撳墠鎴愬憳 + 鍒囨崲鍑芥暟 (0.1554ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\composables\useCurrentMember.ts'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at importTypeScript (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:20:37)
+      at async TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:202:18)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\composables\\useCurrentMember.ts'
+  }

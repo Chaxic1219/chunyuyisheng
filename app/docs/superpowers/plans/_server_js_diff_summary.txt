@@ -1,0 +1,18 @@
+local_lines=1907
+prod_lines=1871
+local_sha_hint_len=89925
+prod_sha_hint_len=88676
+symbol	local	prod	delta
+runtimeCoreReadiness	2	0	2
+runtimeReadiness	0	0	0
+MP_SESSION_COMPAT	0	0	0
+registerPatientPublicRoutes	2	2	0
+registerMpAuthRoutes	2	2	0
+registerMpAiRoutes	2	2	0
+health_chat	0	0	0
+ClinicalRisk	2	2	0
+SendPolicy	2	2	0
+safeReply	0	0	0
+modules/community	2	2	0
+require\(\"./agent	0	0	0
+require\(\"./triage	1	1	0

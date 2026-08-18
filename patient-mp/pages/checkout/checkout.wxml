@@ -1,0 +1,46 @@
+<view class="page">
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+  <view wx:elif="{{error}}" class="empty">{{error}}</view>
+
+  <block wx:elif="{{product}}">
+    <view class="card">
+      <text class="card-title">{{product.title}}</text>
+      <view class="amount-row">
+        <text class="amount">¥{{product.totalAmountLabel}}</text>
+        <text class="sub-amount">服务 ¥{{product.serviceAmountLabel}}</text>
+      </view>
+    </view>
+
+    <view class="card">
+      <text class="card-title form-head">收货信息</text>
+      <text class="form-label">联系手机</text>
+      <input class="form-input" type="number" maxlength="11" placeholder="用于服务通知"
+             value="{{form.contactPhone}}" data-field="contactPhone" bindinput="onInput" />
+      <text class="form-label">收件人</text>
+      <input class="form-input" placeholder="收件人姓名" value="{{form.receiverName}}"
+             data-field="receiverName" bindinput="onInput" />
+      <text class="form-label">收件手机</text>
+      <input class="form-input" type="number" maxlength="11" placeholder="收件手机号"
+             value="{{form.receiverPhone}}" data-field="receiverPhone" bindinput="onInput" />
+      <text class="form-label">收货地址</text>
+      <textarea class="form-textarea" placeholder="省市区 + 详细地址" value="{{form.receiverAddress}}"
+                data-field="receiverAddress" bindinput="onInput" />
+    </view>
+
+    <view class="card">
+      <label class="check-row" bindtap="toggleAgreement">
+        <checkbox checked="{{agreement}}" color="#176B52" />
+        <text>我已阅读并同意服务协议与退款规则</text>
+      </label>
+      <label class="check-row" bindtap="togglePrivacy">
+        <checkbox checked="{{privacy}}" color="#176B52" />
+        <text>我同意对敏感健康信息的处理说明</text>
+      </label>
+    </view>
+
+    <button class="btn-primary" disabled="{{submitting}}" bindtap="onSubmit">
+      {{submitting ? '提交中…' : '确认支付 ¥' + product.totalAmountLabel}}
+    </button>
+    <text class="hint">当前为开发态支付演示，支付页展示完整流程</text>
+  </block>
+</view>

@@ -1,0 +1,473 @@
+﻿鉁?01.鎵瑰噯绋裤€佽璁¤鑼冨拰瀹炴柦钃濆浘鏂囦欢瀹屾暣瀛樺湪 (1.0716ms)
+鉁?02.鏂扮増浠ょ墝浣跨敤娴呴紶灏捐崏缁?#0B6B47) + 澶у渾瑙?+ 48px 瑙︽帶 (0.5546ms)
+鉁?02.tokens.json 涓?CSS 鍚屾簮鍊硷紙棰滆壊/鍦嗚/瑙︽帶锛?(0.3776ms)
+鉁?02.寰俊 WXSS 浠嶄粎浣跨敤 page 椤跺眰閫夋嫨鍣紙闃?:root 涓嶅吋瀹癸級 (0.2552ms)
+鉁?03.鏍稿績鍖荤枟 / 鏈嶅姟 PNG 鍥炬爣宸插鍑?(0.1724ms)
+鉁?03.搴曢儴 Tab 涓夌瓑瀹?PNG 璧勪骇宸插氨缁?(0.1546ms)
+鉁?03.鍥炬爣鎬婚绠?鈮?400 KB (6.1058ms)
+鉁?04.鏂扮増绫诲瀷涓庨€傞厤鍣ㄧ函鍑€鍑芥暟鍙敤 (130.465ms)
+鉁?04.棣栭〉浠诲姟鎺掑簭锛氱揣鎬?> 閲嶈 > 鏅€?(0.2665ms)
+鉁?05.涔濅釜鍏叡 UI 缁勪欢鏂囦欢瀛樺湪 (0.2326ms)
+鉁?05.AppStatePanel 鏆撮湶鐘舵€佹満鍥涙€?+ actionLabel (0.1335ms)
+鉁?05.AppBottomSheet 鏆撮湶 v-model 鍙屽悜缁戝畾 (0.0994ms)
+鉁?05.AppFormField 鍖呭惈 label / error / hint 璇箟 (0.0753ms)
+鉁?05.鎵€鏈?UI 缁勪欢鏈€灏忚Е鎺ч珮搴?鈮?48px (0.0874ms)
+鉁?06.搴曢儴瀵艰埅鍥哄畾 3 涓?Tab锛堥椤?/ 鍋ュ悍鏈嶅姟 / 鎴戠殑锛?(0.8472ms)
+鉁?06.tabBar 涓嶅嚭鐜版偓娴?/ 鎶崌 / 涓棿鎸夐挳 (0.3268ms)
+鉁?06.鍋ュ悍鏈嶅姟 Tab 宸插湪 tabBar 椤跺眰锛堜笉鍦?subpackage 鍐咃級 (0.2514ms)
+鉁?07.瀹跺涵鎴愬憳 store 鏆撮湶 current / list / setCurrent / setList (0.1814ms)
+鉁?07.useCurrentMember 鏆撮湶褰撳墠鎴愬憳 + 鍒囨崲鍑芥暟 (0.2637ms)
+鈩?tests 19
+鈩?suites 0
+鈩?pass 2
+鈩?fail 17
+鈩?cancelled 0
+鈩?skipped 0
+鈩?todo 0
+鈩?duration_ms 230.4152
+
+鉁?failing tests:
+
+test at tests\redesign-contract.test.mjs:30:1
+鉁?01.鎵瑰噯绋裤€佽璁¤鑼冨拰瀹炴柦钃濆浘鏂囦欢瀹屾暣瀛樺湪 (1.0716ms)
+  AssertionError [ERR_ASSERTION]: ../patient-redesign-handoff-2026-08-10/redesign-2026-08/01-home-approved.png
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:39:12)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.start (node:internal/test_runner/test:1015:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:358:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:44:1
+鉁?02.鏂扮増浠ょ墝浣跨敤娴呴紶灏捐崏缁?#0B6B47) + 澶у渾瑙?+ 48px 瑙︽帶 (0.5546ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /--primary:\s*#0b6b47/i. Input:
+  
+  '/* 鏄ラ洦鍖荤敓 路 鎮ｈ€呯璁捐浠ょ墝\n' +
+    ' * 瀵归綈鍖绘偅閫氬悗鍙?Art Design Pro锛氬伐鍏锋劅銆佸厠鍒朵富鑹层€佸皯瑁呴グ\n' +
+    ' * 浠呬娇鐢?page 閫夋嫨鍣紝閬垮厤寰俊 WXSS 涓嶆敮鎸佺殑鏍逛吉绫?*/\n' +
+    'page {\n' +
+    '  /* 鍝佺墝涓庣姸鎬侊紙鏄ラ洦闈掔豢锛?*/\n' +
+    '  --primary: #176b52;\n' +
+    '  --primary-deep: #0c4535;\n' +
+    '  --primary-soft: #e5f3ec;\n' +
+    '  --success: #13deb9;\n' +
+    '  --warning: #ffae1f;\n' +
+    '  --danger: #fa896b;\n' +
+    '\n' +
+    '  /* 鑳屾櫙銆佽〃闈笌鏂囧瓧 */\n' +
+    '  --page-bg: #f0f3f5;\n' +
+    '  --surface: #ffffff;\n' +
+    '  --surface-muted: #f5f7fa;\n' +
+    '  --text-strong: #2a3547;\n' +
+    '  --text-secondary: #5a6a85;\n' +
+    '  --text-placeholder: #7c8ba5;\n' +
+    '  --line: #e5eaf2;\n' +
+    '  --line-soft: #eef2f6;\n' +
+    '  --card-border: #e5eaf2;\n' +
+    '\n' +
+    '  /* 4pt 闂磋窛 */\n' +
+    '  --sp-1: 4px;\n' +
+    '  --sp-2: 8px;\n' +
+    '  --sp-3: 12px;\n' +
+    '  --sp-4: 16px;\n' +
+    '  --sp-5: 24px;\n' +
+    '  --sp-6: 32px;\n' +
+    '  --sp-7: 48px;\n' +
+    '  --sp-8: 64px;\n' +
+    '\n' +
+    '  /* 鍦嗚涓庡眰绾э細鍋忓悗鍙帮紝閬垮厤杩囧ぇ鍦嗚涓庨噸闃村奖 */\n' +
+    '  --r-sm: 6px;\n' +
+    '  --r-md: 8px;\n' +
+    '  --r-lg: 12px;\n' +
+    '  --r-xl: 12px;\n' +
+    '  --r-pill: 999px;\n' +
+    '  --shadow-card: 0 1px 2px rgba(42, 53, 71, 0.04);\n' +
+    '  --shadow-floating: 0 4px 12px rgba(42, 53, 71, 0.08);\n' +
+    '\n' +
+    '  /* 瀛楀彿锛氶粯璁ゆ櫘閫氭ā寮忥紙姝ｆ枃 18px锛?*/\n' +
+    '  --font-caption: 14px;\n' +
+    '  --font-secondary: 16px;\n' +
+    '  --font-body: 18px;\n' +
+    '  --font-subheading: 19px;\n' +
+    '  --font-heading: 24px;\n' +
+    '  --line-compact: 1.4;\n' +
+    '  --line-body: 1.6;\n' +
+    '  --touch-target: 44px;\n' +
+    '  --btn-height-sm: 40px;\n' +
+    '  --btn-height-md: 48px;\n' +
+    '  --icon-scale: 1;\n' +
+    '\n' +
+    '  /* 鍏煎鏃у埆鍚?*/\n' +
+    '  --primary-d: var(--primary-deep);\n' +
+    '  --primary-50: var(--primary-soft);\n' +
+    '  --primary-light-9: var(--primary-soft);\n' +
+    '  --teal: var(--success);\n' +
+    '  --teal-50: #e8faf6;\n' +
+    '  --warning-50: #fff8e8;\n' +
+    '  --danger-50: #fff1ed;\n' +
+    '  --ink: var(--text-strong);\n' +
+    '  --ink-2: var(--text-secondary);\n' +
+    '  --line-2: var(--line-soft);\n' +
+    '  --bg: var(--page-bg);\n' +
+    '  --card: var(--surface);\n' +
+    '  --sh-1: var(--shadow-card);\n' +
+    '  --font-base: var(--font-body);\n' +
+    '  --mist-blue: var(--surface-muted);\n' +
+    '  --accent-violet: var(--primary);\n' +
+    '  --accent-teal: var(--success);\n' +
+    '}\n' +
+    '\n' +
+    '/* 闀胯緢妯″紡锛氭部鐢ㄤ笂涓€鐗堝叏灞€澶у瓧鍙凤紙姝ｆ枃 25px锛?*/\n' +
+    '.elder {\n' +
+    '  --font-caption: 20px;\n' +
+    '  --font-secondary: 22px;\n' +
+    '  --font-body: 25px;\n' +
+    '  --font-subheading: 27px;\n' +
+    '  --font-heading: 33px;\n' +
+    '  --line-compact: 1.45;\n' +
+    '  --line-body: 1.7;\n' +
+    '  --touch-target: 52px;\n' +
+    '  --btn-height-sm: 52px;\n' +
+    '  --btn-height-md: 56px;\n' +
+    '  --icon-scale: 1.39;\n' +
+    '}\n'
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:46:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '/* 鏄ラ洦鍖荤敓 路 鎮ｈ€呯璁捐浠ょ墝\n * 瀵归綈鍖绘偅閫氬悗鍙?Art Design Pro锛氬伐鍏锋劅銆佸厠鍒朵富鑹层€佸皯瑁呴グ\n * 浠呬娇鐢?page 閫夋嫨鍣紝閬垮厤寰俊 WXSS 涓嶆敮鎸佺殑鏍逛吉绫?*/\npage {\n  /* 鍝佺墝涓庣姸鎬侊紙鏄ラ洦闈掔豢锛?*/\n  --primary: #176b52;\n  --primary-deep: #0c4535;\n  --primary-soft: #e5f3ec;\n  --success: #13deb9;\n  --warning: #ffae1f;\n  --danger: #fa896b;\n\n  /* 鑳屾櫙銆佽〃闈笌鏂囧瓧 */\n  --page-bg: #f0f3f5;\n  --surface: #ffffff;\n  --surface-muted: #f5f7fa;\n  --text-strong: #2a3547;\n  --text-secondary: #5a6a85;\n  --text-placeholder: #7c8ba5;\n  --line: #e5eaf2;\n  --line-soft: #eef2f6;\n  --card-border: #e5eaf2;\n\n  /* 4pt 闂磋窛 */\n  --sp-1: 4px;\n  --sp-2: 8px;\n  --sp-3: 12px;\n  --sp-4: 16px;\n  --sp-5: 24px;\n  --sp-6: 32px;\n  --sp-7: 48px;\n  --sp-8: 64px;\n\n  /* 鍦嗚涓庡眰绾э細鍋忓悗鍙帮紝閬垮厤杩囧ぇ鍦嗚涓庨噸闃村奖 */\n  --r-sm: 6px;\n  --r-md: 8px;\n  --r-lg: 12px;\n  --r-xl: 12px;\n  --r-pill: 999px;\n  --shadow-card: 0 1px 2px rgba(42, 53, 71, 0.04);\n  --shadow-floating: 0 4px 12px rgba(42, 53, 71, 0.08);\n\n  /* 瀛楀彿锛氶粯璁ゆ櫘閫氭ā寮忥紙姝ｆ枃 18px锛?*/\n  --font-caption: 14px;\n  --font-secondary: 16px;\n  --font-body: 18px;\n  --font-subheading: 19px;\n  --font-heading: 24px;\n  --line-compact: 1.4;\n  --line-body: 1.6;\n  --touch-target: 44px;\n  --btn-height-sm: 40px;\n  --btn-height-md: 48px;\n  --icon-scale: 1;\n\n  /* 鍏煎鏃у埆鍚?*/\n  --primary-d: var(--primary-deep);\n  --primary-50: var(--primary-soft);\n  --primary-light-9: var(--primary-soft);\n  --teal: var(--success);\n  --teal-50: #e8faf6;\n  --warning-50: #fff8e8;\n  --danger-50: #fff1ed;\n  --ink: var(--text-strong);\n  --ink-2: var(--text-secondary);\n  --line-2: var(--line-soft);\n  --bg: var(--page-bg);\n  --card: var(--surface);\n  --sh-1: var(--shadow-card);\n  --font-base: var(--font-body);\n  --mist-blue: var(--surface-muted);\n  --accent-violet: var(--primary);\n  --accent-teal: var(--success);\n}\n\n/* 闀胯緢妯″紡锛氭部鐢ㄤ笂涓€鐗堝叏灞€澶у瓧鍙凤紙姝ｆ枃 25px锛?*/\n.elder {\n  --font-caption: 20px;\n  --font-secondary: 22px;\n  --font-body: 25px;\n  --font-subheading: 27px;\n  --font-heading: 33px;\n  --line-compact: 1.45;\n  --line-body: 1.7;\n  --touch-target: 52px;\n  --btn-height-sm: 52px;\n  --btn-height-md: 56px;\n  --icon-scale: 1.39;\n}\n',
+    expected: /--primary:\s*#0b6b47/i,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:57:1
+鉁?02.tokens.json 涓?CSS 鍚屾簮鍊硷紙棰滆壊/鍦嗚/瑙︽帶锛?(0.3776ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + '#176b52'
+  - '#0b6b47'
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:59:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '#176b52',
+    expected: '#0b6b47',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:74:1
+鉁?03.鏍稿績鍖荤枟 / 鏈嶅姟 PNG 鍥炬爣宸插鍑?(0.1724ms)
+  AssertionError [ERR_ASSERTION]: blood-pressure
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:80:12)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:84:1
+鉁?03.搴曢儴 Tab 涓夌瓑瀹?PNG 璧勪骇宸插氨缁?(0.1546ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:85:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:107:1
+鉁?04.鏂扮増绫诲瀷涓庨€傞厤鍣ㄧ函鍑€鍑芥暟鍙敤 (130.465ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\adapters\serviceAdapter.ts'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at importTypeScript (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:20:37)
+      at async TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:108:32)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\adapters\\serviceAdapter.ts'
+  }
+
+test at tests\redesign-contract.test.mjs:115:1
+鉁?04.棣栭〉浠诲姟鎺掑簭锛氱揣鎬?> 閲嶈 > 鏅€?(0.2665ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\adapters\homeAdapter.ts'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at importTypeScript (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:20:37)
+      at async TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:116:32)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\adapters\\homeAdapter.ts'
+  }
+
+test at tests\redesign-contract.test.mjs:131:1
+鉁?05.涔濅釜鍏叡 UI 缁勪欢鏂囦欢瀛樺湪 (0.2326ms)
+  AssertionError [ERR_ASSERTION]: AppCard
+  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:133:12)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:137:1
+鉁?05.AppStatePanel 鏆撮湶鐘舵€佹満鍥涙€?+ actionLabel (0.1335ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\components\ui\AppStatePanel.vue'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:138:15)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\components\\ui\\AppStatePanel.vue'
+  }
+
+test at tests\redesign-contract.test.mjs:143:1
+鉁?05.AppBottomSheet 鏆撮湶 v-model 鍙屽悜缁戝畾 (0.0994ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\components\ui\AppBottomSheet.vue'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:144:15)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\components\\ui\\AppBottomSheet.vue'
+  }
+
+test at tests\redesign-contract.test.mjs:149:1
+鉁?05.AppFormField 鍖呭惈 label / error / hint 璇箟 (0.0753ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\components\ui\AppFormField.vue'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:150:15)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\components\\ui\\AppFormField.vue'
+  }
+
+test at tests\redesign-contract.test.mjs:156:1
+鉁?05.鎵€鏈?UI 缁勪欢鏈€灏忚Е鎺ч珮搴?鈮?48px (0.0874ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\components\ui\AppCard.vue'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:158:17)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\components\\ui\\AppCard.vue'
+  }
+
+test at tests\redesign-contract.test.mjs:166:1
+鉁?06.搴曢儴瀵艰埅鍥哄畾 3 涓?Tab锛堥椤?/ 鍋ュ悍鏈嶅姟 / 鎴戠殑锛?(0.8472ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      'pages/index/index',
+  +   'pages/consult/index',
+  -   'pages/services/index',
+      'pages/mine/index'
+    ]
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:169:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'pages/index/index', 'pages/consult/index', 'pages/mine/index' ],
+    expected: [ 'pages/index/index', 'pages/services/index', 'pages/mine/index' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:176:1
+鉁?06.tabBar 涓嶅嚭鐜版偓娴?/ 鎶崌 / 涓棿鎸夐挳 (0.3268ms)
+  AssertionError [ERR_ASSERTION]: The input was expected to not match the regular expression /elevated|pedestal|fab|center.*fab/i. Input:
+  
+  `<view class="tab-bar {{elder ? 'tab-bar--elder' : ''}} {{reducedMotion ? 'tab-bar--reduced-motion' : ''}}">\n` +
+    '  <view\n' +
+    '    wx:for="{{list}}"\n' +
+    '    wx:key="pagePath"\n' +
+    `    class="tab-bar__item {{item.elevated ? 'tab-bar__item--elevated' : ''}} {{selected === index ? 'is-active' : ''}}"\n` +
+    '    data-index="{{index}}"\n' +
+    '    data-path="{{item.pagePath}}"\n' +
+    '    bindtap="onSwitch"\n' +
+    '  >\n' +
+    '    <view wx:if="{{item.elevated}}" class="tab-bar__center">\n' +
+    '      <image\n' +
+    '        class="tab-bar__pedestal"\n' +
+    '        src="{{item.pedestalPath}}"\n' +
+    '        mode="aspectFit"\n' +
+    '      />\n' +
+    '      <view class="tab-bar__fab">\n' +
+    '        <image class="tab-bar__fab-icon" src="{{item.fabIconPath}}" mode="aspectFit" />\n' +
+    '      </view>\n' +
+    '    </view>\n' +
+    '    <image\n' +
+    '      wx:else\n' +
+    '      class="tab-bar__icon"\n' +
+    '      src="{{selected === index ? item.selectedIconPath : item.iconPath}}"\n' +
+    '      mode="aspectFit"\n' +
+    '    />\n' +
+    '    <text\n' +
+    '      class="tab-bar__text"\n' +
+    '      style="color: {{selected === index ? selectedColor : color}}"\n' +
+    '    >{{item.text}}</text>\n' +
+    '  </view>\n' +
+    '</view>\n'
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:178:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: `<view class="tab-bar {{elder ? 'tab-bar--elder' : ''}} {{reducedMotion ? 'tab-bar--reduced-motion' : ''}}">\n  <view\n    wx:for="{{list}}"\n    wx:key="pagePath"\n    class="tab-bar__item {{item.elevated ? 'tab-bar__item--elevated' : ''}} {{selected === index ? 'is-active' : ''}}"\n    data-index="{{index}}"\n    data-path="{{item.pagePath}}"\n    bindtap="onSwitch"\n  >\n    <view wx:if="{{item.elevated}}" class="tab-bar__center">\n      <image\n        class="tab-bar__pedestal"\n        src="{{item.pedestalPath}}"\n        mode="aspectFit"\n      />\n      <view class="tab-bar__fab">\n        <image class="tab-bar__fab-icon" src="{{item.fabIconPath}}" mode="aspectFit" />\n      </view>\n    </view>\n    <image\n      wx:else\n      class="tab-bar__icon"\n      src="{{selected === index ? item.selectedIconPath : item.iconPath}}"\n      mode="aspectFit"\n    />\n    <text\n      class="tab-bar__text"\n      style="color: {{selected === index ? selectedColor : color}}"\n    >{{item.text}}</text>\n  </view>\n</view>\n`,
+    expected: /elevated|pedestal|fab|center.*fab/i,
+    operator: 'doesNotMatch',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:181:1
+鉁?06.鍋ュ悍鏈嶅姟 Tab 宸插湪 tabBar 椤跺眰锛堜笉鍦?subpackage 鍐咃級 (0.2514ms)
+  AssertionError [ERR_ASSERTION]: pages/services/index 蹇呴』鍦?pages 椤跺眰锛坱ab 涓嶅彲鍦?subpackage锛?  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:183:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests\redesign-contract.test.mjs:191:1
+鉁?07.瀹跺涵鎴愬憳 store 鏆撮湶 current / list / setCurrent / setList (0.1814ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\stores\memberContext.ts'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at importTypeScript (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:20:37)
+      at async TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:192:18)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\stores\\memberContext.ts'
+  }
+
+test at tests\redesign-contract.test.mjs:201:1
+鉁?07.useCurrentMember 鏆撮湶褰撳墠鎴愬憳 + 鍒囨崲鍑芥暟 (0.2637ms)
+  Error: ENOENT: no such file or directory, open 'C:\Users\11\Desktop\www\chunyu-doctor-review\patient-uniapp\src\composables\useCurrentMember.ts'
+      at readFileSync (node:fs:440:20)
+      at read (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:13:32)
+      at importTypeScript (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:20:37)
+      at async TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:202:18)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    errno: -4058,
+    code: 'ENOENT',
+    syscall: 'open',
+    path: 'C:\\Users\\11\\Desktop\\www\\chunyu-doctor-review\\patient-uniapp\\src\\composables\\useCurrentMember.ts'
+  }

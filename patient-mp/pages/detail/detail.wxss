@@ -1,0 +1,82 @@
+.detail-page {
+  padding-bottom: 200rpx;
+}
+
+.detail-doctor {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 26rpx;
+  color: #6a756f;
+}
+
+.price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+
+.price {
+  font-size: 52rpx;
+}
+
+.price-sub {
+  font-size: 24rpx;
+  color: #8a938d;
+}
+
+.tag-row {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 20rpx;
+}
+
+.tag {
+  padding: 4rpx 16rpx;
+  border-radius: 8rpx;
+  background: #eef4f0;
+  color: #176b52;
+  font-size: 22rpx;
+}
+
+.section-title {
+  display: block;
+  margin-bottom: 16rpx;
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #17201c;
+}
+
+.li {
+  display: flex;
+  margin-bottom: 10rpx;
+}
+
+.li-dot {
+  color: #176b52;
+  margin-right: 12rpx;
+}
+
+.li-text {
+  flex: 1;
+  font-size: 28rpx;
+  color: #3d4852;
+  line-height: 1.6;
+}
+
+.policy {
+  display: block;
+  font-size: 26rpx;
+  color: #6a756f;
+  line-height: 1.7;
+}
+
+.footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom));
+  background: #ffffff;
+  box-shadow: 0 -2rpx 12rpx rgba(23, 32, 28, 0.06);
+}

@@ -1,0 +1,14 @@
+# 运行时生成
+data.db
+data.db-wal
+data.db-shm
+.logs/
+_shots/
+
+# 密钥（如把 MIMO/DeepSeek key 写入 .env，切勿提交）
+.env
+.env.*
+
+# 依赖（应用本身零依赖；仅测试需要 jsdom）
+node_modules/
+package-lock.json

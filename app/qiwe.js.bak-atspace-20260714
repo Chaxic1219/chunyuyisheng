@@ -1,0 +1,996 @@
+/* QiWe 第三方企微执行控制台适配层。
+   仅负责：本地配置、Webhook 事件归一化、调用 /api/qw/doApi 发送文本/小程序卡片。
+   医疗回复、安全分诊、是否可自动发送不在这里判断。 */
+const http = require("http");
+const https = require("https");
+const { db } = require("./db.js");
+
+const DEFAULT_API_URL = "http://manager.qiweapi.com/qiwe/api/qw/doApi";
+// 聊天图片/文件上传换参端点（api-344613929「本地文件上传」）：走 /doFileApi（不是 /doApi）·multipart/form-data。
+const DEFAULT_FILE_API_URL = "http://manager.qiweapi.com/qiwe/api/qw/doFileApi";
+const DRY_RUN = process.env.QIWE_DRY_RUN === "1";
+// HTTP 请求超时（修1）：底层连上不返回时不再永久挂起 → 超时 reject；默认 10s，可 env 覆盖。
+const HTTP_TIMEOUT_MS = Number(process.env.QIWE_HTTP_TIMEOUT_MS) > 0 ? Number(process.env.QIWE_HTTP_TIMEOUT_MS) : 10000;
+
+function clean(v, n){
+  return String(v == null ? "" : v).trim().slice(0, n || 240);
+}
+
+function bool(v, fallback){
+  if(v === undefined || v === null || v === "") return !!fallback;
+  if(typeof v === "boolean") return v;
+  if(typeof v === "number") return v !== 0;
+  return ["1", "true", "yes", "on", "启用"].includes(String(v).trim().toLowerCase());
+}
+
+function envConfig(){
+  return {
+    token:process.env.QIWE_TOKEN || "",
+    guid:process.env.QIWE_GUID || "",
+    selfUserId:process.env.QIWE_SELF_USER_ID || "",
+    testToId:process.env.QIWE_TEST_TO_ID || "",
+    callbackSecret:process.env.QIWE_CALLBACK_SECRET || "",
+    apiUrl:process.env.QIWE_API_URL || DEFAULT_API_URL,
+    doctorId:process.env.QIWE_DOCTOR_ID ? Number(process.env.QIWE_DOCTOR_ID) : null,
+    enabled:process.env.QIWE_ENABLED === "1",
+    autoSend:process.env.QIWE_AUTO_SEND === "1",
+    allowGroup:process.env.QIWE_ALLOW_GROUP === "1",
+    note:"env"
+  };
+}
+
+function loadConfig(){
+  const env = envConfig();
+  let row = null;
+  try{ row = db.prepare("SELECT * FROM qiwe_configs ORDER BY id DESC LIMIT 1").get(); }catch(e){}
+  if(!row) return env;
+  return {
+    token:row.token || env.token,
+    guid:row.guid || env.guid,
+    selfUserId:row.self_user_id || env.selfUserId,
+    testToId:row.test_to_id || env.testToId,
+    callbackSecret:row.callback_secret || env.callbackSecret,
+    apiUrl:row.api_url || env.apiUrl || DEFAULT_API_URL,
+    doctorId:row.doctor_id || env.doctorId || null,
+    enabled:bool(row.enabled, env.enabled),
+    autoSend:bool(row.auto_send, env.autoSend),
+    allowGroup:bool(row.allow_group, env.allowGroup),
+    note:row.note || ""
+  };
+}
+
+function mask(v){
+  const s = clean(v, 200);
+  if(!s) return "";
+  if(s.length <= 8) return "已配置";
+  return s.slice(0, 4) + "..." + s.slice(-4);
+}
+
+function publicConfig(cfg){
+  cfg = cfg || loadConfig();
+  return {
+    configured:!!(cfg.token && cfg.guid),
+    enabled:!!cfg.enabled,
+    autoSend:!!cfg.autoSend,
+    allowGroup:!!cfg.allowGroup,
+    doctorId:cfg.doctorId || null,
+    guid:mask(cfg.guid),
+    token:mask(cfg.token),
+    selfUserId:cfg.selfUserId || "",
+    testToId:cfg.testToId || "",
+    callbackSecret:cfg.callbackSecret ? "已配置" : "",
+    apiUrl:cfg.apiUrl || DEFAULT_API_URL,
+    note:cfg.note || "",
+    dryRun:DRY_RUN
+  };
+}
+
+function saveConfig(input){
+  const prev = loadConfig();
+  const v = (key, n) => clean(input && input[key], n || 240);
+  const token = v("token") || prev.token;
+  const guid = v("guid") || prev.guid;
+  const apiUrl = v("apiUrl", 500) || prev.apiUrl || DEFAULT_API_URL;
+  const doctorId = input && input.doctorId != null && input.doctorId !== "" ? Number(input.doctorId) : (prev.doctorId || null);
+  db.prepare(`INSERT INTO qiwe_configs(
+    doctor_id,token,guid,self_user_id,test_to_id,callback_secret,api_url,enabled,auto_send,allow_group,note,updated_at
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    Number.isFinite(doctorId) ? doctorId : null,
+    token,
+    guid,
+    v("selfUserId") || prev.selfUserId,
+    v("testToId") || prev.testToId,
+    v("callbackSecret") || prev.callbackSecret,
+    apiUrl,
+    bool(input && input.enabled, prev.enabled) ? 1 : 0,
+    bool(input && input.autoSend, prev.autoSend) ? 1 : 0,
+    bool(input && input.allowGroup, prev.allowGroup) ? 1 : 0,
+    v("note", 500) || prev.note,
+    new Date().toISOString()
+  );
+  return publicConfig(loadConfig());
+}
+
+function asObject(v){
+  if(!v) return {};
+  if(typeof v === "object" && !Array.isArray(v)) return v;
+  if(typeof v === "string"){
+    const s = v.trim();
+    if(!s) return {};
+    try{ return JSON.parse(s); }catch(e){ return {}; }
+  }
+  return {};
+}
+
+function collectObjects(v, out, depth){
+  if(depth > 4) return;
+  const o = asObject(v);
+  if(!o || !Object.keys(o).length) return;
+  out.push(o);
+  ["msgData", "content", "weapp", "weappInfo", "miniProgram", "miniProgramInfo", "appMsg", "appmsg", "params"].forEach(k=>{
+    if(o[k] !== undefined) collectObjects(o[k], out, depth + 1);
+  });
+}
+
+function firstField(objects, names, n){
+  for(const o of objects){
+    for(const name of names){
+      if(o && o[name] !== undefined && o[name] !== null && String(o[name]).trim() !== ""){
+        return clean(o[name], n || 500);
+      }
+    }
+  }
+  return "";
+}
+
+function normalizeWeappCard(input, fallback){
+  const objects = [];
+  collectObjects(input, objects, 0);
+  collectObjects(input && input.msgData, objects, 0);
+  collectObjects(input && input.raw, objects, 0);
+  fallback = fallback || {};
+  const sizeRaw = firstField(objects, ["coverFileSize", "cover_file_size", "coverImageSize", "cover_image_size", "fileSize", "thumbFileSize"], 40) || fallback.coverFileSize || "";
+  const size = Number(sizeRaw);
+  const rawTitle = firstField(objects, ["title", "name"], 180);
+  const rawDesc = firstField(objects, ["desc", "description", "subTitle", "sub"], 500);
+  const appName = firstField(objects, ["appName", "app_name"], 180);
+  return {
+    appId:firstField(objects, ["appId", "app_id", "appid"], 120) || clean(fallback.appId, 120),
+    username:firstField(objects, ["username", "originalId", "original_id", "userName"], 160) || clean(fallback.username || fallback.originalId, 160),
+    pagePath:firstField(objects, ["pagePath", "page_path", "path", "pagepath"], 1000) || clean(fallback.pagePath || fallback.path, 1000),
+    title:(appName && rawDesc ? rawDesc : rawTitle) || clean(fallback.title || "春雨医生", 180),
+    desc:(appName || rawDesc) || clean(fallback.desc || fallback.sub || "", 500),
+    thumbUrl:firstField(objects, ["thumbUrl", "thumb_url", "coverUrl", "cover_url", "imageUrl", "iconUrl", "icon_url", "appMediaUrl"], 1200) || clean(fallback.thumbUrl || fallback.coverUrl, 1200),
+    coverFileAesKey:firstField(objects, ["coverFileAesKey", "cover_file_aes_key", "coverImageAesKey", "cover_image_aes_key", "fileAesKey", "aesKey"], 1200) || clean(fallback.coverFileAesKey, 1200),
+    coverFileId:firstField(objects, ["coverFileId", "cover_file_id", "coverImageId", "cover_image_id", "fileId", "thumbFileId"], 2400) || clean(fallback.coverFileId, 2400),
+    coverFileSize:Number.isFinite(size) && size > 0 ? size : (Number(fallback.coverFileSize) || 0)
+  };
+}
+
+function missingWeappFields(card){
+  card = normalizeWeappCard(card);
+  const missing = [];
+  [
+    ["appId", "小程序 appId"],
+    ["username", "小程序原始 ID"],
+    ["pagePath", "小程序跳转地址"],
+    ["title", "卡片标题"],
+    ["thumbUrl", "缩略图 URL"],
+    ["coverFileAesKey", "封面图 AESKey"],
+    ["coverFileId", "封面图 ID"],
+    ["coverFileSize", "封面图大小"]
+  ].forEach(([k, label])=>{
+    if(k === "coverFileSize"){
+      if(!Number(card[k])) missing.push(label);
+    }else if(!card[k]) missing.push(label);
+  });
+  return missing;
+}
+
+function isWeappReady(card){
+  return missingWeappFields(card).length === 0;
+}
+
+function knownAppIdForUsername(doctorId, username){
+  const u = clean(username, 160);
+  if(!doctorId || !u) return "";
+  const row = db.prepare(`SELECT app_id FROM qiwe_weapp_templates
+    WHERE doctor_id=? AND username=? AND app_id<>''
+    ORDER BY updated_at DESC,id DESC LIMIT 1`).get(Number(doctorId), u);
+  return row && row.app_id ? row.app_id : "";
+}
+
+function saveWeappTemplate(input){
+  const doctorId = Number(input && input.doctorId);
+  const code = clean(input && input.code, 40);
+  if(!doctorId) throw new Error("缺少医生 ID，无法保存小程序卡片模板");
+  if(!code) throw new Error("缺少编号，无法保存小程序卡片模板");
+  const existing = db.prepare("SELECT * FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?").get(doctorId, code);
+  const card = normalizeWeappCard((input && input.card) || input, input && input.fallback);
+  if(!card.appId && existing && existing.app_id) card.appId = clean(existing.app_id, 120);
+  if(!card.appId && card.username) card.appId = knownAppIdForUsername(doctorId, card.username);
+  if(!card.title && !card.appId && !card.pagePath && !card.coverFileId) throw new Error("未识别到小程序卡片字段");
+  const sourceType = clean(input && (input.sourceType || input.source_type), 80) || (existing && existing.source_type) || "";
+  const sourcePage = clean(input && (input.sourcePage || input.source_page), 200) || (existing && existing.source_page) || "";
+  const sourceShortLink = clean(input && (input.sourceShortLink || input.source_short_link), 500) || (existing && existing.source_short_link) || "";
+  let raw = "";
+  try{ raw = JSON.stringify(input && (input.rawPayload || input.card || input)); }catch(e){ raw = ""; }
+  db.prepare(`INSERT INTO qiwe_weapp_templates(
+    doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  ON CONFLICT(doctor_id, code) DO UPDATE SET
+    source_type=excluded.source_type,
+    source_page=excluded.source_page,
+    source_short_link=excluded.source_short_link,
+    title=excluded.title,
+    app_id=excluded.app_id,
+    username=excluded.username,
+    page_path=excluded.page_path,
+    thumb_url=excluded.thumb_url,
+    cover_file_aes_key=excluded.cover_file_aes_key,
+    cover_file_id=excluded.cover_file_id,
+    cover_file_size=excluded.cover_file_size,
+    desc=excluded.desc,
+    raw_payload=excluded.raw_payload,
+    updated_at=excluded.updated_at`).run(
+      doctorId, code, sourceType, sourcePage, sourceShortLink,
+      card.title, card.appId, card.username, card.pagePath, card.thumbUrl,
+      card.coverFileAesKey, card.coverFileId, Number(card.coverFileSize) || 0,
+      card.desc, raw, new Date().toISOString()
+    );
+  const saved = loadWeappTemplate(doctorId, code);
+  if(saved && saved.ready && saved.sourceShortLink) hydrateRelatedTemplates(doctorId, saved);
+  return loadWeappTemplate(doctorId, code);
+}
+
+function rowToWeappTemplate(row){
+  if(!row) return null;
+  const card = {
+    id:row.id,
+    doctorId:row.doctor_id,
+    code:row.code,
+    sourceType:row.source_type || "",
+    sourcePage:row.source_page || "",
+    sourceShortLink:row.source_short_link || "",
+    title:row.title || "",
+    appId:row.app_id || "",
+    username:row.username || "",
+    pagePath:row.page_path || "",
+    thumbUrl:row.thumb_url || "",
+    coverFileAesKey:row.cover_file_aes_key || "",
+    coverFileId:row.cover_file_id || "",
+    coverFileSize:Number(row.cover_file_size) || 0,
+    desc:row.desc || "",
+    updatedAt:row.updated_at || ""
+  };
+  card.missing = missingWeappFields(card);
+  card.ready = card.missing.length === 0;
+  return card;
+}
+
+function loadWeappTemplate(doctorId, code){
+  const row = db.prepare("SELECT * FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?").get(Number(doctorId), clean(code, 40));
+  return rowToWeappTemplate(row);
+}
+
+function loadWeappTemplates(doctorId){
+  return db.prepare("SELECT * FROM qiwe_weapp_templates WHERE doctor_id=? ORDER BY code").all(Number(doctorId)).map(rowToWeappTemplate);
+}
+
+function cardLikeResponses(responses){
+  return (Array.isArray(responses) ? responses : [])
+    .map((r, i)=>({ r, i }))
+    .filter(({ r })=>r && ["mp", "link", "image", "qr", "popup"].includes(r.type));
+}
+
+function preferredCardForRule(responses){
+  const cards = cardLikeResponses(responses);
+  return cards.find(x=>x.r.type === "mp" && x.r.external && x.r.external.shortLink)
+    || cards.find(x=>x.r.external && x.r.external.shortLink)
+    || cards.find(x=>x.r.type === "mp")
+    || cards[0]
+    || ((Array.isArray(responses) && responses[0]) ? { r:responses[0], i:0 } : null)
+    || null;
+}
+
+function templateSeedFromRule(code, response){
+  response = response || {};
+  const ext = response.external || {};
+  const title = clean(response.title || response.name || response.modal || response.page || code, 180);
+  const fallback = {
+    title,
+    desc:response.sub || ext.shortLinkScope || ext.label || "",
+    appId:ext.appId || "",
+    username:ext.username || ext.originalId || "",
+    pagePath:ext.path || (ext.pathTemplate && !/\{[^}]+\}/.test(ext.pathTemplate) ? ext.pathTemplate : "")
+  };
+  return {
+    sourceType:[response.type || "card", ext.mode || ""].filter(Boolean).join(":"),
+    sourcePage:response.page || ext.service || ext.label || "",
+    sourceShortLink:ext.shortLink || response.shortLink || "",
+    card:fallback
+  };
+}
+
+function upsertWeappPlaceholder(doctorId, code, response){
+  const seed = templateSeedFromRule(code, response);
+  const existing = db.prepare("SELECT * FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?").get(Number(doctorId), code);
+  const ready = existing && rowToWeappTemplate(existing).ready;
+  const hasCapturedPayload = !!(existing && existing.raw_payload);
+  const title = (ready || hasCapturedPayload) && existing.title ? existing.title : seed.card.title;
+  const desc = (ready || hasCapturedPayload) && existing.desc ? existing.desc : seed.card.desc;
+  const appId = existing && existing.app_id ? existing.app_id : seed.card.appId;
+  const username = existing && existing.username ? existing.username : seed.card.username;
+  const pagePath = existing && existing.page_path ? existing.page_path : seed.card.pagePath;
+  const thumbUrl = existing && existing.thumb_url ? existing.thumb_url : "";
+  const aesKey = existing && existing.cover_file_aes_key ? existing.cover_file_aes_key : "";
+  const fileId = existing && existing.cover_file_id ? existing.cover_file_id : "";
+  const fileSize = existing && existing.cover_file_size ? existing.cover_file_size : 0;
+  db.prepare(`INSERT INTO qiwe_weapp_templates(
+    doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  ON CONFLICT(doctor_id, code) DO UPDATE SET
+    source_type=excluded.source_type,
+    source_page=excluded.source_page,
+    source_short_link=excluded.source_short_link,
+    title=excluded.title,
+    app_id=excluded.app_id,
+    username=excluded.username,
+    page_path=excluded.page_path,
+    thumb_url=excluded.thumb_url,
+    cover_file_aes_key=excluded.cover_file_aes_key,
+    cover_file_id=excluded.cover_file_id,
+    cover_file_size=excluded.cover_file_size,
+    desc=excluded.desc,
+    updated_at=excluded.updated_at`).run(
+      Number(doctorId), code, seed.sourceType, seed.sourcePage, seed.sourceShortLink,
+      title, appId, username, pagePath, thumbUrl, aesKey, fileId, Number(fileSize) || 0,
+      desc, existing ? (existing.raw_payload || "") : "", new Date().toISOString()
+    );
+  return loadWeappTemplate(doctorId, code);
+}
+
+function syncWeappTemplatesFromRules(doctorId){
+  const rows = db.prepare("SELECT code,responses FROM rules WHERE doctor_id=? AND enabled=1 ORDER BY sort").all(Number(doctorId));
+  const synced = [];
+  for(const row of rows){
+    let responses = [];
+    try{ responses = JSON.parse(row.responses || "[]"); }catch(e){}
+    const card = preferredCardForRule(responses);
+    if(card) synced.push(upsertWeappPlaceholder(doctorId, row.code, card.r));
+  }
+  return synced;
+}
+
+function hydrateRelatedTemplates(doctorId, sourceTemplate){
+  if(!sourceTemplate || !sourceTemplate.sourceShortLink) return 0;
+  const updates = db.prepare(`UPDATE qiwe_weapp_templates SET
+    title=CASE WHEN code IN ('102','301','404') THEN ? ELSE title END,
+    desc=CASE WHEN code IN ('102','301','404') THEN ? ELSE desc END,
+    app_id=?,
+    username=?,
+    page_path=?,
+    thumb_url=?,
+    cover_file_aes_key=?,
+    cover_file_id=?,
+    cover_file_size=?,
+    updated_at=?
+    WHERE doctor_id=? AND source_short_link=? AND code<>?
+      AND COALESCE(raw_payload,'')=''`);
+  const r = updates.run(
+    sourceTemplate.title,
+    sourceTemplate.desc,
+    sourceTemplate.appId,
+    sourceTemplate.username,
+    sourceTemplate.pagePath,
+    sourceTemplate.thumbUrl,
+    sourceTemplate.coverFileAesKey,
+    sourceTemplate.coverFileId,
+    Number(sourceTemplate.coverFileSize) || 0,
+    new Date().toISOString(),
+    Number(doctorId),
+    sourceTemplate.sourceShortLink,
+    sourceTemplate.code
+  );
+  return r.changes || 0;
+}
+
+function publicWeappTemplates(doctorId){
+  syncWeappTemplatesFromRules(doctorId);
+  return loadWeappTemplates(doctorId).map(t=>({
+    code:t.code,
+    title:t.title,
+    sourceType:t.sourceType,
+    sourcePage:t.sourcePage,
+    sourceShortLink:t.sourceShortLink,
+    ready:t.ready,
+    missing:t.missing || [],
+    updatedAt:t.updatedAt || ""
+  }));
+}
+
+function isConfigured(){
+  const c = loadConfig();
+  return !!(c.enabled && c.token && c.guid);
+}
+
+function postJson(url, body, headers){
+  // 图片发送方法级兜底（纵深·codex 第四/五轮反例修）：/msg/sendImage 是实验能力，即便有人直调 postJson 拼 sendImage body
+  // 也须过 QIWE_SENDIMAGE_EXPERIMENTAL 门（真相源=模块常量 DRY_RUN·不读运行时 env）。只特判该方法——
+  // 不影响 postJson 通用用途（超时测试发 {a:1}、明文告警测试等 method 非 sendImage 的调用一律照常）。
+  // 第五轮类型混淆修：闸检查的 method 必须 = 实际序列化上线的 method。旧写法闸读活属性 body.method（boxed String
+  // `new String('/msg/sendImage')` !== 原始串、或 getter/toJSON 首求值返非图片），而上线走 JSON.stringify(body) 再次求值
+  // → 「检查值 ≠ 发出值」绕过闸真发图。故此处**序列化一次**（getter/toJSON 只求值这一次）→ 闸从序列化结果解析出的
+  // method 判定（= 实际发出的 method）→ Promise 内复用同一串上线（不再二次 JSON.stringify），杜绝检查/发出脱节。
+  const bodyStr = JSON.stringify(body);
+  if(roomWriteBlocked(DRY_RUN, sendImageExperimentalOn())){
+    let m; try{ m = JSON.parse(bodyStr).method; }catch(_){ m = undefined; }
+    if(m === "/msg/sendImage") throw new Error("图片发送未启用：设 QIWE_SENDIMAGE_EXPERIMENTAL=1 显式开启");
+  }
+  return new Promise((resolve, reject)=>{
+    // 超时调用时读（便于测试设短值）：env 优先，缺省回落 HTTP_TIMEOUT_MS(10s)。
+    const ms = Number(process.env.QIWE_HTTP_TIMEOUT_MS) > 0 ? Number(process.env.QIWE_HTTP_TIMEOUT_MS) : HTTP_TIMEOUT_MS;
+    let done = false, timer = null;
+    const clear = ()=>{ if(timer){ clearTimeout(timer); timer = null; } };
+    const finish = (v)=>{ if(done) return; done = true; clear(); resolve(v); };
+    const fail = (e)=>{ if(done) return; done = true; clear(); reject(e); };
+    const u = new URL(url);
+    const data = Buffer.from(bodyStr);   // 复用上面那一次序列化的结果（不再二次 JSON.stringify(body)）：闸(JSON.parse(bodyStr).method)与上线(Buffer.from(bodyStr))逐字节同源
+    const mod = u.protocol === "https:" ? https : http;
+    const req = mod.request({
+      method:"POST",
+      hostname:u.hostname,
+      port:u.port || (u.protocol === "https:" ? 443 : 80),
+      path:u.pathname + u.search,
+      headers:Object.assign({
+        "Content-Type":"application/json",
+        "Content-Length":data.length
+      }, headers || {})
+    }, r=>{
+      let raw = "";
+      r.on("data", c=>raw += c);
+      r.on("end", ()=>{
+        let parsed = null;
+        try{ parsed = raw ? JSON.parse(raw) : {}; }
+        catch(e){ return fail(new Error("QiWe 返回非 JSON：" + raw.slice(0, 160))); }
+        if(r.statusCode < 200 || r.statusCode >= 300) return fail(new Error("QiWe HTTP " + r.statusCode));
+        finish(parsed);
+      });
+    });
+    req.on("error", fail);
+    // 修：绝对总时限（wall-clock），不依赖 socket 活动 → 到点无条件 destroy + reject；挡住"慢滴流/返回头后永不 end"的永久挂起。
+    timer = setTimeout(()=>{ try{ req.destroy(new Error("qiwe http timeout")); }catch(_){} fail(new Error("qiwe http timeout")); }, ms);
+    // socket 空闲超时作兜底（绝对计时器是主）。
+    req.setTimeout(ms, ()=>req.destroy(new Error("qiwe http timeout")));
+    req.write(data);
+    req.end();
+  });
+}
+
+// 明文 token 传输告警（实测/生产排障用）：endpoint 非 https 时首次调用 warn 一次，模块级 flag 防刷屏；不阻断、不改默认行为。
+// 判定口径严格 = postJson 真发口径：postJson 是 `protocol==="https:" ? https : http`，即「凡非 https 一律走 http 库明文发」。
+// 故这里也用同款 new URL() 解析 +「非 https 即明文」(规范化前导空白/大小写，杜绝「" http://…"」绕过、覆盖非 http 非 https 的 endpoint)；解析失败=postJson 也会抛错不发 → 返 false 不告警。
+function isCleartextEndpoint(url){
+  try{ return new URL(url).protocol !== "https:"; }catch(e){ return false; }
+}
+let warnedHttp = false;
+function warnHttpOnce(url){
+  if(warnedHttp) return;
+  if(isCleartextEndpoint(url)){
+    warnedHttp = true;
+    console.warn("[qiwe] QiWe endpoint 经明文（非 https）传输 token，生产应配 https（QIWE_API_URL / 后台 api_url）：" + clean(url, 120));
+  }
+}
+
+/* 零依赖手搓 multipart/form-data POST（图片上传专用，api-344613929 本地文件上传）。
+   超时/http-vs-https 解析/明文告警口径与 postJson 完全同源（照抄那套 wall-clock 绝对计时器为主 + socket 空闲兜底）：
+   ① new URL() 解析 + protocol==="https:"?https:http（非 https 即明文，与 postJson/isCleartextEndpoint 一致）；
+   ② setTimeout 绝对总时限到点无条件 destroy+reject（挡"返回头后永不 end"永久挂起）；③ req.setTimeout socket 兜底。
+   body 构造：boundary 随机、每个 textField 一段（Content-Disposition: form-data; name="x"）、file 段带 filename+Content-Type + 二进制字节、结尾 --boundary--。
+   Content-Type: multipart/form-data; boundary=...；Content-Length = body 字节长度。返回解析后 JSON。 */
+function buildMultipartBody(textFields, fileField, boundary){
+  const CRLF = "\r\n";
+  const parts = [];
+  const tf = textFields || {};
+  for(const k of Object.keys(tf)){
+    parts.push(Buffer.from(
+      "--" + boundary + CRLF +
+      'Content-Disposition: form-data; name="' + k + '"' + CRLF + CRLF +
+      String(tf[k] == null ? "" : tf[k]) + CRLF
+    ));
+  }
+  if(fileField && fileField.buffer){
+    const name = fileField.name || "file";
+    const filename = String(fileField.filename || "file");
+    const ctype = fileField.contentType || "application/octet-stream";
+    parts.push(Buffer.from(
+      "--" + boundary + CRLF +
+      'Content-Disposition: form-data; name="' + name + '"; filename="' + filename + '"' + CRLF +
+      "Content-Type: " + ctype + CRLF + CRLF
+    ));
+    parts.push(Buffer.isBuffer(fileField.buffer) ? fileField.buffer : Buffer.from(fileField.buffer));
+    parts.push(Buffer.from(CRLF));
+  }
+  parts.push(Buffer.from("--" + boundary + "--" + CRLF));
+  return Buffer.concat(parts);
+}
+
+function postMultipart(url, textFields, fileField, headers){
+  return new Promise((resolve, reject)=>{
+    const ms = Number(process.env.QIWE_HTTP_TIMEOUT_MS) > 0 ? Number(process.env.QIWE_HTTP_TIMEOUT_MS) : HTTP_TIMEOUT_MS;
+    let done = false, timer = null;
+    const clear = ()=>{ if(timer){ clearTimeout(timer); timer = null; } };
+    const finish = (v)=>{ if(done) return; done = true; clear(); resolve(v); };
+    const fail = (e)=>{ if(done) return; done = true; clear(); reject(e); };
+    const boundary = "----qiwe" + Date.now().toString(16) + Math.random().toString(16).slice(2, 10);
+    const data = buildMultipartBody(textFields, fileField, boundary);
+    let u;
+    try{ u = new URL(url); }catch(e){ return fail(new Error("QiWe 上传 URL 非法：" + clean(url, 120))); }
+    const mod = u.protocol === "https:" ? https : http;
+    const req = mod.request({
+      method:"POST",
+      hostname:u.hostname,
+      port:u.port || (u.protocol === "https:" ? 443 : 80),
+      path:u.pathname + u.search,
+      headers:Object.assign({
+        "Content-Type":"multipart/form-data; boundary=" + boundary,
+        "Content-Length":data.length
+      }, headers || {})
+    }, r=>{
+      let raw = "";
+      r.on("data", c=>raw += c);
+      r.on("end", ()=>{
+        let parsed = null;
+        try{ parsed = raw ? JSON.parse(raw) : {}; }
+        catch(e){ return fail(new Error("QiWe 上传返回非 JSON：" + raw.slice(0, 160))); }
+        if(r.statusCode < 200 || r.statusCode >= 300) return fail(new Error("QiWe 上传 HTTP " + r.statusCode));
+        finish(parsed);
+      });
+    });
+    req.on("error", fail);
+    timer = setTimeout(()=>{ try{ req.destroy(new Error("qiwe http timeout")); }catch(_){} fail(new Error("qiwe http timeout")); }, ms);
+    req.setTimeout(ms, ()=>req.destroy(new Error("qiwe http timeout")));
+    req.write(data);
+    req.end();
+  });
+}
+
+/* 从 doApi 端点派生 doFileApi 端点：结尾 /doApi → /doFileApi（稳妥用字符串替换 + 兜底默认常量）。
+   cfg.apiUrl 常见 = .../qw/doApi；替换末段即可。无 /doApi 结尾（异常配置）→ 回落 DEFAULT_FILE_API_URL，绝不猜。 */
+function fileApiUrl(cfg){
+  const base = (cfg && cfg.apiUrl) || DEFAULT_API_URL;
+  if(/\/doApi(\?|$)/.test(base)) return base.replace(/\/doApi(\?|$)/, "/doFileApi$1");
+  return DEFAULT_FILE_API_URL;
+}
+
+async function doApi(method, params, cfg){
+  cfg = cfg || loadConfig();
+  if(!cfg.token) throw new Error("缺少 QiWe Token");
+  if(!cfg.guid) throw new Error("缺少 QiWe 实例 GUID");
+  const body = { method, params:Object.assign({ guid:cfg.guid }, params || {}) };
+  if(DRY_RUN){
+    console.log("[qiwe][DRY_RUN]", method, "->", clean((params && (params.toId || params.roomId || params.userId)) || "", 80), clean((params && (params.content || params.title)) || "", 120));
+    return { code:0, msg:"dry_run", data:{ dryRun:true, method, params:body.params } };
+  }
+  // 图片发送方法级护栏（纵深·codex 反例修）：/msg/sendImage 是实验能力，直调 doApi 也须过 QIWE_SENDIMAGE_EXPERIMENTAL 门。
+  // 与 sendImage/uploadImage 同源 roomWriteBlocked(真相源=模块常量 DRY_RUN)；DRY_RUN 已在上方返桩走不到此。
+  // 说明：sendText/sendWeapp 等既有 method 是 V1 常规操作不门控(仅本图片实验能力门控)，故只特判 /msg/sendImage。
+  // 第五轮类型混淆修：String(method) 归一化 boxed String（new String('/msg/sendImage') 被 String() 归一化为原始串），
+  // 防 doApi 直调传 boxed method 绕过本闸；doApi 构造 body 后仍走 postJson 权威闸兜底。
+  if(String(method) === "/msg/sendImage" && roomWriteBlocked(DRY_RUN, sendImageExperimentalOn()))
+    throw new Error("图片发送未启用：设 QIWE_SENDIMAGE_EXPERIMENTAL=1 显式开启");
+  const apiUrl = cfg.apiUrl || DEFAULT_API_URL;
+  warnHttpOnce(apiUrl);   // 明文 http 传 token 告警（首次一次，不阻断、不改默认）
+  const res = await postJson(apiUrl, body, {
+    "X-QIWEI-TOKEN":cfg.token
+  });
+  const code = Number(res && res.code);
+  if(Number.isFinite(code) && code !== 0 && code !== 200) throw new Error("QiWe 调用失败：" + code + " " + clean(res.msg, 200));
+  return res;
+}
+
+async function sendText(toId, content, cfg){
+  const target = clean(toId, 80);
+  const text = clean(content, 3600);
+  if(!target) throw new Error("缺少 QiWe 接收方 ID");
+  if(!text) throw new Error("发送内容为空");
+  return doApi("/msg/sendText", { toId:target, content:text, isNoNeedRead:true }, cfg);
+}
+
+function normalizeLinkCard(input){
+  const v = input || {};
+  const ext = v.external || {};
+  return {
+    title:clean(v.title || ext.label || ext.title || "相关链接", 120),
+    desc:clean(v.desc || v.sub || v.source || ext.service || ext.provider || ext.note || "", 240),
+    iconUrl:clean(v.iconUrl || v.icon_url || v.thumbUrl || v.thumb_url || v.coverUrl || ext.iconUrl || ext.icon_url || ext.coverUrl || "", 1000),
+    linkUrl:clean(v.linkUrl || v.link_url || v.url || ext.url || ext.urlLink || ext.linkUrl || ext.link_url || "", 1000)
+  };
+}
+
+async function sendLink(toId, card, cfg){
+  const target = clean(toId, 80);
+  const c = normalizeLinkCard(card);
+  if(!target) throw new Error("缺少 QiWe 接收方 ID");
+  if(!c.title) throw new Error("链接卡片标题为空");
+  if(!/^https?:\/\//i.test(c.linkUrl)) throw new Error("链接卡片 URL 非 http(s)");
+  return doApi("/msg/sendLink", {
+    toId:target,
+    title:c.title,
+    iconUrl:c.iconUrl,
+    linkUrl:c.linkUrl,
+    desc:c.desc
+  }, cfg);
+}
+
+async function sendWeapp(toId, card, cfg){
+  const target = clean(toId, 80);
+  if(!target) throw new Error("缺少 QiWe 接收方 ID");
+  const c = normalizeWeappCard(card);
+  const missing = missingWeappFields(c);
+  if(missing.length) throw new Error("小程序卡片模板字段不完整：" + missing.join("、"));
+  return doApi("/msg/sendWeapp", {
+    toId:target,
+    appId:c.appId,
+    coverFileAesKey:c.coverFileAesKey,
+    coverFileId:c.coverFileId,
+    coverFileSize:Number(c.coverFileSize),
+    desc:c.desc || c.title,
+    pagePath:c.pagePath,
+    thumbUrl:c.thumbUrl,
+    title:c.title,
+    username:c.username
+  }, cfg);
+}
+
+/* 图片上传（api-344613929「本地文件上传」）：POST {doFileApi} multipart/form-data，
+   表单字段 method=/cloud/cdnBigUpload、guid、fileType=1(jpg图片)、file=<二进制字节>；header X-QIWEI-TOKEN。
+   响应 data 含 sendImage 所需的 fileAesKey、DER fileId(306...)、fileMd5、fileSize。
+   DRY_RUN（模块常量）→ 返回桩不真传（fileAesKey/fileId/fileMd5=[dry]、fileSize=buffer 长度），离线可测；
+   否则真传后校验 data 有 fileAesKey/fileId/fileMd5/fileSize，缺则抛错（fail-closed，不把朋友圈 /sns/upload 响应误喂给 sendImage）。 */
+async function uploadImage(buffer, filename, cfg){
+  cfg = cfg || loadConfig();
+  const buf = Buffer.isBuffer(buffer) ? buffer : (buffer ? Buffer.from(buffer) : null);
+  if(DRY_RUN){
+    console.log("[qiwe][DRY_RUN] uploadImage ->", clean(filename, 80), buf ? buf.length + "B" : "0B");
+    return { code:0, msg:"dry_run", data:{ dryRun:true, fileAesKey:"[dry]", fileId:"[dry]", fileMd5:"[dry]", fileSize:buf ? buf.length : 0 } };
+  }
+  // 护栏 fail-closed（同 sendImage/roomWriteBlocked 语义，真相源=模块常量 DRY_RUN·不读运行时 env）：
+  // 非 DRY_RUN + 开关未开 → 拦。纵深防御：uploadImage 被导出可直调，绕过 sendImage 自门控直传 doFileApi（codex 抓的洞）。
+  // DRY_RUN 已在上方返桩走不到此处；开关开放行（本人真机测试）。
+  if(roomWriteBlocked(DRY_RUN, sendImageExperimentalOn()))
+    throw new Error("图片上传未启用：设 QIWE_SENDIMAGE_EXPERIMENTAL=1 显式开启，防意外真传");
+  if(!cfg.token) throw new Error("缺少 QiWe Token");
+  if(!cfg.guid) throw new Error("缺少 QiWe 实例 GUID");
+  if(!buf || !buf.length) throw new Error("上传图片字节为空");
+  const url = fileApiUrl(cfg);
+  warnHttpOnce(url);   // 明文 http 传 token 告警（与 doApi 同源，首次一次，不阻断）
+  const res = await postMultipart(url, {
+    method:"/cloud/cdnBigUpload",
+    guid:cfg.guid,
+    fileType:1
+  }, { name:"file", filename:clean(filename, 160) || "image.jpg", buffer:buf, contentType:"image/jpeg" }, {
+    "X-QIWEI-TOKEN":cfg.token
+  });
+  const code = Number(res && res.code);
+  if(Number.isFinite(code) && code !== 0 && code !== 200) throw new Error("QiWe 上传失败：" + code + " " + clean(res && res.msg, 200));
+  const d = (res && res.data) || {};
+  const fileAesKey = d.fileAesKey || d.fileAeskey;
+  if(!fileAesKey || !d.fileId || !d.fileMd5 || !(Number(d.fileSize) > 0))
+    throw new Error("QiWe 上传响应缺字段（fileAesKey/fileId/fileMd5/fileSize）");
+  return res;
+}
+
+/* 图片 URL 上传（api-425758709「文件上传-URL」）：作为本地 /cloud/cdnBigUpload 的兜底。
+   qiweapi 本地上传在真实环境可能返回上游 i/o timeout；若素材已有公网 https URL，则用本接口换取同样的
+   fileAesKey + DER fileId + fileMd5 + fileSize，再交给 /msg/sendImage。 */
+async function uploadImageByUrl(fileUrl, filename, cfg){
+  cfg = cfg || loadConfig();
+  const url = clean(fileUrl, 1000);
+  if(DRY_RUN){
+    console.log("[qiwe][DRY_RUN] uploadImageByUrl ->", clean(filename, 80), clean(url, 120));
+    return { code:0, msg:"dry_run", data:{ dryRun:true, fileAesKey:"[dry]", fileId:"[dry]", fileMd5:"[dry]", fileSize:0, filename:clean(filename, 160) || "image.jpg", cloudUrl:url } };
+  }
+  if(roomWriteBlocked(DRY_RUN, sendImageExperimentalOn()))
+    throw new Error("图片 URL 上传未启用：设 QIWE_SENDIMAGE_EXPERIMENTAL=1 显式开启，防意外真传");
+  if(!/^https?:\/\//i.test(url)) throw new Error("图片 URL 非 http(s)");
+  const res = await doApi("/cloud/cdnBigUploadByUrl", {
+    filename:clean(filename, 160) || "image.jpg",
+    fileUrl:url,
+    fileType:1
+  }, cfg);
+  const d = (res && res.data) || {};
+  const fileAesKey = d.fileAesKey || d.fileAeskey;
+  if(!fileAesKey || !d.fileId || !d.fileMd5 || !(Number(d.fileSize) > 0))
+    throw new Error("QiWe URL 上传响应缺字段（fileAesKey/fileId/fileMd5/fileSize）");
+  return res;
+}
+
+/* 图片消息发送（api-344613915「发送图片消息」）：先 uploadImage 换 fileAesKey/fileId/fileMd5/fileSize，
+   再 doApi(/msg/sendImage, {toId, fileAesKey:up.fileAesKey, fileId:up.fileId, fileMd5, fileSize(整数), filename})。
+   护栏（照 createRoom/roomWriteBlocked 那套，真相源=模块常量 DRY_RUN·不读运行时 env）：非 DRY_RUN 且 QIWE_SENDIMAGE_EXPERIMENTAL 未开 → 抛错拦截；
+   DRY_RUN 放行（uploadImage 返桩 + doApi 返桩，各自处理，sendImage 不另判 DRY_RUN）、开关开放行（本人真机测试）。
+   不放宽任何既有真发白名单——本函数只负责"怎么发一张图"，接主投递时真发目标仍受 testToId/idAllowed 约束（不在本函数）。 */
+async function sendImage(toId, image, cfg){
+  const target = clean(toId, 80);
+  image = image || {};
+  const buf = Buffer.isBuffer(image.buffer) ? image.buffer : (image.buffer ? Buffer.from(image.buffer) : null);
+  const fileUrl = clean(image.fileUrl || image.url, 1000);
+  if(!target) throw new Error("缺少 QiWe 接收方 ID");
+  if((!buf || !buf.length) && !fileUrl) throw new Error("图片字节为空");
+  // 护栏 fail-closed（同 roomWriteBlocked 语义）：非 DRY_RUN + 开关未开 → 拦，防意外真发图。
+  if(roomWriteBlocked(DRY_RUN, sendImageExperimentalOn()))
+    throw new Error("图片真发未启用：设 QIWE_SENDIMAGE_EXPERIMENTAL=1 显式开启，防意外真发图");
+  const filename = clean(image.filename, 160) || "image.jpg";
+  let up;
+  if(buf && buf.length){
+    try{
+      up = await uploadImage(buf, filename, cfg);
+    }catch(e){
+      if(!fileUrl) throw e;
+      console.warn("[qiwe] uploadImage 本地上传失败，尝试 URL 上传兜底：", filename, "-", e.message);
+      up = await uploadImageByUrl(fileUrl, filename, cfg);
+    }
+  }else{
+    up = await uploadImageByUrl(fileUrl, filename, cfg);
+  }
+  const d = (up && up.data) || {};
+  const fileAesKey = d.fileAesKey || d.fileAeskey;
+  return doApi("/msg/sendImage", {
+    toId:target,
+    fileAesKey,
+    fileId:d.fileId,
+    fileMd5:d.fileMd5,
+    fileSize:Number(d.fileSize) || 0,
+    filename
+  }, cfg);
+}
+
+function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+
+/* @所有人真发开关（实验性，默认关）：仅当 QIWE_ATALL_EXPERIMENTAL=1 才允许走 sendHyperText 真发 @；
+   运行时读 env（便于切换/测试），默认 OFF → 派发层回落 sendText（正文已含字面"@所有人"作可见兜底）。 */
+function atallExperimentalOn(){ return process.env.QIWE_ATALL_EXPERIMENTAL === "1"; }
+
+/* @指定成员真发开关（实验性，默认关）：仅当 QIWE_ATMEMBER_EXPERIMENTAL=1 才允许派发层走 sendHyperText 带 @指定成员。
+   与 @所有人开关独立——@指定成员/@所有人 爆炸半径与语义不同，分开控，运营可单独启停。
+   注：本开关供 Round 2 派发接线消费；sendHyperText 本身只负责「怎么拼 @ 段」，不自门控（与 atAll 一致）。 */
+function atMemberExperimentalOn(){ return process.env.QIWE_ATMEMBER_EXPERIMENTAL === "1"; }
+
+/* 混合文本（支持 @所有人 / @指定成员）。经 doApi、尊重 DRY_RUN、不动 sendText/sendWeapp。
+   段格式与顺序按官方文档/示例订正（qiweapi api-344613914「发送混合文本消息」逐字原文）：
+     content[].subtype：=0 普通文本（text=正文）；=1 @人（text=对方 userId；text="" 即 @所有人）；=2 系统表情。
+     官方示例段顺序为「@段在前、正文段在后」（示例：[{subtype:2,..},{subtype:1,text:""},{subtype:0,text:" 我是智能客服"}]），
+     故本函数先拼 @ 段（先 @指定成员、再 @所有人），最后拼正文段。
+   @指定成员段 {subtype:1,text:userId}、@所有人段 {subtype:1,text:""} 均依官方文档确认；
+   正文段 {subtype:0,text:正文} 2026-06-29 已真机验证（HANDOFF:153，本人测试群 content=[{subtype:1,text:userId},{subtype:0,正文}] 渲染成「@姓名+正文」正常），失败仍回落 sendText。 */
+async function sendHyperText(toId, text, opts, cfg){
+  opts = opts || {};
+  const target = clean(toId, 80);
+  const body = clean(text, 3600);
+  if(!target) throw new Error("缺少 QiWe 接收方 ID");
+  if(!body) throw new Error("发送内容为空");
+  // 按官方示例顺序：先 @ 段（先 @指定成员、再 @所有人），最后正文段。
+  const content = [];
+  const atUserIds = Array.isArray(opts.atUserIds) ? opts.atUserIds : [];
+  for(const uid of atUserIds){
+    const u = clean(uid, 80);                              // 与现有一致清洗；空/空白跳过，不臆造空 @ 段
+    if(u) content.push({ subtype:1, text:u });            // @指定成员（text=对方 userId，官方文档确认）
+  }
+  if(opts.atAll) content.push({ subtype:1, text:"" });    // @所有人（text="" 即全员，官方文档确认）
+  content.push({ subtype:0, text:body });                 // 正文段（2026-06-29 已真机验证，HANDOFF:153；失败仍回落 sendText）
+  return doApi("/msg/sendHyperText", { toId:target, content }, cfg);
+}
+
+/* 群内语音转文字（两步：apply→voiceId，query 轮询到 isEnd 取最终 text）。
+   DRY_RUN 直接返回桩文本不真调（msgServerId 含 empty/noasr 时返回空，便于测兜底）；
+   有界轮询：最多 6 次、间隔 500ms、超时返回空不卡死。字段名 voiceId/text/isEnd 为文档给定，
+   仅对响应包裹层（res 顶层 or res.data）做防御性取值，不臆造字段名。 */
+async function voiceToText(msgServerId, cfg){
+  const sid = clean(msgServerId, 160);
+  if(!sid) return "";
+  if(DRY_RUN) return /noasr|empty/i.test(sid) ? "" : "[DRY_RUN语音转写] 我想咨询一下复查的事";
+  let voiceId = "";
+  try{
+    const ap = await doApi("/msg/voiceToTextApply", { msgServerId:sid }, cfg);
+    const ad = (ap && ap.data) || ap || {};
+    voiceId = clean(ad.voiceId || ad.voiceID || "", 160);
+  }catch(e){ return ""; }
+  if(!voiceId) return "";
+  const MAX = 6, INTERVAL = 500;
+  for(let i = 0; i < MAX; i++){
+    try{
+      const q = await doApi("/msg/voiceToTextQuery", { msgServerId:sid, voiceId }, cfg);
+      const qd = (q && q.data) || q || {};
+      const text = clean(qd.text || "", 1000);
+      const isEnd = qd.isEnd === true || qd.isEnd === 1 || qd.isEnd === "1";
+      if(isEnd) return text;
+      if(text && i === MAX - 1) return text;   // 末次即便未 isEnd 也取已有文本
+    }catch(e){ /* 单次查询失败：继续轮询 */ }
+    await sleep(INTERVAL);
+  }
+  return "";   // 超时不卡死
+}
+
+/* ===== 群管理能力层（建群/改名/群活码/拉人）。全部复用 doApi 样板：同 endpoint /api/qw/doApi、
+   同 header X-QIWEI-TOKEN、同 DRY_RUN 处理、同 cfg/guid 取法（guid 由 doApi 统一注入 params）、同错误处理。
+   method 字符串照抄 qiweapi 官方文档，不改不猜。本批仅能力层 + DRY_RUN 离线测试：不接主流程、不自动建群
+   （何时自动建 = 后续编排，不在本批）。真建群/真拉人副作用重且难撤销 → createRoom/inviteRoomMember
+   自带护栏（cc1 裁定）：非 DRY_RUN 且实验开关未开即抛错；modifyRoomName(改已建群名)/getRoomQrCode(只读)低危不门控。 ===== */
+
+/* 真实建群/拉人实验开关（默认关）：仿 atallExperimentalOn/atMemberExperimentalOn（运行时读 env）。
+   createRoom/inviteRoomMember 自门控消费它；后续编排/派发层真发前也应再过此闸。
+   注：QIWE_DRY_RUN 默认是「关」（即默认真发），故真建群/真拉人不靠"调用方记得开 DRY_RUN"，
+   而靠此开关默认关 + 自门控 fail-closed —— 防"配了 token 的环境忘开 DRY_RUN 一次误调就真建群/真骚扰"。 */
+function createRoomExperimentalOn(){ return process.env.QIWE_CREATEROOM_EXPERIMENTAL === "1"; }
+
+/* 图片真发实验开关（默认关）：仿 createRoomExperimentalOn（运行时读 env）。sendImage 自门控消费它（见下）；
+   818 海报接线/派发层真发前也应再过此闸。真图片发送=向真实联系人/群发媒体，副作用可见且难撤销 →
+   靠此开关默认关 + 自门控 fail-closed，防"配了 token 的环境忘开 DRY_RUN 一次误调就真发图"。 */
+function sendImageExperimentalOn(){ return process.env.QIWE_SENDIMAGE_EXPERIMENTAL === "1"; }
+
+/* 真发写操作护栏（纯函数，便于单测）：非 DRY_RUN（doApi 会真发）且实验开关未开 → 拦(true)；其余放行(false)。
+   真相源 = 模块常量 DRY_RUN（本文件第 9 行，与 doApi 同源），**不读运行时 process.env** —— 杜绝
+   「启动真发模式 + 运行时把 env 改成 DRY_RUN」绕过自门控（codex 复核抓出的洞）。
+   恒等保证：门控放行 ⟺ doApi 真发，二者同源不脱节。 */
+function roomWriteBlocked(dryRun, expOn){ return !dryRun && !expOn; }
+
+/* 群成员 userId 列表清洗：去空 + 去重 + 单项截断（参照 sendHyperText 里 atUserIds 的 clean(uid,80)）。
+   建群/拉人共用，避免空串/重复 userId 进 params。 */
+function cleanMemberList(list){
+  const seen = new Set();
+  const out = [];
+  for(const v of (Array.isArray(list) ? list : [])){
+    const u = clean(v, 80);
+    if(u && !seen.has(u)){ seen.add(u); out.push(u); }
+  }
+  return out;
+}
+
+/* 建群：method=/room/createRoom；params{ guid(doApi 注入), isOuterRoom, memberList }。返回含新群 roomId。
+   isOuterRoom 默认 1=外部群（含外部联系人），传 0=内部群；按官方为整数。 */
+async function createRoom(memberList, opts, cfg){
+  opts = opts || {};
+  // 自门控护栏（cc1 裁定 + codex 修）：真建群=建真实企微群，副作用重且难撤销。真相源 = 模块常量 DRY_RUN
+  // （与 doApi 同源，不读运行时 env）：非 DRY_RUN（doApi 会真发）且实验开关未开即抛错 —— 防"配了 token 的环境忘开 DRY_RUN 误调就真建群"。
+  // DRY_RUN 放行（离线测试不受影响）、开关开放行（本人真机测试）。
+  if(roomWriteBlocked(DRY_RUN, createRoomExperimentalOn()))
+    throw new Error("真建群未启用：设 QIWE_CREATEROOM_EXPERIMENTAL=1 显式开启，防意外真建群");
+  const members = cleanMemberList(memberList);
+  if(!members.length) throw new Error("建群成员列表为空");
+  const isOuterRoom = Number.isFinite(Number(opts.isOuterRoom)) ? Math.trunc(Number(opts.isOuterRoom)) : 1;   // opts.isOuterRoom ?? 1（整数）
+  return doApi("/room/createRoom", { isOuterRoom, memberList:members }, cfg);
+}
+
+/* 改群名：method=/room/modifyRoomName；params{ guid, roomId, name }。 */
+async function modifyRoomName(roomId, name, cfg){
+  const rid = clean(roomId, 80);
+  const nm = clean(name, 120);
+  if(!rid) throw new Error("缺少 QiWe 群 roomId");
+  if(!nm) throw new Error("群名为空");
+  return doApi("/room/modifyRoomName", { roomId:rid, name:nm }, cfg);
+}
+
+/* 取群二维码（=群活码）：method=/room/getRoomQrCode；params{ guid, roomId }。 */
+async function getRoomQrCode(roomId, cfg){
+  const rid = clean(roomId, 80);
+  if(!rid) throw new Error("缺少 QiWe 群 roomId");
+  return doApi("/room/getRoomQrCode", { roomId:rid }, cfg);
+}
+
+/* 拉人进群：method=/room/inviteRoomMember；params{ guid, roomId, memberList }。 */
+async function inviteRoomMember(roomId, memberList, cfg){
+  // 自门控护栏（cc1 裁定 + codex 修）：真拉人进群=向真实用户发起入群，副作用重且难撤销。真相源 = 模块常量 DRY_RUN
+  // （与 doApi 同源，无运行时 env 绕过）：非 DRY_RUN 且实验开关未开即抛错 —— 防"配 token 的环境忘开 DRY_RUN 误调就真拉人骚扰"。
+  if(roomWriteBlocked(DRY_RUN, createRoomExperimentalOn()))
+    throw new Error("真拉人进群未启用：设 QIWE_CREATEROOM_EXPERIMENTAL=1 显式开启，防意外真拉人");
+  const rid = clean(roomId, 80);
+  const members = cleanMemberList(memberList);
+  if(!rid) throw new Error("缺少 QiWe 群 roomId");
+  if(!members.length) throw new Error("拉群成员列表为空");
+  return doApi("/room/inviteRoomMember", { roomId:rid, memberList:members }, cfg);
+}
+
+function id(v){
+  const s = clean(v, 80);
+  return s === "0" ? "" : s;
+}
+
+function dataObj(v){
+  if(!v) return {};
+  if(typeof v === "object") return v;
+  try{ return JSON.parse(v); }catch(e){ return {}; }
+}
+
+function extractEvents(body){
+  if(Array.isArray(body)) return body;
+  if(body && Array.isArray(body.data)) return body.data;
+  if(body && body.data && typeof body.data === "object") return [body.data];
+  if(body && (body.cmd || body.msgType || body.msgData)) return [body];
+  return [];
+}
+
+/* 归一化 qiwe 回调事件。当前只识别消息类事件（cmd=15000）：文本(msgType 0/2)、小程序卡片(78)、语音(16)。
+   图片/文件/视频/位置等非文字消息（msgType 值未知）现走**降级兜底转人工**（qiwe_bridge.processEvent：!isText 粗粒度 →
+   落 pending 转人工草稿 + 纯服务话术，不下载、不解读）。完整版（图片字节→triage 多模态材料预审）待真机抓包确认 qiweapi
+   图片回调格式 + 媒体下载接口后，再在此加 isImage 分支（记忆铁规则「不准猜参数」→ 现在不臆造图片 msgType/字段）。
+   ⚠️ 方案A（真正的「入群/群成员变更」事件识别）待真机抓包：qiweapi 回调里新成员入群是哪个 cmd/字段目前
+   **无文档、无用例、未真机确认**（记忆铁规则「不准猜参数」→ 不臆造 cmd 分支）。入群提醒现由方案B兜底
+   （qiwe_bridge.processEvent：某群该 senderId 首次发言→触发一次欢迎+医助到访提醒）。待真机确认回调格式后，
+   可在此加 isMemberJoin/joinRoomId/joinUserId 等字段，让 processEvent 走真正的入群欢迎（复用同一 fireGroupWelcome）。 */
+function normalizeEvent(raw, cfg){
+  raw = raw || {};
+  cfg = cfg || loadConfig();
+  const msgData = dataObj(raw.msgData);
+  const msgType = Number(raw.msgType);
+  const fromRoomId = id(raw.fromRoomId || raw.roomId || raw.chatRoomId);
+  const senderId = id(raw.senderId || raw.fromId || raw.fromUserId);
+  const receiverId = id(raw.receiverId || raw.toId || raw.toUserId);
+  const loggedInUserId = id(raw.userId || cfg.selfUserId);
+  const isGroup = !!fromRoomId;
+  const replyToId = isGroup ? fromRoomId : (senderId || receiverId);
+  return {
+    raw,
+    msgData,
+    cmd:Number(raw.cmd),
+    msgType,
+    isText:msgType === 0 || msgType === 2,
+    isWeapp:msgType === 78 || !!(msgData && (msgData.appId || msgData.app_id) && (msgData.pagePath || msgData.page_path || msgData.path)),
+    isGroup,
+    fromRoomId,
+    senderId,
+    receiverId,
+    loggedInUserId,
+    replyToId,
+    senderName:clean(raw.senderName || raw.fromName || msgData.senderName || "企微患者", 80),
+    text:clean(msgData.content || raw.content || raw.text || "", 1000),
+    externalMsgId:clean(raw.msgUniqueIdentifier || raw.msgServerId || raw.seq || raw.msgId, 160),
+    isFromSelf:!!(senderId && (senderId === cfg.selfUserId || senderId === loggedInUserId))
+  };
+}
+
+module.exports = {
+  DEFAULT_API_URL,
+  DEFAULT_FILE_API_URL,
+  DRY_RUN,
+  loadConfig,
+  publicConfig,
+  saveConfig,
+  isConfigured,
+  isCleartextEndpoint,
+  warnHttpOnce,
+  doApi,
+  postJson,
+  // postMultipart 不导出（图片上传专用原始网络写函数，仅 uploadImage 内部调用；导出会给外部
+  // 绕过 uploadImage 护栏直传 /doFileApi 的面——codex 第三轮抓）。保留导出 buildMultipartBody（纯拼 Buffer·零网络）+ fileApiUrl（纯算 URL）供测试。
+  buildMultipartBody,
+  fileApiUrl,
+  sendText,
+  normalizeLinkCard,
+  sendLink,
+  sendWeapp,
+  sendHyperText,
+  voiceToText,
+  uploadImage,
+  uploadImageByUrl,
+  sendImage,
+  sendImageExperimentalOn,
+  createRoom,
+  modifyRoomName,
+  getRoomQrCode,
+  inviteRoomMember,
+  createRoomExperimentalOn,
+  roomWriteBlocked,
+  atallExperimentalOn,
+  atMemberExperimentalOn,
+  normalizeWeappCard,
+  missingWeappFields,
+  isWeappReady,
+  saveWeappTemplate,
+  loadWeappTemplate,
+  loadWeappTemplates,
+  syncWeappTemplatesFromRules,
+  publicWeappTemplates,
+  extractEvents,
+  normalizeEvent
+};

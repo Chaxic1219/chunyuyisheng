@@ -1,0 +1,396 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "医患通",
+        "navigationBarBackgroundColor": "#F0F3F5"
+      }
+    },
+    {
+      "path": "pages/consult/index",
+      "style": {
+        "navigationBarTitleText": "在线咨询",
+        "navigationBarBackgroundColor": "#F0F3F5",
+        "disableScroll": true
+      }
+    },
+    {
+      "path": "pages/mine/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "我的",
+        "navigationBarBackgroundColor": "#F0F3F5"
+      }
+    },
+    {
+      "path": "pages/auth/bind",
+      "style": {
+        "navigationBarTitleText": "绑定手机号",
+        "navigationBarBackgroundColor": "#F0F3F5"
+      }
+    },
+    {
+      "path": "pages/auth/select-doctor",
+      "style": {
+        "navigationBarTitleText": "选择医生",
+        "navigationBarBackgroundColor": "#F0F3F5"
+      }
+    }
+  ],
+  "subPackages": [
+    {
+      "root": "pages/records",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationBarTitleText": "健康档案",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/plans",
+      "pages": [
+        {
+          "path": "detail",
+          "style": {
+            "navigationBarTitleText": "健康计划",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/services",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationBarTitleText": "健康服务",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "catalog",
+          "style": {
+            "navigationBarTitleText": "医生服务包",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "cart",
+          "style": {
+            "navigationBarTitleText": "购物车",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "followup",
+          "style": {
+            "navigationBarTitleText": "复诊协助",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "detail",
+          "style": {
+            "navigationBarTitleText": "服务详情",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "checkout",
+          "style": {
+            "navigationBarTitleText": "确认订单",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "pay-result",
+          "style": {
+            "navigationBarTitleText": "支付结果",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "onboarding",
+          "style": {
+            "navigationBarTitleText": "补充服务资料",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "mine-services",
+          "style": {
+            "navigationBarTitleText": "我的服务",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "orders",
+          "style": {
+            "navigationBarTitleText": "我的订单",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "order-detail",
+          "style": {
+            "navigationBarTitleText": "订单详情",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "rights",
+          "style": {
+            "navigationBarTitleText": "优惠权益",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "agreements",
+          "style": {
+            "navigationBarTitleText": "服务协议",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "after-sales",
+          "style": {
+            "navigationBarTitleText": "发票售后",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "after-sale-detail",
+          "style": {
+            "navigationBarTitleText": "售后工单",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "refund-apply",
+          "style": {
+            "navigationBarTitleText": "申请售后",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "assets",
+          "style": {
+            "navigationBarTitleText": "服务资产",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "instance",
+          "style": {
+            "navigationBarTitleText": "服务进度",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "entitlement",
+          "style": {
+            "navigationBarTitleText": "权益详情",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "benefit-webview",
+          "style": {
+            "navigationBarTitleText": "权益领取",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/settings",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationBarTitleText": "设置与授权",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/family",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationBarTitleText": "家属管理",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/address",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationBarTitleText": "地址管理",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "edit",
+          "style": {
+            "navigationBarTitleText": "编辑地址",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/archive",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationBarTitleText": "我的档案",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "profile",
+          "style": {
+            "navigationBarTitleText": "我的档案",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "health",
+          "style": {
+            "navigationBarTitleText": "健康记录",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/form",
+      "pages": [
+        {
+          "path": "add",
+          "style": {
+            "navigationBarTitleText": "服务申请"
+          }
+        },
+        {
+          "path": "admission",
+          "style": {
+            "navigationBarTitleText": "服务申请"
+          }
+        },
+        {
+          "path": "contact",
+          "style": {
+            "navigationBarTitleText": "服务申请"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/article",
+      "pages": [
+        {
+          "path": "detail",
+          "style": {
+            "navigationBarTitleText": "健康指引"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/replies",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationBarTitleText": "查看回复"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/faq",
+      "pages": [
+        {
+          "path": "index",
+          "style": {
+            "navigationBarTitleText": "常见问题"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pages/invite",
+      "pages": [
+        {
+          "path": "form",
+          "style": {
+            "navigationBarTitleText": "患者建档",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "success",
+          "style": {
+            "navigationBarTitleText": "建档成功",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        }
+      ]
+    }
+  ],
+  "preloadRule": {
+    "pages/mine/index": {
+      "network": "all",
+      "packages": ["pages/settings"]
+    }
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "医患通",
+    "navigationBarBackgroundColor": "#F0F3F5",
+    "backgroundColor": "#F0F3F5"
+  },
+  "tabBar": {
+    "custom": true,
+    "color": "#6B6B6B",
+    "selectedColor": "#176B52",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页",
+        "iconPath": "static/tab/home.png",
+        "selectedIconPath": "static/tab/home-active.png"
+      },
+      {
+        "pagePath": "pages/consult/index",
+        "text": "咨询",
+        "iconPath": "static/tab/chat.png",
+        "selectedIconPath": "static/tab/chat-active.png"
+      },
+      {
+        "pagePath": "pages/mine/index",
+        "text": "我的",
+        "iconPath": "static/tab/user.png",
+        "selectedIconPath": "static/tab/user-active.png"
+      }
+    ]
+  }
+}

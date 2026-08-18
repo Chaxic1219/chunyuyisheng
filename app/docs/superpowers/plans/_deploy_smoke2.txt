@@ -1,0 +1,38 @@
+TABLES=mp_ai_audit,mp_data_requests,mp_private_files,mp_sessions,mp_storage_scopes
+COLS=token,openid,doctor_id,person_id,patient_id,phone_bound,created_at,expires_at,last_seen_at,revoked_at
+SESSIONS=31
+REVOKED=0
+GROUPS=18
+DOCTORS=5
+INTEGRITY=[{"integrity_check":"ok"}]
+--- logs freeze ---
+/root/.pm2/logs/chunyu-doctor-error.log last 80 lines:
+0|chunyu-d | [uncaughtException] Error: Cannot find module './sms_provider.js'
+0|chunyu-d | [mdg-merge] 10730375163571533 keep 4 drop 742
+0|chunyu-d | [mdg-merge] 10730375163571533 keep 4 drop 743
+0|chunyu-d | [mdg-merge] 10730375163571533 keep 4 drop 744
+0|chunyu-d | [mdg-merge] 10730375163571533 keep 4 drop 745
+0|chunyu-d | [mdg-merge] 10730375163571533 keep 4 drop 746
+0|chunyu-d | [mdg-merge] 10730375163571533 keep 4 drop 747
+0|chunyu-d | [db-freeze] skip community_group_doctors primary backfill
+0|chunyu-d | [db-freeze] skip applySeedPatches
+0|chunyu-d | [db-freeze] skip applyOpsDefaults
+0|chunyu-d | [db-freeze] skip applyHealthChatDemoKnowledge
+0|chunyu-d | [db-freeze] skip applyCommunityDefaults
+0|chunyu-d | [db-freeze] skip applyHospitalDefaults
+0|chunyu-d | [db-freeze] skip applyPatientBackfill
+0|chunyu-d | [db-freeze] skip reconcileQiweIdentityPersons-boot
+0|chunyu-d | [db-freeze] skip afterDoctorProvisioned-boot
+0|chunyu-d | [db-freeze] skip mergeDuplicateQiweGroups
+0|chunyu-d | [db-freeze] skip zhou-weapp-sync-deferred
+--- public ---
+pub_bootstrap:200
+pub_data:401
+total 12
+drwxr-xr-x 2 root   root   4096 Aug  3 09:57 .
+drwxr-x--- 4 chunyu chunyu 4096 Aug  3 09:57 ..
+-rw-rw-rw- 1 root   root     70 Jul 21 15:12 voucher-1-1784516530392-79b11714.png
+total 8
+drwxr-xr-x 2 root root 4096 Aug  3 09:57 .
+drwxr-xr-x 6 root root 4096 Jul 24 17:09 ..
+

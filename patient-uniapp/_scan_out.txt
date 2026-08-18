@@ -1,0 +1,18 @@
+=== mp mine wxml ===
+<view class="{{['page', 'ambient-bg', 'data-v-f2c8e69a', l && 'elder']}}"><view class="page-shell mine-shell data-v-f2c8e69a"><view wx:if="{{a}}" class="profile-banner data-v-f2c8e69a"><text class="profile-banner__text data-v-f2c8e69a">建议完善患者档案</text><view class="profile-banner__btn pressable data-v-f2c8e69a" aria-role="button" bindtap="{{b}}">去完善</view></view><view class="profile-panel data-v-f2c8e69a"><view class="profile-panel__row data-v-f2c8e69a"><view class="profile-panel__avatar data-v-f2c8e69a"><image class="profile-panel__avatar-img data-v-f2c8e69a" src="{{c}}" mode="aspectFill"/></view><view class="profile-panel__meta data-v-f2c8e69a"><text class="profile-panel__name data-v-f2c8e69a">{{d}}</text><text class="profile-panel__team data-v-f2c8e69a">春雨医患通 · 档案{{e}}</text></view></view></view><fn-group wx:if="{{g}}" class="data-v-f2c8e69a" bindopen="{{f}}" u-i="f2c8e69a-0" bind:__l="__l" u-p="{{g}}"/><fn-group wx:if="{{i}}" class="data-v-f2c8e69a" bindopen="{{h}}" u-i="f2c8e69a-1" bind:__l="__l" u-p="{{i}}"/><fn-group wx:if="{{k}}" class="data-v-f2c8e69a" bindopen="{{j}}" u-i="f2c8e69a-2" bind:__l="__l" u-p="{{k}}"/><text class="privacy-note data-v-f2c8e69a">健康资料仅用于诊疗与随访，不会公开展示。</text><text class="version-note data-v-f2c8e69a">医患通患者端</text></view></view>
+=== src team line ===
+profile-panel__team">春雨医患通 · 档案{{ archiveLabel }}</text>
+=== h5 pat .{0,40}医生团队.{0,40} ===
+},{key:"replies",title:"查看回复",sub:"查看申请与医生团队跟进"},{key:"contact",title:"医患联络表",sub:"补
+(a=_(b).doctor)?void 0:a.name)||"张明远")+"医生团队持续管理",1)]}),_:1})]),_:1})]),_:1}),r(p,{c
+y-card__title"},{default:l(()=>[n("您的隐私由医生团队妥善保护")]),_:1}),r(e,{class:"privacy-card_
+=== h5 pat .{0,40}doctor\.name.{0,40} ===
+none
+=== h5 pat .{0,40}档案.{0,40} ===
+oad());const h=[{key:"archive",title:"健康档案",sub:"查看健康记录与患者资料"},{key:"replies",titl
+sset-stat__label"},{default:l(()=>[n("健康档案")]),_:1})]),_:1}),r(p,{class:"asset-sta
+"care-status__desc"},{default:l(()=>[n("档案、咨询与随访都由同一团队承接")]),_:1})]),_:1}),r(y,{na
+=== mp doctor.name / 医生 ===
+pages\consult\index.js
+  story();!e.length||e.some(e=>/医生团队的健康助手|医生团队助手/.test(String(e.te
+  xt||""))||"welcome"===e.id&&/医生团队/.test(String(e.text||"")))?(s

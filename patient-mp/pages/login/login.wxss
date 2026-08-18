@@ -1,0 +1,95 @@
+.login-page {
+  min-height: 100vh;
+  padding: 120rpx 40rpx 60rpx;
+  background: linear-gradient(180deg, #e8f3ec 0%, #fafbfc 40%);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 60rpx;
+}
+
+.brand-logo {
+  width: 128rpx;
+  height: 128rpx;
+  border-radius: 32rpx;
+  background: #176b52;
+  color: #fff;
+  font-size: 64rpx;
+  font-weight: 800;
+  line-height: 128rpx;
+  text-align: center;
+  box-shadow: 0 8rpx 24rpx rgba(23, 107, 82, 0.3);
+}
+
+.brand-name {
+  margin-top: 24rpx;
+  font-size: 44rpx;
+  font-weight: 800;
+  color: #17201c;
+}
+
+.brand-sub {
+  margin-top: 8rpx;
+  font-size: 26rpx;
+  color: #6a756f;
+}
+
+.login-card {
+  padding: 48rpx 40rpx;
+}
+
+.login-btn {
+  margin-top: 32rpx;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  margin: 40rpx 0 8rpx;
+  color: #9aa7ad;
+  font-size: 24rpx;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #e5eaf2;
+  margin: 0 20rpx;
+}
+
+.sms-row {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+}
+
+.sms-input {
+  flex: 1;
+}
+
+.sms-btn {
+  width: 220rpx;
+  height: 88rpx;
+  line-height: 88rpx;
+  border-radius: 16rpx;
+  background: #eef4f0;
+  color: #176b52;
+  font-size: 26rpx;
+}
+
+.sms-btn[disabled] {
+  color: #9aa7ad;
+  background: #f0f2f4;
+}
+
+.err {
+  display: block;
+  margin-top: 20rpx;
+  color: #c0392b;
+  font-size: 26rpx;
+}

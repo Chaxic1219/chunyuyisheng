@@ -1,0 +1,219 @@
+{
+  "pack_id": "chunyu-patient-mp-v32-image-gen",
+  "version": "1.0",
+  "created": "2026-07-30",
+  "brand": "春雨健康患者端小程序",
+  "style_file": "STYLE.md",
+  "negative_prompt": "text, letters, watermark, logo typography, emoji, neon, purple gradient, pink glow, glassmorphism, photorealistic blood, horror, low resolution, blurry, cluttered, cartoon mascot with big eyes, hospital corridor photo",
+  "palette": {
+    "primary": "#176b52",
+    "primary_dark": "#0c4535",
+    "soft_green": "#e5f3ec",
+    "mint": "#cfe8dd",
+    "background": "#f3f4ef",
+    "ink": "#17201c",
+    "amber": "#936015"
+  },
+  "assets": [
+    {
+      "id": "tab-home",
+      "priority": "P0",
+      "filename": "tab/home.png",
+      "size_px": [81, 81],
+      "dest": "src/static/tab/home.png",
+      "usage": "Tab 首页未选中",
+      "prompt_zh": "极简线性房子图标，灰绿色描边，透明背景，居中，小程序 tab 图标，无文字",
+      "prompt_en": "Minimal line icon of a home house, muted gray-green stroke #6a756f, transparent background, centered, WeChat mini-program tab bar icon style, clean vector, no text, no fill clutter, padding around edges"
+    },
+    {
+      "id": "tab-home-active",
+      "priority": "P0",
+      "filename": "tab/home-active.png",
+      "size_px": [81, 81],
+      "dest": "src/static/tab/home-active.png",
+      "usage": "Tab 首页选中",
+      "prompt_zh": "极简房子图标，春雨青绿填充/描边 #176b52，透明背景，tab 选中态",
+      "prompt_en": "Minimal home house icon filled with healthcare green #176b52, transparent background, WeChat tab selected state, clean vector, no text, generous padding"
+    },
+    {
+      "id": "tab-chat",
+      "priority": "P0",
+      "filename": "tab/chat.png",
+      "size_px": [81, 81],
+      "dest": "src/static/tab/chat.png",
+      "usage": "Tab 咨询未选中",
+      "prompt_zh": "极简对话气泡图标，灰绿描边，透明背景，tab 图标",
+      "prompt_en": "Minimal chat bubble icon, muted gray-green stroke #6a756f, transparent background, tab bar icon, clean vector, no text"
+    },
+    {
+      "id": "tab-chat-active",
+      "priority": "P0",
+      "filename": "tab/chat-active.png",
+      "size_px": [81, 81],
+      "dest": "src/static/tab/chat-active.png",
+      "usage": "Tab 咨询选中",
+      "prompt_zh": "对话气泡图标，青绿 #176b52，透明背景，选中态",
+      "prompt_en": "Minimal chat bubble icon in healthcare green #176b52, transparent background, selected tab icon, clean vector, no text"
+    },
+    {
+      "id": "tab-user",
+      "priority": "P0",
+      "filename": "tab/user.png",
+      "size_px": [81, 81],
+      "dest": "src/static/tab/user.png",
+      "usage": "Tab 我的未选中",
+      "prompt_zh": "极简用户头像轮廓图标，灰绿描边，透明背景",
+      "prompt_en": "Minimal user profile silhouette icon, muted gray-green stroke #6a756f, transparent background, tab bar icon, clean vector, no text"
+    },
+    {
+      "id": "tab-user-active",
+      "priority": "P0",
+      "filename": "tab/user-active.png",
+      "size_px": [81, 81],
+      "dest": "src/static/tab/user-active.png",
+      "usage": "Tab 我的选中",
+      "prompt_zh": "用户轮廓图标，青绿 #176b52，透明背景，选中态",
+      "prompt_en": "Minimal user profile silhouette in healthcare green #176b52, transparent background, selected tab icon, clean vector, no text"
+    },
+    {
+      "id": "avatar-health-assistant",
+      "priority": "P0",
+      "filename": "visual/assistant-health-avatar.png",
+      "size_px": [256, 256],
+      "dest": "src/static/visual/assistant-health-avatar.png",
+      "usage": "健康助手头像",
+      "prompt_zh": "圆形友好头像，专业温和的健康顾问意象，青绿配色，扁平插画，透明或浅底，无文字",
+      "prompt_en": "Circular friendly avatar for a professional calm health assistant, soft healthcare green #176b52 and mint accents, flat illustration, East Asian neutral adult, gentle expression, no text, suitable as chat avatar, clean background"
+    },
+    {
+      "id": "avatar-life-butler",
+      "priority": "P0",
+      "filename": "visual/assistant-life-avatar.png",
+      "size_px": [256, 256],
+      "dest": "src/static/visual/assistant-life-avatar.png",
+      "usage": "生活管家头像",
+      "prompt_zh": "圆形友好头像，务实生活管家意象，青绿+浅琥珀点缀，扁平插画，无文字",
+      "prompt_en": "Circular friendly avatar for a practical life butler assistant for appointments and daily care logistics, healthcare green with soft amber accent #fff1d6, flat illustration, warm approachable, no text, chat avatar"
+    },
+    {
+      "id": "hero-home-action",
+      "priority": "P0",
+      "filename": "visual/home-hero-action.png",
+      "size_px": [960, 540],
+      "dest": "src/static/visual/home-hero-action.png",
+      "usage": "首页有计划时 Hero 主视觉",
+      "prompt_zh": "健康管理首页主视觉：今日任务清单与完成勾选意象，青绿柔和渐变背景 #f3f4ef 到 #e5f3ec，扁平插画，无文字无水印",
+      "prompt_en": "Mobile health app hero illustration: today health tasks checklist with gentle checkmarks, calm mint and soft green gradient background #f3f4ef to #e5f3ec, flat soft 3D, spacious composition, no text, no watermark, premium healthcare product feel"
+    },
+    {
+      "id": "empty-no-plan",
+      "priority": "P0",
+      "filename": "visual/empty-no-plan.png",
+      "size_px": [800, 600],
+      "dest": "src/static/visual/empty-no-plan.png",
+      "usage": "无健康计划空状态",
+      "prompt_zh": "空状态插画：空白计划本与上传报告引导意象，柔和青绿，留白多，无文字",
+      "prompt_en": "Empty state illustration for no health plan yet: blank soft notebook and abstract medical report upload cue, lots of whitespace, soft green #e5f3ec palette, flat illustration, hopeful calm, no text, no watermark"
+    },
+    {
+      "id": "report-upload-guide",
+      "priority": "P1",
+      "filename": "visual/report-upload-guide.png",
+      "size_px": [960, 600],
+      "dest": "src/static/visual/report-upload-guide.png",
+      "usage": "上传报告引导图（可替换现有）",
+      "prompt_zh": "上传诊断报告/处方引导插画，手机与文件上浮，青绿医疗风，无文字",
+      "prompt_en": "Illustration guiding upload of medical reports and prescriptions: phone and floating document sheets, soft healthcare green palette, clean flat style, no readable text on papers, no watermark"
+    },
+    {
+      "id": "health-plan-service-hero",
+      "priority": "P2",
+      "filename": "visual/health-plan-service-hero.png",
+      "size_px": [960, 600],
+      "dest": "src/static/visual/health-plan-service-hero.png",
+      "usage": "健康计划/服务 Hero（风格统一替换）",
+      "prompt_zh": "健康计划与服务结合的主视觉，计划路径与呵护意象，青绿，无文字",
+      "prompt_en": "Hero for health plan and care services: abstract care path and protective shield leaf motif, healthcare green #176b52, soft mint background, flat premium illustration, no text, no watermark"
+    },
+    {
+      "id": "health-record-empty",
+      "priority": "P1",
+      "filename": "visual/health-record-empty.png",
+      "size_px": [800, 600],
+      "dest": "src/static/visual/health-record-empty.png",
+      "usage": "健康档案/记录空状态",
+      "prompt_zh": "健康档案空状态：档案夹与心跳曲线抽象，柔和青绿，无文字",
+      "prompt_en": "Empty health records illustration: soft folder and abstract gentle heartbeat line, mint green healthcare palette, calm flat style, no text, no watermark"
+    },
+    {
+      "id": "family-empty",
+      "priority": "P1",
+      "filename": "visual/family-empty.png",
+      "size_px": [800, 600],
+      "dest": "src/static/visual/family-empty.png",
+      "usage": "家属管理空状态",
+      "prompt_zh": "家属空状态：两三个抽象人物剪影与关怀圆圈，青绿，无文字",
+      "prompt_en": "Empty family care illustration: two or three abstract people silhouettes with a soft care circle, healthcare green, flat friendly, no text, no watermark"
+    },
+    {
+      "id": "default-user-avatar",
+      "priority": "P1",
+      "filename": "visual/default-user-avatar.png",
+      "size_px": [256, 256],
+      "dest": "src/static/visual/default-user-avatar.png",
+      "usage": "默认用户头像",
+      "prompt_zh": "中性默认用户圆形头像，青绿浅底，简洁人物剪影，无文字",
+      "prompt_en": "Neutral default user circular avatar, soft green background #e5f3ec, simple person silhouette, flat, no text, no gendered exaggeration"
+    },
+    {
+      "id": "icon-quick-upload",
+      "priority": "P1",
+      "filename": "icons/quick-upload.png",
+      "size_px": [128, 128],
+      "dest": "src/static/icons/upload.png",
+      "usage": "快捷：上传档案",
+      "prompt_zh": "上传图标，青绿，透明底，小程序快捷入口",
+      "prompt_en": "Minimal upload cloud or arrow-up document icon, healthcare green #176b52, transparent background, app quick action icon, no text"
+    },
+    {
+      "id": "icon-quick-med",
+      "priority": "P1",
+      "filename": "icons/quick-med.png",
+      "size_px": [128, 128],
+      "dest": "src/static/icons/health.png",
+      "usage": "快捷：问用药",
+      "prompt_zh": "药品/胶囊抽象图标，青绿，透明底",
+      "prompt_en": "Minimal medication capsule or pill bottle icon, healthcare green #176b52, transparent background, quick action icon, no text"
+    },
+    {
+      "id": "icon-quick-metric",
+      "priority": "P1",
+      "filename": "icons/quick-metric.png",
+      "size_px": [128, 128],
+      "dest": "src/static/icons/heart.png",
+      "usage": "快捷：记录指标",
+      "prompt_zh": "心跳或血压抽象图标，青绿，透明底",
+      "prompt_en": "Minimal heart rate or blood pressure cuff abstract icon, healthcare green #176b52, transparent background, quick action icon, no text"
+    },
+    {
+      "id": "icon-quick-followup",
+      "priority": "P1",
+      "filename": "icons/quick-followup.png",
+      "size_px": [128, 128],
+      "dest": "src/static/icons/calendar.png",
+      "usage": "快捷：预约复诊",
+      "prompt_zh": "日历勾选图标，青绿，透明底",
+      "prompt_en": "Minimal calendar with checkmark icon, healthcare green #176b52, transparent background, quick action icon, no text"
+    },
+    {
+      "id": "icon-quick-service",
+      "priority": "P1",
+      "filename": "icons/quick-service.png",
+      "size_px": [128, 128],
+      "dest": "src/static/icons/replies.png",
+      "usage": "快捷：健康服务",
+      "prompt_zh": "服务盾牌或关怀图标，青绿，透明底",
+      "prompt_en": "Minimal care service shield or helping hands abstract icon, healthcare green #176b52, transparent background, quick action icon, no text"
+    }
+  ]
+}

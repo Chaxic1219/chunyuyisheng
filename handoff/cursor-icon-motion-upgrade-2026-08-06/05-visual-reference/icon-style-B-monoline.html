@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>图标风格 B · 纯线性</title>
+  <style>
+    :root{--ink:#10251f;--green:#176b52;--muted:#89948E;--danger:#A33C33;--paper:#f3f5ef;--line:#d8ded7}
+    *{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--paper);font-family:"Microsoft YaHei UI","Noto Sans SC",sans-serif}
+    main{width:min(1120px,calc(100% - 32px));margin:32px auto 64px}.hero{display:grid;grid-template-columns:1.35fr .65fr;gap:24px;padding:32px;border:1px solid var(--line);border-radius:28px;background:#fff}
+    .eyebrow{font:700 12px/1.2 Consolas,monospace;letter-spacing:.18em;color:var(--green)}h1{margin:10px 0;font-size:clamp(34px,6vw,72px);line-height:.96;letter-spacing:-.06em}.lead{max-width:700px;color:#53615b;line-height:1.8}
+    .spec{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;align-content:start}.token{padding:16px;border-radius:18px;background:var(--ink);color:#fff}.token b{display:block;font-size:24px}.token span{font-size:12px;color:#cbd7d2}
+    .section{margin-top:22px;padding:24px;border:1px solid var(--line);border-radius:24px;background:#fff}.section h2{margin:0 0 6px;font-size:20px}.section p{margin:0 0 18px;color:#65716c}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+    .card{min-height:132px;padding:18px;border:1px solid var(--line);border-radius:18px;background:#fbfcf9;display:flex;flex-direction:column;justify-content:space-between}.card svg{width:36px;height:36px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;color:var(--green)}.card code{font:600 12px Consolas,monospace;color:#44504b}
+    .tones{display:flex;gap:14px;flex-wrap:wrap}.tone{width:150px;height:94px;border-radius:18px;padding:16px;display:flex;align-items:center;gap:12px;border:1px solid var(--line)}.tone svg{width:28px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.primary{color:var(--green)}.inverse{color:#fff;background:var(--green)}.muted{color:var(--muted)}.danger{color:var(--danger);background:#fff8f7}
+    .rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.rule{padding:16px;border-left:3px solid var(--green);background:#f5f8f4;line-height:1.65}.bad{border-left-color:var(--danger)}
+    @media(max-width:720px){.hero{grid-template-columns:1fr}.spec{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body><main>
+  <section class="hero"><div><div class="eyebrow">ICON SYSTEM / STYLE B</div><h1>纯线性，<br>语义先行。</h1><p class="lead">所有图标从 24×24 母版导出，统一 1.8px 圆角描边。图形只解释动作，不解释页面位置；PNG 只是运行时载体，语义注册表才是入口。</p></div><div class="spec"><div class="token"><b>24×24</b><span>SVG 母版画布</span></div><div class="token"><b>1.8px</b><span>圆角描边</span></div><div class="token"><b>96×96</b><span>透明 PNG 输出</span></div><div class="token"><b>≤400KB</b><span>全部 v2 图标预算</span></div></div></section>
+  <section class="section"><h2>造型基准</h2><p>以下示例只展示结构语言：开放轮廓、均匀留白、无填充、无阴影。</p><div class="grid">
+    <div class="card"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.8 8.2M12 4l4.2 4.2M5 14v5h14v-5"/></svg><code>upload-record</code></div>
+    <div class="card"><svg viewBox="0 0 24 24"><path d="M4 5.5h16v11H8l-4 3v-14Z"/><path d="m9 11 2 2 4-4"/></svg><code>consult-doctor</code></div>
+    <div class="card"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h5M8 16h6"/></svg><code>health-record</code></div>
+    <div class="card"><svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z"/><path d="M8 7V5h8v2M8 12h8M12 9v6"/></svg><code>service-package</code></div>
+    <div class="card"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg><code>nav-chevron-right</code></div>
+    <div class="card"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 8v5l3 2M17 3h4v4"/></svg><code>action-refresh</code></div>
+  </div></section>
+  <section class="section"><h2>按需色调</h2><p>不是为每个图标复制四套颜色；只有真实使用场景才输出额外文件。</p><div class="tones">
+    <div class="tone primary"><svg viewBox="0 0 24 24"><path d="M4 12h16M13 6l6 6-6 6"/></svg><b>主色</b></div>
+    <div class="tone inverse"><svg viewBox="0 0 24 24"><path d="M4 12h16M13 6l6 6-6 6"/></svg><b>反白</b></div>
+    <div class="tone muted"><svg viewBox="0 0 24 24"><path d="M4 12h16M13 6l6 6-6 6"/></svg><b>灰色</b></div>
+    <div class="tone danger"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg><b>危险色</b></div>
+  </div></section>
+  <section class="section"><h2>验收边界</h2><div class="rules"><div class="rule">同一动作跨页面复用同一语义图标；相似但不同动作必须拆分。</div><div class="rule">独立图标按钮触控区至少 44×44px，并提供可访问名称。</div><div class="rule">页面通过 AppIcon 与注册表取图，不直接拼静态路径。</div><div class="rule bad">禁止渐变、投影、高光、拟物底座、文字栅格按钮与问号兜底。</div></div></section>
+</main></body></html>

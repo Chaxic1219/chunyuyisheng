@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>春雨医服 · 企微医助</title>
+<link rel="icon" type="image/png" href="/favicon.png?v=20260804-logo" />
+<link rel="shortcut icon" href="/favicon.ico?v=20260804-logo" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260804-logo" />
+<style>
+:root{
+  --brand:#07c160;
+  --brand-deep:#05a854;
+  --ink:#101828;
+  --muted:#667085;
+  --subtle:#98a2b3;
+  --line:#e5eaf0;
+  --line-strong:#d3dce6;
+  --bg:#f4f7fa;
+  --panel:#fff;
+  --soft:#f8fafc;
+  --patient:#95ec69;
+  --warn:#f79009;
+  --warn-bg:#fff7e8;
+  --danger:#d92d20;
+  --danger-bg:#fff1f1;
+  --shadow:0 8px 22px rgba(16,24,40,.07);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  overflow:hidden;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:14px;
+}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer}
+.app-shell{height:100dvh;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
+.topbar{
+  flex:0 0 auto;
+  background:rgba(255,255,255,.97);
+  border-bottom:1px solid var(--line);
+  padding:9px 12px;
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  gap:8px;
+}
+.topline{display:flex;align-items:center;gap:10px;min-width:0}
+.brand-lockup{display:flex;align-items:center;gap:8px;min-width:128px}
+.brand-lockup img{width:32px;height:32px;border-radius:9px;box-shadow:0 1px 4px rgba(16,24,40,.16);flex:0 0 auto}
+.brand-copy{min-width:0}.brand-copy strong{display:block;font-size:15px;line-height:1.15;white-space:nowrap}.brand-copy span{display:block;margin-top:2px;font-size:11px;color:#8390a2;white-space:nowrap}
+.doctor-select{
+  min-width:0;flex:1;border:1px solid var(--line-strong);border-radius:10px;background:#fff;
+  padding:8px 10px;color:#182230;outline:none;
+}
+.doctor-select:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(7,193,96,.1)}
+.meta-strip{display:flex;gap:6px;overflow:hidden;align-items:center}
+.pill{
+  display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:0;
+  border-radius:999px;padding:4px 8px;font-size:11.5px;line-height:1;font-weight:700;white-space:nowrap;
+  background:#eef2f6;color:#566174;
+}
+.pill.ok,.pill.low{background:#e7f8ef;color:#067947}.pill.warn,.pill.medium{background:var(--warn-bg);color:#b35c00}.pill.danger,.pill.high{background:var(--danger-bg);color:var(--danger)}.pill.gray{background:#eef2f6;color:#667085}
+.main-shell{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:8px;padding:8px;background:var(--bg)}
+.doctor-context{
+  flex:0 0 auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 2px rgba(16,24,40,.04);
+  display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 12px;
+}
+.doctor-avatar{
+  width:46px;height:46px;border-radius:12px;background:linear-gradient(145deg,#eef8ff,#e7f8ef);
+  display:grid;place-items:center;border:1px solid #d9eef1;color:#087443;font-weight:900;font-size:20px;overflow:hidden;
+}
+.doctor-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.doctor-main{min-width:0}
+.doctor-name{display:flex;align-items:center;gap:6px;min-width:0}
+.doctor-name b{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.doctor-name .verify{color:#079455;font-size:12px;font-weight:800}
+.doctor-main small{display:block;margin-top:4px;color:#6b7687;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.group-context{min-width:0;border-left:1px solid #eef2f6;padding-left:10px;color:#445164}
+.group-context b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.group-context small{display:block;margin-top:4px;color:#8a95a4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.risk-action{
+  flex:0 0 auto;border:1px solid #ffd4d4;background:#fff7f7;border-radius:12px;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;
+}
+.risk-copy{padding:10px 12px;min-width:0}
+.risk-title{display:flex;gap:7px;align-items:center;color:var(--danger);font-weight:900}.risk-title span{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:7px;background:var(--danger);color:#fff;font-size:12px}
+.risk-copy p{margin:5px 0 0;color:#5d6675;font-size:12.5px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.risk-actions{display:flex;gap:8px;padding:10px 12px 10px 0}
+.outline-btn{
+  border:1px solid #ffc7c7;background:#fff;color:var(--danger);border-radius:9px;padding:7px 10px;font-weight:800;font-size:12.5px;white-space:nowrap;
+}
+.outline-btn.secondary{border-color:#ffd9a8;color:#b54708}
+.modebar{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.modebar button{
+  border:1px solid var(--line-strong);border-radius:10px;background:#fff;color:#4b5565;padding:8px 4px;font-size:13px;font-weight:800;
+}
+.modebar button.on{background:var(--brand);border-color:var(--brand);color:#fff;box-shadow:0 5px 14px rgba(7,193,96,.18)}
+.workspace{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.timeline-card,.detail-card{
+  flex:1 1 auto;min-height:0;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 2px rgba(16,24,40,.04);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.section-title{
+  flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-bottom:1px solid #eef2f6;background:#fff;
+}
+.section-title b{font-size:14.5px}.section-title small{color:#8792a0;font-size:11.5px}.title-left{min-width:0}.title-left b,.title-left small{vertical-align:baseline}
+.filter-btn{border:0;background:#f2f4f7;color:#526071;border-radius:8px;padding:5px 8px;font-size:11.5px;font-weight:800}
+.timeline{
+  flex:1 1 auto;min-height:0;overflow:auto;background:linear-gradient(180deg,#f8fafc 0%,#eef2f5 100%);padding:0;overscroll-behavior:contain;
+}
+.timeline::-webkit-scrollbar{width:5px}.timeline::-webkit-scrollbar-thumb{background:#c2ccd6;border-radius:999px}
+.timeline-row{
+  display:grid;grid-template-columns:36px minmax(0,1fr);gap:10px;padding:11px 12px;border-bottom:1px solid rgba(229,234,240,.85);background:rgba(255,255,255,.58);
+}
+.timeline-row.patient{background:rgba(255,255,255,.2)}.timeline-row.draft{background:#fffdf5}.timeline-row.system{background:#fffaf0}
+.role-badge{
+  width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-weight:900;color:#fff;font-size:13px;box-shadow:0 1px 2px rgba(16,24,40,.08);
+}
+.patient .role-badge{background:#667085}.ai .role-badge{background:#12b76a}.system .role-badge{background:#fdb022}.service .role-badge{background:#2e90fa}.doctor .role-badge{background:#22c55e}.draft .role-badge{background:#12b76a}
+.row-main{min-width:0}.row-head{display:flex;align-items:center;gap:6px;min-width:0;color:#8a95a4;font-size:11.5px;margin-bottom:5px}
+.row-head b{font-size:13px;color:#344054;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-head .tag{background:#eef2f6;color:#667085;border-radius:6px;padding:2px 5px}.row-head time{margin-left:auto;white-space:nowrap;color:#98a2b3}
+.row-text{color:#26323f;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+.row-text.emphasis{font-weight:700}.row-source{margin-top:7px;color:#8a95a4;font-size:11.5px;line-height:1.45}
+.row-status{margin-top:6px;color:#98a2b3;font-size:11.5px}
+.draft-dock{
+  flex:0 0 auto;border-top:1px solid var(--line);background:#fff;padding:10px 12px 12px;
+}
+.draft-panel{
+  border:1px solid #a7efc4;background:linear-gradient(180deg,#f7fffb,#fff);border-radius:12px;overflow:hidden;
+}
+.draft-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #e4f8ec}
+.draft-head b{color:#048647}.draft-state{display:flex;align-items:center;gap:8px;color:#667085;font-size:11.5px;white-space:nowrap}
+.switch{width:28px;height:16px;border-radius:999px;background:var(--brand);position:relative;display:inline-block}.switch:after{content:"";position:absolute;right:2px;top:2px;width:12px;height:12px;border-radius:999px;background:#fff}
+.draft-body{padding:10px}.draft-text{
+  width:100%;min-height:62px;max-height:145px;resize:vertical;border:0;outline:none;background:#fff;color:#182230;line-height:1.65;
+}
+.draft-text.readonly{background:#fff;color:#344054}
+.draft-actions{display:flex;align-items:center;gap:8px;padding:0 10px 10px;flex-wrap:wrap}
+.btn{border:1px solid transparent;border-radius:9px;padding:7px 11px;font-size:12.5px;font-weight:850;white-space:nowrap}
+.btn.primary{background:var(--brand);color:#fff}.btn.light{background:#f2f4f7;color:#344054;border-color:#e5eaf0}.btn.danger{background:#fff0f0;color:var(--danger);border-color:#ffd0d0}
+.btn:disabled{opacity:.5;cursor:not-allowed}.send-hint{margin-left:auto;color:#8a95a4;font-size:11.5px;white-space:nowrap}
+.status-footer{
+  flex:0 0 auto;display:flex;align-items:center;gap:12px;justify-content:space-between;padding:7px 12px;color:#8a95a4;font-size:11.5px;background:#fff;border-top:1px solid #eef2f6;
+}
+.footer-right{display:flex;gap:12px;align-items:center}.green-dot{width:6px;height:6px;border-radius:999px;background:var(--brand);display:inline-block;margin-right:4px}
+.detail-card{overflow:auto}.detail-card::-webkit-scrollbar{width:5px}.detail-card::-webkit-scrollbar-thumb{background:#c2ccd6;border-radius:999px}
+.detail-body{padding:12px;display:grid;gap:10px}
+.kv-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.kv{border:1px solid #edf1f5;background:var(--soft);border-radius:10px;padding:8px 9px;min-width:0}.kv span{display:block;color:#7c8798;font-size:11px;margin-bottom:3px}.kv b{display:block;font-size:13px;line-height:1.45;word-break:break-word}
+.judge-copy{border-left:3px solid var(--warn);background:#fff9ed;color:#344054;border-radius:0 9px 9px 0;padding:8px 9px;line-height:1.6;font-size:13px;word-break:break-word}
+.fulfill-list{display:grid;gap:7px}.fulfill-row{border:1px solid #edf1f5;background:#fff;border-radius:10px;padding:8px 9px}.fulfill-main{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.fulfill-main b{font-size:13px}.fulfill-main small{display:block;margin-top:3px;color:#7c8798;line-height:1.45}.mini-tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}.mini-tag{background:#f2f4f7;border-radius:999px;padding:3px 7px;font-size:11px;color:#667085}.mini-tag.ok{background:#e7f8ef;color:#067947}
+.empty{padding:22px 12px;text-align:center;color:#98a2b3;font-size:13px;line-height:1.7}
+.login{min-height:100vh;display:grid;place-items:center;padding:22px;background:var(--bg)}.loginbox{width:min(360px,100%);background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;box-shadow:var(--shadow)}.loginbrand{display:flex;align-items:center;gap:10px;margin-bottom:10px}.loginbrand img{width:38px;height:38px;border-radius:10px;box-shadow:0 1px 4px rgba(16,24,40,.16)}.loginbox h1{font-size:18px;margin:0}.loginbox p{margin:0 0 16px;color:#667085;font-size:12.5px;line-height:1.6}.loginbox input{width:100%;border:1px solid var(--line-strong);border-radius:9px;padding:10px;margin-bottom:10px}.loginbox button{width:100%;border:0;border-radius:9px;background:var(--brand);color:#fff;padding:10px;font-weight:800}.err{min-height:18px;margin-top:8px;color:var(--danger);font-size:12.5px}
+.toast{position:fixed;left:12px;right:12px;bottom:12px;background:#17202a;color:#fff;border-radius:10px;padding:10px 12px;font-size:13px;line-height:1.5;box-shadow:0 10px 30px rgba(0,0,0,.18);display:none;z-index:20}.toast.show{display:block}
+@media (min-width:1024px) and (min-height:760px){
+  .topbar{grid-template-columns:minmax(0,1fr) auto;align-items:center}.meta-strip{justify-content:flex-end}
+  .main-shell{max-width:1180px;width:100%;margin:0 auto;display:grid;grid-template-columns:360px minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);align-items:stretch}
+  .doctor-context{grid-column:1;grid-row:1}.risk-action{grid-column:2;grid-row:1}.modebar{grid-column:1/-1;grid-row:2}.workspace{grid-column:1/-1;grid-row:3}
+}
+@media (min-width:760px) and (max-width:1023px), (min-width:760px) and (max-height:759px){
+  .topbar{grid-template-columns:minmax(0,1fr) auto;align-items:center}.meta-strip{justify-content:flex-end}.main-shell{max-width:780px;width:100%;margin:0 auto}
+}
+@media (max-height:700px){
+  .topbar{padding:6px 9px;gap:5px}.brand-lockup{min-width:122px}.brand-lockup img{width:28px;height:28px}.brand-copy strong{font-size:14px}.brand-copy span{display:none}.doctor-select{padding:6px 9px;border-radius:9px}.meta-strip{gap:5px;overflow-x:auto}.meta-strip::-webkit-scrollbar{height:0}.pill{padding:3px 7px;font-size:11px}
+  .main-shell{gap:6px;padding:6px}.doctor-context{padding:8px 10px;border-radius:11px}.doctor-avatar{width:38px;height:38px;border-radius:10px;font-size:17px}.doctor-main small{margin-top:2px}.group-context{display:none}
+  .risk-action{border-radius:11px}.risk-copy{padding:8px 10px}.risk-copy p{margin-top:3px}.risk-actions{padding:8px 10px 8px 0}.outline-btn{padding:6px 8px}
+  .modebar{gap:5px}.modebar button{padding:6px 4px;border-radius:9px}.section-title{padding:7px 10px}.timeline-row{padding:8px 10px;grid-template-columns:32px minmax(0,1fr);gap:8px}.role-badge{width:27px;height:27px;border-radius:7px;font-size:12px}.row-text{line-height:1.5}.row-source{display:none}
+  .draft-dock{padding:6px 10px 7px}.draft-head{padding:6px 9px}.draft-state{display:none}.draft-body{padding:6px 9px}.draft-text{height:40px;min-height:40px;max-height:72px;line-height:1.42}.draft-actions{padding:0 9px 7px;gap:6px}.btn{padding:6px 9px}.send-hint{display:none}.status-footer{padding:6px 10px}
+}
+@media (max-width:520px){
+  .topbar{padding:8px 10px}.brand-lockup{min-width:118px}.brand-lockup img{width:30px;height:30px}.brand-copy strong{font-size:14px}.doctor-select{padding:7px 8px}.main-shell{padding:7px;gap:7px}
+  .doctor-context{grid-template-columns:auto minmax(0,1fr);gap:8px}.group-context{grid-column:1/-1;border-left:0;border-top:1px solid #eef2f6;padding:8px 0 0}.risk-action{grid-template-columns:1fr}.risk-actions{padding:0 10px 10px}.modebar button{font-size:12.5px;padding:7px 3px}.kv-grid{grid-template-columns:1fr}.draft-text{height:52px;min-height:52px}.draft-actions{display:flex}.send-hint{display:none}
+}
+@media (max-width:380px){
+  .brand-lockup{min-width:36px}.brand-copy{display:none}.meta-strip .pill{font-size:10.5px;padding:3px 6px}.modebar button{font-size:12px}.doctor-name b{font-size:15px}.risk-title{font-size:13px}
+}
+</style>
+</head>
+<body>
+<div id="app"><div class="login"><div class="loginbox"><div class="loginbrand"><img src="/assets/chunyu-doctor-icon.png" alt="春雨医生" /><h1>春雨医服</h1></div><p>页面已加载，正在连接医助后台...</p></div></div></div>
+<div class="toast" id="toast"></div>
+<script>
+const app = document.getElementById("app");
+const toastEl = document.getElementById("toast");
+const qs = new URLSearchParams(location.search);
+let state = { me:null, doctors:[], doctorId:qs.get("doctorId") || "", data:null, pane:"chat" };
+
+function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+function toast(msg){ toastEl.textContent = msg; toastEl.classList.add("show"); clearTimeout(toastEl._t); toastEl._t = setTimeout(()=>toastEl.classList.remove("show"), 2600); }
+async function api(url, opts){
+  const init = Object.assign({ credentials:"same-origin", headers:{ "Content-Type":"application/json" } }, opts || {});
+  let timer = null;
+  if(typeof AbortController !== "undefined"){
+    const ctrl = new AbortController();
+    init.signal = init.signal || ctrl.signal;
+    timer = setTimeout(()=>ctrl.abort(), 8000);
+  }
+  const r = await fetch(url, init).finally(()=>{ if(timer) clearTimeout(timer); });
+  let j = null;
+  try{ j = await r.json(); }catch(e){ j = {}; }
+  if(!r.ok) throw new Error(j.error || ("请求失败 " + r.status));
+  return j;
+}
+function riskText(v){ return v === "high" ? "高风险" : v === "medium" ? "中风险" : "低风险"; }
+function riskClass(v){ const r = String(v == null ? "low" : v); return (r === "high" || r === "medium") ? r : "low"; }
+function sendText(s){ return ({received:"已接收",auto_sent:"已自动发送",service_sent:"已发送承接安全话",system_notice:"已回复系统受理提示 · 待人工",draft_review:"待审核",handoff_notice:"已提示转人工",sent:"人工已发送",note:"已记录"}[s]||s||""); }
+function latestDecision(d){ const detail = d.sessionDetail || {}; return detail.decisions && detail.decisions[0] ? detail.decisions[0] : null; }
+function activeSession(d){ return (d.sessionDetail && d.sessionDetail.session) || {}; }
+function activeOutbox(d){ return (d.pendingOutbox || [])[0] || null; }
+function doctorInfo(){
+  const doc = state.doctors.find(x=>String(x.id)===String(state.doctorId)) || state.doctors[0] || {};
+  return {
+    name:doc.name || "吕富靖",
+    title:doc.title || "主任医师",
+    dept:doc.dept || "消化内科",
+    hospital:doc.hospital || "首都医科大学附属北京友谊医院",
+    groupName:doc.group_name || "春雨医服测试群",
+    memberCount:doc.member_count || 0,
+    initial:String(doc.name || "吕").slice(0,1),
+    avatar:String(doc.name || "").includes("吕富靖") || doc.slug === "lvfujing" ? "/assets/lvfujing-avatar.png" : ""
+  };
+}
+function activeTarget(d){
+  const ctx = d.context || {};
+  const group = ctx.group;
+  const member = ctx.member;
+  return {
+    name:(member && member.displayName) || (group && group.name) || ctx.externalUserId || "当前会话",
+    sub:(group && group.externalGroupId) || ctx.groupId || ctx.externalUserId || "未带群上下文",
+    groupName:(group && group.name) || ctx.groupId || "",
+    memberCount:(group && group.memberCount) || 0
+  };
+}
+function fmtTime(v){
+  if(!v) return "";
+  const d = new Date(v);
+  if(Number.isNaN(d.getTime())) return String(v).slice(5,16);
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2,"0");
+  const hh = String(d.getHours()).padStart(2,"0");
+  const mi = String(d.getMinutes()).padStart(2,"0");
+  return `${mm}-${dd} ${hh}:${mi}`;
+}
+function elapsedFrom(v){
+  if(!v) return "00:00:00";
+  const d = new Date(v);
+  if(Number.isNaN(d.getTime())) return "00:00:00";
+  const sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  const h = String(Math.floor(sec/3600)).padStart(2,"0");
+  const m = String(Math.floor((sec%3600)/60)).padStart(2,"0");
+  const s = String(sec%60).padStart(2,"0");
+  return `${h}:${m}:${s}`;
+}
+
+async function boot(){
+  try{
+    state.me = await api("/api/admin/me");
+    state.doctors = await api("/api/admin/doctors");
+    if(!state.doctorId && state.doctors[0]) state.doctorId = String(state.doctors.find(d=>d.active)?.id || state.doctors[0].id);
+    await load();
+  }catch(e){ renderLogin(e.message && e.message.includes("未登录") ? "" : e.message); }
+}
+function renderLogin(msg){
+  app.innerHTML = `<div class="login"><form class="loginbox" id="loginForm">
+    <div class="loginbrand"><img src="/assets/chunyu-doctor-icon.png" alt="春雨医生" /><h1>春雨医服</h1></div>
+    <p>医助登录后处理当前群消息、AI 判断和待审回复。</p>
+    <input id="u" autocomplete="username" placeholder="账号" value="admin" />
+    <input id="p" autocomplete="current-password" placeholder="密码" type="password" />
+    <button type="submit">登录</button><div class="err">${esc(msg || "")}</div>
+  </form></div>`;
+  document.getElementById("loginForm").onsubmit = async ev=>{
+    ev.preventDefault();
+    const u = document.getElementById("u");
+    const p = document.getElementById("p");
+    try{ await api("/api/admin/login", { method:"POST", body:JSON.stringify({ username:u.value.trim(), password:p.value }) }); await boot(); }
+    catch(e){ renderLogin(e.message); }
+  };
+}
+async function load(){
+  const p = new URLSearchParams();
+  if(state.doctorId) p.set("doctorId", state.doctorId);
+  ["groupId","externalGroupId","externalUserId","userId","wxid","sessionId"].forEach(k=>{ const v = qs.get(k); if(v) p.set(k, v); });
+  state.data = await api("/api/admin/wecom/sidebar?" + p.toString());
+  render();
+}
+
+function renderTop(d){
+  const opts = state.doctors.map(doc=>`<option value="${doc.id}" ${String(doc.id)===String(state.doctorId)?"selected":""}>${esc(doc.name)} · ${esc(doc.dept||"")}</option>`).join("");
+  const qiwe = d.qiwe || {};
+  const f = d.fulfillment || {};
+  return `<header class="topbar">
+    <div class="topline">
+      <div class="brand-lockup"><img src="/assets/chunyu-doctor-icon.png" alt="春雨医生" /><div class="brand-copy"><strong>春雨医服</strong><span>企微医助工作台</span></div></div>
+      <select class="doctor-select" id="doctorSel">${opts}</select>
+    </div>
+    <div class="meta-strip">
+      <span class="pill ${qiwe.configured ? "ok" : "danger"}">${qiwe.configured ? "QiWe 已配置" : "QiWe 未配置"}</span>
+      <span class="pill ${qiwe.allowGroup ? "ok" : "gray"}">${qiwe.allowGroup ? "群消息允许" : "群消息关闭"}</span>
+      <span class="pill warn">${f.fulfilled || 0}/${f.total || 18} 编号承接</span>
+    </div>
+  </header>`;
+}
+function renderDoctorContext(d){
+  const doc = doctorInfo();
+  const target = activeTarget(d);
+  const groupName = target.groupName || doc.groupName;
+  const count = target.memberCount || doc.memberCount || 0;
+  return `<section class="doctor-context">
+    <div class="doctor-avatar" aria-hidden="true">${doc.avatar ? `<img src="${esc(doc.avatar)}" alt="" />` : esc(doc.initial)}</div>
+    <div class="doctor-main">
+      <div class="doctor-name"><b>${esc(doc.name)}</b><span class="verify">已认证</span></div>
+      <small>${esc(doc.title)} · ${esc(doc.dept)}</small>
+    </div>
+    <div class="group-context">
+      <b>当前群聊 · ${esc(groupName || "未绑定群上下文")}</b>
+      <small>外部联系人规模：${count ? esc(count) : "待同步"} 位客户</small>
+    </div>
+  </section>`;
+}
+function riskMeta(d){
+  const latest = latestDecision(d);
+  const session = activeSession(d);
+  const risk = (latest && latest.risk_level) || session.risk_level || "low";
+  const summary = latest ? (latest.reasoning_summary || latest.suggested_action || "暂无判断摘要") : "收到非编号问题后，这里会直接显示风险级别、建议动作和是否需要人工确认。";
+  const action = latest && latest.suggested_action ? latest.suggested_action : (risk === "high" ? "立即转人工；必要时提醒线下急诊/正规医院就诊" : "继续观察，必要时由医助确认回复");
+  return { risk, summary, action };
+}
+function renderRiskAction(d){
+  const m = riskMeta(d);
+  const title = m.risk === "high" ? "高风险 · 需人工确认" : m.risk === "medium" ? "中风险 · 建议人工复核" : "低风险 · 可按规则处理";
+  return `<section class="risk-action">
+    <div class="risk-copy">
+      <div class="risk-title"><span>!</span>${esc(title)}</div>
+      <p>AI 判断：${esc(m.summary)}；${esc(m.action)}</p>
+    </div>
+    <div class="risk-actions">
+      <button class="outline-btn" data-quick="handoff">转人工</button>
+      <button class="outline-btn secondary" data-quick="emergency">急诊提醒</button>
+    </div>
+  </section>`;
+}
+function renderModebar(){
+  const tabs = [["chat","会话"],["judge","判断依据"],["profile","患者档案"],["fulfill","编号承接"]];
+  return `<nav class="modebar">${tabs.map(([k,t])=>`<button class="${state.pane===k?"on":""}" data-pane-btn="${k}">${t}</button>`).join("")}</nav>`;
+}
+function renderWorkspace(d){
+  if(state.pane === "chat") return `<div class="workspace">${renderTimelineWork(d)}</div>`;
+  return `<div class="workspace">${renderDetailPanel(d)}</div>`;
+}
+function renderDetailPanel(d){
+  if(state.pane === "judge") return renderJudgeDetail(d);
+  if(state.pane === "profile") return renderProfileDetail(d);
+  return renderFulfillmentDetail(d);
+}
+function renderJudgeDetail(d){
+  const latest = latestDecision(d);
+  const session = activeSession(d);
+  return `<section class="detail-card"><div class="section-title"><div class="title-left"><b>判断依据</b><small> · 风险分层与发送策略</small></div>${latest ? `<span class="pill ${riskClass(latest.risk_level)}">${riskText(latest.risk_level || session.risk_level || "low")}</span>` : `<span class="pill gray">暂无</span>`}</div><div class="detail-body">
+    ${latest ? `<div class="kv-grid">
+      <div class="kv"><span>风险级别</span><b>${riskText(latest.risk_level)}</b></div>
+      <div class="kv"><span>发送策略</span><b>${latest.can_auto_send ? "可自动发送" : "需人工确认"}</b></div>
+      <div class="kv"><span>建议动作</span><b>${esc(latest.suggested_action || "-")}</b></div>
+      <div class="kv"><span>会话状态</span><b>${esc(session.status || "-")}</b></div>
+    </div>
+    <div class="judge-copy">${esc(latest.reasoning_summary || "暂无判断摘要")}</div>` : `<div class="empty">暂无 AI 判断。普通非编号问题进入分诊后会生成判断记录。</div>`}
+  </div></section>`;
+}
+function renderProfileDetail(d){
+  const ctx = d.context || {};
+  const group = ctx.group;
+  const member = ctx.member;
+  const detail = d.sessionDetail || {};
+  const profile = detail.profile && detail.profile.payload || {};
+  return `<section class="detail-card"><div class="section-title"><div class="title-left"><b>患者档案</b><small> · 微信 ID / 群 / 建档信息</small></div><span class="pill ${ctx.groupId || ctx.externalUserId ? "ok" : "gray"}">${ctx.groupId || ctx.externalUserId ? "已识别" : "待识别"}</span></div><div class="detail-body">
+    <div class="kv-grid">
+      <div class="kv"><span>群</span><b>${esc((group && group.name) || ctx.groupId || "未识别")}</b></div>
+      <div class="kv"><span>患者</span><b>${esc((member && member.displayName) || ctx.externalUserId || profile["姓名"] || "未识别")}</b></div>
+      <div class="kv"><span>主诉/疾病</span><b>${esc(profile["主要疾病 / 主诉"] || profile["主要疾病"] || "暂无")}</b></div>
+      <div class="kv"><span>手机号</span><b>${esc(profile["手机号"] || "暂无")}</b></div>
+    </div>
+  </div></section>`;
+}
+function renderFulfillmentDetail(d){
+  const f = d.fulfillment || { rows:[] };
+  return `<section class="detail-card"><div class="section-title"><div class="title-left"><b>编号承接</b><small> · 编号组与卡片状态</small></div><span class="pill warn">${f.nativeCards || 0}/${f.total || 18} 原生卡片</span></div><div class="detail-body fulfill-list">
+    ${(f.rows || []).map(x=>`<div class="fulfill-row">
+      <div class="fulfill-main"><div><b>${esc(x.code)} · ${esc(x.label)}</b><small>${esc(x.title || "")}</small></div><span class="pill ${x.cardReady ? "ok" : (x.fulfilled ? "warn" : "danger")}">${x.cardReady ? "卡片" : (x.fulfilled ? "可承接" : "缺口")}</span></div>
+      <div class="mini-tags">${(x.methods || []).map(m=>`<span class="mini-tag ${m==="企微原生卡片" ? "ok" : ""}">${esc(m)}</span>`).join("") || `<span class="mini-tag">待配置</span>`}</div>
+    </div>`).join("") || `<div class="empty">暂无编号承接数据。</div>`}
+  </div></section>`;
+}
+function communityRows(d){
+  return (d.messages || []).slice(0,10).reverse().map(m=>({
+    role:m.senderRole === "doctor" ? "doctor" : m.senderRole === "service" ? "service" : "patient",
+    badge:m.senderRole === "doctor" ? "医" : m.senderRole === "service" ? "客" : "患",
+    who:m.senderName || "患者",
+    tag:m.senderRole === "doctor" ? "医生" : m.senderRole === "service" ? "客服" : "外部联系人",
+    time:fmtTime(m.createdAt),
+    text:m.text || m.msgType || "",
+    status:sendText(m.processStatus),
+    source:m.matchedSource ? `匹配来源：${m.matchedSource}` : ""
+  })).filter(x=>x.text);
+}
+function triageRows(d){
+  const detail = d.sessionDetail || {};
+  return (detail.messages || []).slice(-12).map(m=>{
+    const ai = m.role !== "patient";
+    return {
+      role:ai ? (m.send_status === "draft_review" ? "draft" : "ai") : "patient",
+      badge:ai ? "AI" : "患",
+      who:ai ? (m.send_status === "draft_review" ? "AI草稿" : "AI分诊") : "患者",
+      tag:ai ? "本地规则" : "外部联系人",
+      time:fmtTime(m.created_at),
+      text:m.final_text || m.text || "",
+      status:sendText(m.send_status),
+      source:ai ? "来源：医学知识库 · 消化系统急症应对指南（本地规则）" : ""
+    };
+  }).filter(x=>x.text);
+}
+function timelineItems(d){
+  let rows = communityRows(d);
+  const tRows = triageRows(d);
+  if(!rows.length) rows = tRows;
+  const latest = latestDecision(d);
+  if(latest && !rows.some(x=>x.role === "ai")){
+    rows.push({
+      role:"ai", badge:"AI", who:"AI分诊", tag:"判断依据", time:fmtTime(latest.created_at),
+      text:latest.suggested_action || latest.reasoning_summary || "已生成风险判断，等待医助确认。",
+      status:latest.can_auto_send ? "可自动发送" : "已提示转人工",
+      source:"来源：医学知识库 · 消化系统急症应对指南（本地规则）"
+    });
+  }
+  const m = riskMeta(d);
+  if(m.risk === "high"){
+    rows.push({ role:"system", badge:"系", who:"系统", tag:"分配", time:"", text:"当前转人工，等待客服分配...", status:"", source:"" });
+  }
+  return rows;
+}
+function renderTimelineWork(d){
+  const rows = timelineItems(d);
+  const outbox = activeOutbox(d);
+  const target = activeTarget(d);
+  return `<section class="timeline-card">
+    <div class="section-title">
+      <div class="title-left"><b>会话</b><small> · ${esc(target.name)}</small></div>
+      <button class="filter-btn" data-quick="filter">筛选</button>
+    </div>
+    <div class="timeline" id="thread">${rows.length ? rows.map(renderTimelineRow).join("") : `<div class="empty">暂无群消息。收到患者消息后会在这里出现。</div>`}</div>
+    ${renderDraftDock(outbox, latestDecision(d))}
+    ${renderStatusFooter(d, rows.length)}
+  </section>`;
+}
+function renderTimelineRow(m){
+  return `<article class="timeline-row ${esc(m.role)}">
+    <div class="role-badge">${esc(m.badge)}</div>
+    <div class="row-main">
+      <div class="row-head"><b>${esc(m.who)}</b>${m.tag ? `<span class="tag">${esc(m.tag)}</span>` : ""}${m.time ? `<time>${esc(m.time)}</time>` : ""}</div>
+      <div class="row-text ${m.role==="system" ? "emphasis" : ""}">${esc(m.text)}</div>
+      ${m.source ? `<div class="row-source">${esc(m.source)}</div>` : ""}
+      ${m.status ? `<div class="row-status">${esc(m.status)}</div>` : ""}
+    </div>
+  </article>`;
+}
+function draftText(outbox, latest){
+  if(outbox && outbox.text) return outbox.text;
+  if(latest && latest.risk_level === "high") return "建议您尽快线下就诊评估，必要时到急诊处理。如出现持续剧烈腹痛、反复呕血/黑便、意识不清等情况，请立即拨打120或前往最近的正规医院急诊。";
+  if(latest && latest.suggested_action) return latest.suggested_action;
+  return "当前没有待审草稿。AI 只生成建议，真正发送由医助点击确认。";
+}
+function renderDraftDock(outbox, latest){
+  const has = !!outbox;
+  const code = has && outbox.payload && outbox.payload.qiwe && outbox.payload.qiwe.code ? outbox.payload.qiwe.code : "";
+  const cardReady = !!(has && outbox.payload && outbox.payload.qiwe && outbox.payload.qiwe.weappReadyAtDraft);
+  return `<div class="draft-dock" data-outbox="${has ? outbox.id : ""}">
+    <div class="draft-panel">
+      <div class="draft-head">
+        <b>AI 草稿（${has ? "待确认发送" : "暂无待审"}）</b>
+        <span class="draft-state">自动生成草稿 <i class="switch"></i> 收起</span>
+      </div>
+      <div class="draft-body">
+        <textarea class="draft-text ${has ? "" : "readonly"}" ${has ? "" : "readonly"}>${esc(draftText(outbox, latest))}</textarea>
+      </div>
+      <div class="draft-actions">
+        <button class="btn primary" data-act="send" data-id="${has ? outbox.id : ""}" ${has ? "" : "disabled"}>确认发送</button>
+        <button class="btn light" data-act="save" data-id="${has ? outbox.id : ""}" ${has ? "" : "disabled"}>修改</button>
+        <button class="btn danger" data-act="ignore" data-id="${has ? outbox.id : ""}" ${has ? "" : "disabled"}>忽略</button>
+        <button class="btn light" data-quick="cite">引用编号</button>
+        <button class="btn light" data-quick="doctor">转医生</button>
+        <span class="send-hint">${has ? (code ? esc(code) + " · " : "") + (cardReady ? "含卡片" : "文字承接") : "Enter 发送 · Ctrl+Enter 换行"}</span>
+      </div>
+    </div>
+  </div>`;
+}
+function renderStatusFooter(d, count){
+  const detail = d.sessionDetail || {};
+  const session = detail.session || {};
+  const f = d.fulfillment || {};
+  return `<footer class="status-footer">
+    <span>会话时长 ${elapsedFrom(session.created_at)}</span>
+    <span>消息 ${count} 条</span>
+    <span class="footer-right"><span><i class="green-dot"></i>AI已配置</span><span>卡片 ${f.nativeCards || 0}/${f.total || 18}</span></span>
+  </footer>`;
+}
+function render(){
+  const d = state.data;
+  app.innerHTML = `<div class="app-shell">${renderTop(d)}<main class="main-shell">${renderDoctorContext(d)}${renderRiskAction(d)}${renderModebar()}${renderWorkspace(d)}</main></div>`;
+  const doctorSel = document.getElementById("doctorSel");
+  if(doctorSel) doctorSel.onchange = async ev=>{ state.doctorId = ev.target.value; await load(); };
+  app.querySelectorAll("[data-pane-btn]").forEach(btn=>btn.onclick=()=>{ state.pane = btn.dataset.paneBtn; render(); });
+  app.querySelectorAll("[data-quick]").forEach(btn=>btn.onclick=async ()=>{
+    const k = btn.dataset.quick;
+    if(k === "cite"){ state.pane = "fulfill"; render(); return; }
+    if(k === "filter"){ toast("已保留筛选入口：后续可接群/患者/风险过滤"); return; }
+    if(k === "doctor"){
+      const dock = btn.closest("[data-outbox]");
+      const id = dock && dock.dataset.outbox;
+      if(!id){ toast("当前无待审草稿"); return; }
+      try{
+        await api(`/api/admin/community/outbox/${id}/assignee`, { method:"POST", body:JSON.stringify({ assignee:"doctor" }) });
+        toast("已转交医生");
+        await load();
+      }catch(e){ toast(e.message); }
+      return;
+    }
+    if(k === "handoff"){ toast("转人工说明：高风险消息会自动进入待审列表，由医助确认后发送"); return; }
+    if(k === "emergency"){ toast("急诊提示：高风险草稿会内置急诊指引，确认后由你发送"); return; }
+  });
+  app.querySelectorAll("[data-act]").forEach(btn=>{
+    btn.onclick = async ()=>{
+      const id = btn.dataset.id;
+      const box = btn.closest("[data-outbox]");
+      if(!id){ toast("当前没有待审草稿"); return; }
+      try{
+        btn.disabled = true;
+        if(btn.dataset.act === "save"){
+          await api(`/api/admin/community/outbox/${id}/edit`, { method:"POST", body:JSON.stringify({ text:box.querySelector("textarea").value }) });
+          toast("草稿已保存");
+        }else if(btn.dataset.act === "send"){
+          if(!confirm("确认通过企微发送这条回复？")) return;
+          await api(`/api/admin/community/outbox/${id}/send`, { method:"POST", body:"{}" });
+          toast("已提交发送");
+        }else if(btn.dataset.act === "ignore"){
+          if(!confirm("确认忽略这条待审草稿？")) return;
+          await api(`/api/admin/community/outbox/${id}/ignore`, { method:"POST", body:"{}" });
+          toast("已忽略");
+        }
+        await load();
+      }catch(e){ toast(e.message); }
+      finally{ btn.disabled = false; }
+    };
+  });
+}
+window.addEventListener("error", ev=>renderLogin("页面脚本错误：" + (ev.message || "未知错误")));
+window.addEventListener("unhandledrejection", ev=>{
+  const reason = ev.reason && (ev.reason.message || ev.reason);
+  renderLogin("连接医助后台失败：" + (reason || "未知错误"));
+});
+boot();
+</script>
+</body>
+</html>

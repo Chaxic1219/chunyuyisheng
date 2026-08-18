@@ -1,0 +1,13 @@
+<view class="page result-page">
+  <view class="result-card card">
+    <view class="icon-circle {{paid ? 'icon-ok' : 'icon-wait'}}">{{paid ? '✓' : '…'}}</view>
+    <text class="result-title">{{loading ? '查询支付结果…' : (paid ? '支付成功' : '支付未完成')}}</text>
+    <text wx:if="{{amountLabel && paid}}" class="result-amount">¥{{amountLabel}}</text>
+    <text class="result-hint">{{hint}}</text>
+  </view>
+
+  <button wx:if="{{paid && orderStatus === 'paid_pending_profile'}}" class="btn-primary result-btn" bindtap="goOrders">查看我的服务</button>
+  <button wx:elif="{{paid}}" class="btn-primary result-btn" bindtap="goOrders">查看我的服务</button>
+  <button wx:else class="btn-primary result-btn" bindtap="goPay">返回收银台继续支付</button>
+  <button class="btn-soft result-btn" bindtap="refresh">刷新状态</button>
+</view>

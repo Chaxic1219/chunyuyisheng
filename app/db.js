@@ -1,0 +1,4525 @@
+/* node:sqlite 数据层：建表 + 首次种子 */
+const { DatabaseSync } = require("node:sqlite");
+const path = require("path");
+const crypto = require("crypto");
+const scienceContent = require("./science_content.js");
+
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, "data.db");
+const db = new DatabaseSync(DB_PATH);
+/** 维护窗冻结：只允许 schema 加表/加列，跳过一切会改写现有业务行的 boot reconcile/seed。 */
+const DB_FREEZE_EXISTING_DATA = String(process.env.DB_FREEZE_EXISTING_DATA || "").trim() === "1";
+function unlessDataFrozen(label, fn) {
+  if (DB_FREEZE_EXISTING_DATA) {
+    console.log("[db-freeze] skip", label);
+    return undefined;
+  }
+  return fn();
+}
+// PRAGMA 加固（生产DB架构 v1.0 柱1，2026-07-04）：busy_timeout 治异步交错写偶发 SQLITE_BUSY 直接抛错；
+// synchronous=NORMAL 为 WAL 推荐档（掉电最多丢最近已提交尾部、不坏库）；wal_autocheckpoint=1000 页控 WAL 体积。
+db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL; PRAGMA wal_autocheckpoint = 1000;");
+
+// RAG 轻量增强（方向A 2026-08-14）：SQL 函数 fts_bigrams —— 中文双字展开，供 knowledge_fts 触发器调用。
+// unicode61 把连续 CJK 当一个 token，2 字医疗词（停药/喝酒/鸡蛋）无法检索；
+// 展开为空格分隔的 2-gram（"停药须知" → "停药 药须 须知"）后按空格分词即可精确命中。
+function fts_bigrams(title, body){
+  const t = String(title || "") + " " + String(body || "");
+  const grams = [];
+  for(let i = 0; i < t.length - 1; i++){
+    const g = t.slice(i, i + 2);
+    if(/[\u4e00-\u9fff]/.test(g)) grams.push(g);
+  }
+  return [...new Set(grams)].join(" ");
+}
+try{
+  db.function("fts_bigrams", fts_bigrams);
+}catch(e){
+  console.warn("[db] fts_bigrams 注册失败（FTS5 BM25 检索不可用）：", e && e.message);
+}
+
+/* 迁移记录表（生产DB架构 v1.0 柱3-3，2026-07-04）：「一次性破坏性清理块」跑过一次即登记、之后启动跳过——
+   防已清理老库上管理员日后自建的同形数据（同签名规则/同码菜单项等）被每次启动的清理块反复误删。
+   幂等 merge/backfill（新 seed 内容回填老库）不在此列、每次启动照跑（设计使然）。
+   注意：清理清单再扩充（如 REMOVED_SEED_RULES 加新签名）须启用新 patch_id，否则已登记的老库不会再跑新增部分。 */
+db.exec("CREATE TABLE IF NOT EXISTS schema_patches(patch_id TEXT PRIMARY KEY, applied_at TEXT)");
+function patchApplied(id){ return !!db.prepare("SELECT 1 FROM schema_patches WHERE patch_id=?").get(id); }
+function markPatchApplied(id){ db.prepare("INSERT OR IGNORE INTO schema_patches(patch_id,applied_at) VALUES(?,?)").run(id, new Date().toISOString()); }
+
+db.exec(`CREATE TABLE IF NOT EXISTS removed_doctor_slugs(
+  slug TEXT PRIMARY KEY,
+  name TEXT,
+  removed_at TEXT
+)`);
+function rememberRemovedDoctorSlug(slug, name){
+  const s = String(slug || "").trim();
+  if(!s) return;
+  db.prepare("INSERT OR REPLACE INTO removed_doctor_slugs(slug,name,removed_at) VALUES(?,?,?)")
+    .run(s, String(name || "").trim(), new Date().toISOString());
+}
+function forgetRemovedDoctorSlug(slug){
+  const s = String(slug || "").trim();
+  if(!s) return;
+  db.prepare("DELETE FROM removed_doctor_slugs WHERE slug=?").run(s);
+}
+function isRemovedDoctorSlug(slug){
+  const s = String(slug || "").trim();
+  if(!s) return false;
+  return !!db.prepare("SELECT 1 FROM removed_doctor_slugs WHERE slug=?").get(s);
+}
+
+/* 按 content.scienceArticles 重建 606 规则卡：无内容 → responses=[]（仅话术）；有内容 → link 卡列表。*/
+function syncScienceRuleCards(doctorId, content){
+  const did = Number(doctorId);
+  if(!Number.isInteger(did) || did <= 0) return false;
+  const responses = scienceContent.scienceResponsesFromContent(content);
+  const row = db.prepare("SELECT id FROM rules WHERE doctor_id=? AND code=?").get(did, "606");
+  if(!row) return false;
+  db.prepare("UPDATE rules SET responses=? WHERE id=?").run(JSON.stringify(responses), row.id);
+  return true;
+}
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS doctors(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug TEXT UNIQUE, name TEXT, title TEXT, hospital TEXT, dept TEXT, specialty TEXT,
+  group_name TEXT, member_count INTEGER, scope_note TEXT, hospital_phone TEXT,
+  bots TEXT, clinic TEXT, accounts TEXT, content TEXT, intro TEXT, active INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS rules(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER, code TEXT, aliases TEXT, match_type TEXT, bot TEXT,
+  responses TEXT, enabled INTEGER DEFAULT 1, sort INTEGER DEFAULT 0,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS faq(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER, grp TEXT, q TEXT, a TEXT, link TEXT, sort INTEGER DEFAULT 0,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS submissions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER, type TEXT, payload TEXT, status TEXT DEFAULT '待跟进',
+  created_at TEXT, FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS admins(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, salt TEXT, hash TEXT
+);
+CREATE TABLE IF NOT EXISTS msg_log(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER, direction TEXT, text TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS triage_sessions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER, patient_key TEXT, patient_name TEXT,
+  status TEXT DEFAULT 'ai_following',
+  risk_level TEXT DEFAULT 'low',
+  current_handler TEXT,
+  created_at TEXT, updated_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS triage_messages(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER, doctor_id INTEGER,
+  role TEXT, text TEXT, final_text TEXT,
+  attachments TEXT,
+  send_status TEXT DEFAULT 'draft',
+  created_at TEXT,
+  FOREIGN KEY(session_id) REFERENCES triage_sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS triage_decisions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER, message_id INTEGER,
+  risk_level TEXT, can_auto_send INTEGER DEFAULT 0, needs_human INTEGER DEFAULT 1,
+  reasoning_summary TEXT, triggered_rules TEXT, suggested_action TEXT,
+  doctor_style_basis TEXT, model TEXT, status TEXT DEFAULT 'pending_human',
+  created_at TEXT, decided_by TEXT, final_text TEXT,
+  FOREIGN KEY(session_id) REFERENCES triage_sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY(message_id) REFERENCES triage_messages(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS followups(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER, patient_name TEXT, patient_phone TEXT,
+  plan_key TEXT, plan_name TEXT,
+  enrolled_at TEXT, nodes TEXT,
+  status TEXT DEFAULT 'active',
+  created_at TEXT, updated_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS waitlist(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER, slot TEXT, patient_name TEXT, patient_phone TEXT,
+  status TEXT DEFAULT 'waiting', created_at TEXT, notified_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS ops_strategy(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER UNIQUE,
+  group_mode TEXT,
+  private_chat_policy TEXT,
+  doctor_profile TEXT,
+  specialty_fit TEXT,
+  pharma_value TEXT,
+  notes TEXT,
+  updated_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS ops_configs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER NOT NULL DEFAULT 0,
+  domain TEXT NOT NULL,
+  title TEXT,
+  scope TEXT DEFAULT 'doctor',
+  draft_json TEXT NOT NULL DEFAULT '{}',
+  published_json TEXT NOT NULL DEFAULT '{}',
+  published_version INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft',
+  updated_by TEXT,
+  updated_at TEXT,
+  published_by TEXT,
+  published_at TEXT,
+  UNIQUE(doctor_id, domain)
+);
+CREATE TABLE IF NOT EXISTS ops_config_audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  config_id INTEGER,
+  doctor_id INTEGER NOT NULL DEFAULT 0,
+  domain TEXT NOT NULL,
+  action TEXT NOT NULL,
+  actor TEXT,
+  snapshot_json TEXT,
+  result_json TEXT,
+  created_at TEXT,
+  FOREIGN KEY(config_id) REFERENCES ops_configs(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS admin_audit_log(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_admin_id INTEGER,
+  actor_username TEXT,
+  actor_role TEXT,
+  action TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  resource_id TEXT,
+  doctor_id INTEGER DEFAULT 0,
+  patient_id INTEGER,
+  session_id INTEGER,
+  risk_level TEXT,
+  channel TEXT,
+  outcome TEXT DEFAULT 'success',
+  reason TEXT,
+  before_json TEXT,
+  after_json TEXT,
+  diff_json TEXT,
+  meta_json TEXT,
+  ip TEXT,
+  user_agent TEXT,
+  request_id TEXT,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS knowledge_items(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  layer TEXT,
+  mode TEXT,
+  title TEXT,
+  body TEXT,
+  source TEXT,
+  owner TEXT,
+  status TEXT DEFAULT 'draft',
+  updated_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS knowledge_vectors(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER,
+  doctor_id INTEGER,
+  model_id TEXT,
+  dim INTEGER,
+  content_hash TEXT,
+  vector TEXT,
+  embedded_at TEXT,
+  FOREIGN KEY(item_id) REFERENCES knowledge_items(id) ON DELETE CASCADE
+);
+-- RAG 轻量增强（方向A 2026-08-14）：FTS5 全文索引（BM25 中文检索）。
+-- trigram 无法匹配 2 字中文词（停药/喝酒/鸡蛋等医疗高频词）→ 改用「双字展开」：
+--   索引列存 title+body 的 2-gram 空格展开（"停药须知" → "停药 停药须 药须知 须知"），
+--   查询端 ftsQueryTerms 同样 2-gram 展开后 OR 匹配。unicode61 按空格分词即可精确命中 2 字词。
+-- 外部内容表关联 knowledge_items，触发器自动同步；FTS 列存展开文本。
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+  gram,
+  content='knowledge_items',
+  content_rowid='id',
+  tokenize='unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_ai AFTER INSERT ON knowledge_items BEGIN
+  INSERT INTO knowledge_fts(rowid, gram) VALUES(new.id, fts_bigrams(new.title, new.body));
+END;
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_ad AFTER DELETE ON knowledge_items BEGIN
+  INSERT INTO knowledge_fts(knowledge_fts, rowid, gram) VALUES('delete', old.id, fts_bigrams(old.title, old.body));
+END;
+CREATE TRIGGER IF NOT EXISTS knowledge_fts_au AFTER UPDATE ON knowledge_items BEGIN
+  INSERT INTO knowledge_fts(knowledge_fts, rowid, gram) VALUES('delete', old.id, fts_bigrams(old.title, old.body));
+  INSERT INTO knowledge_fts(rowid, gram) VALUES(new.id, fts_bigrams(new.title, new.body));
+END;
+CREATE TABLE IF NOT EXISTS outcome_reports(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  period TEXT,
+  outpatient_baseline INTEGER DEFAULT 0,
+  outpatient_current INTEGER DEFAULT 0,
+  perceived_growth INTEGER DEFAULT 0,
+  group_active INTEGER DEFAULT 0,
+  consult_leads INTEGER DEFAULT 0,
+  notes TEXT,
+  created_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS community_groups(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  channel_type TEXT DEFAULT 'wechat',
+  external_group_id TEXT,
+  name TEXT,
+  owner TEXT,
+  member_count INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'pilot',
+  welcome_enabled INTEGER DEFAULT 1,
+  welcome_text TEXT,
+  auto_reply_enabled INTEGER DEFAULT 1,
+  review_mode TEXT DEFAULT 'human_review',
+  qrcode_url TEXT,
+  notes TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS community_members(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  group_id INTEGER,
+  external_user_id TEXT,
+  display_name TEXT,
+  phone TEXT,
+  tags TEXT,
+  joined_at TEXT,
+  status TEXT DEFAULT 'active',
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
+  FOREIGN KEY(group_id) REFERENCES community_groups(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS community_messages(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  group_id INTEGER,
+  member_id INTEGER,
+  external_msg_id TEXT,
+  sender_name TEXT,
+  sender_role TEXT DEFAULT 'patient',
+  msg_type TEXT DEFAULT 'text',
+  text TEXT,
+  raw_payload TEXT,
+  risk_level TEXT,
+  process_status TEXT DEFAULT 'received',
+  matched_source TEXT,
+  triage_session_id INTEGER,
+  decision_id INTEGER,
+  created_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
+  FOREIGN KEY(group_id) REFERENCES community_groups(id) ON DELETE SET NULL,
+  FOREIGN KEY(member_id) REFERENCES community_members(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS outbound_queue(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  group_id INTEGER,
+  message_id INTEGER,
+  target_type TEXT DEFAULT 'group',
+  target_name TEXT,
+  channel_type TEXT DEFAULT 'wechat',
+  text TEXT,
+  payload TEXT,
+  status TEXT DEFAULT 'pending',
+  source TEXT,
+  priority TEXT DEFAULT 'normal',
+  created_at TEXT,
+  sent_at TEXT,
+  sent_by TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
+  FOREIGN KEY(group_id) REFERENCES community_groups(id) ON DELETE SET NULL,
+  FOREIGN KEY(message_id) REFERENCES community_messages(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS wecom_configs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  corp_id TEXT,
+  secret TEXT,
+  agent_id TEXT,
+  callback_token TEXT,
+  encoding_aes_key TEXT,
+  robot_key TEXT,
+  kf_open_kfid TEXT,
+  note TEXT,
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS wecom_identities(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  external_userid TEXT,
+  open_kfid TEXT,
+  member_id INTEGER,
+  phone TEXT,
+  unionid TEXT,
+  last_cursor TEXT,
+  bound_at TEXT,
+  UNIQUE(doctor_id, external_userid)
+);
+CREATE TABLE IF NOT EXISTS qiwe_configs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  token TEXT,
+  guid TEXT,
+  self_user_id TEXT,
+  test_to_id TEXT,
+  callback_secret TEXT,
+  api_url TEXT,
+  enabled INTEGER DEFAULT 0,
+  auto_send INTEGER DEFAULT 0,
+  allow_group INTEGER DEFAULT 0,
+  note TEXT,
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS qiwe_weapp_templates(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  code TEXT,
+  source_type TEXT,
+  source_page TEXT,
+  source_short_link TEXT,
+  title TEXT,
+  app_id TEXT,
+  username TEXT,
+  page_path TEXT,
+  thumb_url TEXT,
+  cover_file_aes_key TEXT,
+  cover_file_id TEXT,
+  cover_file_size INTEGER,
+  desc TEXT,
+  raw_payload TEXT,
+  updated_at TEXT,
+  UNIQUE(doctor_id, code)
+);
+CREATE TABLE IF NOT EXISTS qiwe_seen(
+  msg_id TEXT PRIMARY KEY,
+  seen_at INTEGER
+);
+/* 群成员首现登记（方案B 新患者入群提醒的持久化真相源）：某群该 sender 首次在群内发言即登记一行，
+   UNIQUE(room_id,sender_id) 保证「一群一人只欢迎一次」，重启仍记得（不像 qiwe_seen 有 10 分钟 TTL 会过期）。
+   非身份/分诊/合并等安全逻辑，additive、幂等，CREATE TABLE IF NOT EXISTS。 */
+CREATE TABLE IF NOT EXISTS qiwe_room_member_seen(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  room_id TEXT NOT NULL,
+  sender_id TEXT NOT NULL,
+  sender_name TEXT,
+  first_at TEXT,
+  UNIQUE(room_id, sender_id)
+);
+CREATE INDEX IF NOT EXISTS idx_waitlist_doctor ON waitlist(doctor_id, slot);
+CREATE INDEX IF NOT EXISTS idx_followups_doctor ON followups(doctor_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_followups_phone ON followups(doctor_id, patient_phone);
+CREATE INDEX IF NOT EXISTS idx_triage_sessions_doctor ON triage_sessions(doctor_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_triage_messages_session ON triage_messages(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_triage_decisions_session ON triage_decisions(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_doctor_layer ON knowledge_items(doctor_id, layer, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_vectors_item ON knowledge_vectors(item_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_vectors_doctor ON knowledge_vectors(doctor_id);
+CREATE INDEX IF NOT EXISTS idx_outcome_doctor_period ON outcome_reports(doctor_id, period);
+CREATE INDEX IF NOT EXISTS idx_ops_configs_doctor_domain ON ops_configs(doctor_id, domain);
+CREATE INDEX IF NOT EXISTS idx_ops_config_audit_doctor ON ops_config_audit(doctor_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_actor ON admin_audit_log(actor_admin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_resource ON admin_audit_log(resource_type, resource_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_doctor_action ON admin_audit_log(doctor_id, action, created_at);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_action ON admin_audit_log(action, created_at);
+CREATE INDEX IF NOT EXISTS idx_community_groups_doctor ON community_groups(doctor_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_community_groups_ext ON community_groups(doctor_id, channel_type, external_group_id) WHERE external_group_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_community_members_group ON community_members(group_id, status);
+CREATE INDEX IF NOT EXISTS idx_community_messages_doctor ON community_messages(doctor_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_outbound_doctor_status ON outbound_queue(doctor_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_qiwe_configs_updated ON qiwe_configs(updated_at);
+CREATE INDEX IF NOT EXISTS idx_qiwe_weapp_templates_doctor ON qiwe_weapp_templates(doctor_id, code);
+CREATE INDEX IF NOT EXISTS idx_qiwe_seen_at ON qiwe_seen(seen_at);
+CREATE INDEX IF NOT EXISTS idx_qiwe_room_member_seen_doctor ON qiwe_room_member_seen(doctor_id, first_at);
+`);
+
+/* 院级 / 患者 / 身份：三张新表（additive，CREATE TABLE IF NOT EXISTS，幂等；不改动既有表） */
+db.exec(`
+CREATE TABLE IF NOT EXISTS hospitals(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE,
+  address TEXT,
+  phone TEXT,
+  registration_info TEXT,
+  insurance_info TEXT,
+  medical_record_info TEXT,
+  admission_info TEXT,
+  links TEXT,
+  notes TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS patients(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  display_name TEXT,
+  real_name TEXT,
+  phone TEXT,
+  phone_verified INTEGER DEFAULT 0,
+  unionid TEXT,
+  tags TEXT,
+  follow_stage TEXT,
+  notes TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS patient_identities(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER,
+  patient_id INTEGER,
+  channel TEXT,
+  external_id TEXT,
+  group_id INTEGER,
+  open_kfid TEXT,
+  unionid TEXT,
+  created_at TEXT,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE,
+  FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE,
+  UNIQUE(doctor_id, channel, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_patients_doctor ON patients(doctor_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_patients_phone ON patients(doctor_id, phone);
+CREATE INDEX IF NOT EXISTS idx_patient_identities_patient ON patient_identities(patient_id);
+`);
+
+/* 轻量迁移：给已存在的 data.db 补列（PRAGMA 守卫，幂等） */
+function ensureColumn(table, col, type){
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if(!cols.some(c=>c.name===col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+}
+ensureColumn("triage_decisions", "urgency", "TEXT");
+ensureColumn("triage_decisions", "structured_intake", "TEXT");
+ensureColumn("triage_decisions", "recommended_actions", "TEXT");
+ensureColumn("triage_sessions", "urgency", "TEXT");
+ensureColumn("triage_messages", "attachments", "TEXT");
+// 多租户：admins.role（super=全部医生；scoped=仅 admin_doctors 关联）+ 关联表
+ensureColumn("admins", "role", "TEXT DEFAULT 'super'");
+ensureColumn("admins", "active", "INTEGER DEFAULT 1");
+ensureColumn("admins", "display_name", "TEXT");
+ensureColumn("admins", "created_at", "TEXT");
+ensureColumn("admins", "updated_at", "TEXT");
+ensureColumn("admins", "last_login_at", "TEXT");
+ensureColumn("admins", "password_changed_at", "TEXT");
+ensureColumn("admins", "disabled_at", "TEXT");
+ensureColumn("admins", "disabled_by", "INTEGER");
+ensureColumn("admins", "note", "TEXT");
+ensureColumn("admins", "staff_id", "TEXT");
+ensureColumn("admins", "avatar_url", "TEXT"); // 个人中心自定义头像（相对路径 /uploads/...）
+try{
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_staff_id ON admins(staff_id) WHERE staff_id IS NOT NULL AND trim(staff_id) != ''");
+}catch(e){}
+{
+  const adminNow = new Date().toISOString();
+  db.prepare("UPDATE admins SET role='super' WHERE role IS NULL OR role=''").run();
+  db.prepare("UPDATE admins SET active=1 WHERE active IS NULL").run();
+  db.prepare("UPDATE admins SET created_at=? WHERE created_at IS NULL").run(adminNow);
+  db.prepare("UPDATE admins SET updated_at=? WHERE updated_at IS NULL").run(adminNow);
+  db.prepare("UPDATE admins SET password_changed_at=? WHERE password_changed_at IS NULL").run(adminNow);
+}
+
+/** 工号前 3 位：身份层级（身份证前三位类比） */
+const STAFF_ID_PREFIX = {
+  super: "101",
+  ops_manager: "201",
+  assistant: "301",
+  viewer: "401",
+  scoped: "309"
+};
+function staffIdPrefixForRole(role){
+  const r = String(role || "assistant").trim();
+  return STAFF_ID_PREFIX[r] || STAFF_ID_PREFIX.assistant;
+}
+/** 分配 8 位纯数字工号 PPPSSSSS；同前缀后 5 位递增 */
+function allocateStaffId(role){
+  const prefix = staffIdPrefixForRole(role);
+  const rows = db.prepare(
+    "SELECT staff_id FROM admins WHERE staff_id IS NOT NULL AND staff_id LIKE ?"
+  ).all(prefix + "%");
+  let maxSeq = 0;
+  for(const row of rows){
+    const sid = String(row.staff_id || "");
+    if(sid.length !== 8 || !sid.startsWith(prefix)) continue;
+    const seq = parseInt(sid.slice(3), 10);
+    if(Number.isFinite(seq) && seq > maxSeq) maxSeq = seq;
+  }
+  for(let i = 0; i < 10000; i++){
+    const next = maxSeq + 1 + i;
+    if(next > 99999) throw new Error("工号序号已耗尽：" + prefix);
+    const candidate = prefix + String(next).padStart(5, "0");
+    const hit = db.prepare("SELECT 1 FROM admins WHERE staff_id=?").get(candidate);
+    if(!hit) return candidate;
+  }
+  throw new Error("无法分配工号");
+}
+function backfillAdminStaffIds(){
+  const missing = db.prepare(
+    "SELECT id, role FROM admins WHERE staff_id IS NULL OR trim(staff_id)='' ORDER BY id"
+  ).all();
+  const upd = db.prepare("UPDATE admins SET staff_id=? WHERE id=?");
+  for(const row of missing){
+    upd.run(allocateStaffId(row.role || "assistant"), row.id);
+  }
+  return missing.length;
+}
+try{ backfillAdminStaffIds(); }catch(e){ console.error("[staff_id] backfill failed:", e && e.message); }
+// 企业微信出站：真实发送的回执/错误/重试计数（幂等与排障用）
+ensureColumn("outbound_queue", "send_error", "TEXT");
+ensureColumn("outbound_queue", "external_msg_id", "TEXT");
+ensureColumn("outbound_queue", "attempts", "INTEGER DEFAULT 0");
+// 审核台「转医生」标记：null=医助默认 / 'doctor'=需医生定夺（仅可见标记，status 仍 pending、不自动发）
+ensureColumn("outbound_queue", "assignee", "TEXT");
+// 审核台操作痕迹：任何动作（改字/转医生/忽略/确认发/取消）的最后操作人 + 时间（独立于发送审计 sent_by/sent_at）
+ensureColumn("outbound_queue", "updated_by", "TEXT");
+ensureColumn("outbound_queue", "updated_at", "TEXT");
+// 发送方式溯源（sendOutboxForDecision fail-closed·codex 反例3 修）：'real'=经真实企微通道投递成功（qiwe/wecom 真发或 qiwe_bridge 自动真发后入库）；
+// 'manual'=V1 兜底仅标 sent（医助声明已手动发·未经真实通道）；NULL=旧行/本地通道（enqueue/auto_keywords 等非企微真发）。
+// 分诊台 alreadySent 仅认 'real'，manual/NULL 一律拒确认（旧生产行全 NULL → 走社群工作台）。
+ensureColumn("outbound_queue", "sent_mode", "TEXT");
+// 群边界处置（Q2）：内容合规标记（仅提醒医助；独立于医疗 risk_level，不参与自动发判定）
+ensureColumn("community_messages", "moderation_flag", "TEXT");   // null / 'offtopic' / 'anti_doctor'
+ensureColumn("community_messages", "moderation_keys", "TEXT");   // 命中词，逗号分隔，供医助解释
+// 群风控 Phase A2a（2026-07-10）：三级严重等级地板 null/'high'/'medium'/'low'（spec §5）——
+// 词表确定性判定，与医疗分诊 risk_level 完全独立互不读取；A2b 的 AI 天网只能在此地板上「只升不降」
+ensureColumn("community_messages", "moderation_level", "TEXT");
+// 群风控 Phase A2b（2026-07-10）：AI 语义天网判定留痕（combineModeration 只升不降后回填；
+// role=施害/警示/受害/正常、reason=一句话依据）——仅供医助看板解释，绝不参与医疗分诊/自动发判定
+ensureColumn("community_messages", "moderation_ai_role", "TEXT");
+ensureColumn("community_messages", "moderation_ai_reason", "TEXT");
+// 群风控 Phase B（待办#15·2026-07-14）：医助人工处置状态 + 动作留痕（dismiss/block/kick/revoke）
+ensureColumn("community_messages", "moderation_status", "TEXT");   // null|open|dismissed|blocked|kicked|revoked|failed
+ensureColumn("community_messages", "moderation_action", "TEXT");   // 最近一次动作
+ensureColumn("community_messages", "moderation_resolved_at", "TEXT");
+ensureColumn("community_messages", "moderation_resolved_by", "TEXT");
+// 患者档案·家庭医生维度（待办#16）
+ensureColumn("patients", "family_role", "TEXT");            // self|spouse|child|parent|other
+ensureColumn("patients", "family_household_id", "TEXT");    // 同户标识（医助手填/系统生成）
+ensureColumn("patients", "family_doctor_enrolled", "INTEGER DEFAULT 0"); // 是否纳入家庭医生服务
+ensureColumn("patients", "avatar_url", "TEXT");             // 企微/QiWe 头像 URL
+ensureColumn("community_members", "avatar_url", "TEXT");
+ensureColumn("community_members", "patient_id", "INTEGER"); // 可能已有，ensure 幂等
+
+
+/* 患者健康记录（医助运营档案：出院/体检/内镜/影像/化验/处方/过敏/证明/转介/信件） */
+db.exec(`CREATE TABLE IF NOT EXISTS patient_health_records(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER NOT NULL,
+  patient_id INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  title TEXT,
+  summary TEXT,
+  recorded_at TEXT,
+  extra TEXT,
+  attachments TEXT,
+  created_by TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_phr_patient ON patient_health_records(patient_id, category, recorded_at)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_phr_doctor ON patient_health_records(doctor_id, updated_at)`);
+
+ensureColumn("patients", "gender", "TEXT");
+ensureColumn("patients", "birth_date", "TEXT");
+
+db.exec(`CREATE TABLE IF NOT EXISTS patient_profile_fields(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER NOT NULL,
+  patient_id INTEGER NOT NULL,
+  field_key TEXT NOT NULL,
+  field_value TEXT,
+  source TEXT NOT NULL DEFAULT 'patient',
+  confidence REAL,
+  updated_by TEXT,
+  updated_at TEXT,
+  UNIQUE(doctor_id, patient_id, field_key),
+  FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_ppf_patient ON patient_profile_fields(patient_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_ppf_doctor ON patient_profile_fields(doctor_id, updated_at)`);
+
+/* 全局患者主档（跨医生共享档案，2026-07-22） */
+db.exec(`CREATE TABLE IF NOT EXISTS persons(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  real_name TEXT,
+  gender TEXT,
+  birth_date TEXT,
+  phone TEXT,
+  phone_verified INTEGER DEFAULT 0,
+  unionid TEXT,
+  avatar_url TEXT,
+  created_at TEXT,
+  updated_at TEXT
+)`);
+ensureColumn("persons", "qiwe_user_id", "TEXT");
+ensureColumn("persons", "wechat_group_name", "TEXT");
+ensureColumn("persons", "mp_openid", "TEXT");
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_persons_mp_openid
+  ON persons(mp_openid) WHERE mp_openid IS NOT NULL AND trim(mp_openid) != ''`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS mp_sessions (
+  token TEXT PRIMARY KEY,
+  openid TEXT NOT NULL,
+  doctor_id INTEGER,
+  person_id INTEGER,
+  patient_id INTEGER,
+  phone_bound INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT,
+  expires_at TEXT,
+  last_seen_at TEXT
+)`);
+ensureColumn("mp_sessions", "revoked_at", "TEXT");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mp_sessions_openid ON mp_sessions(openid)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS mp_storage_scopes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id INTEGER NOT NULL,
+  doctor_id INTEGER NOT NULL,
+  scope_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(person_id, doctor_id),
+  UNIQUE(scope_id)
+)`);
+
+const MP_DATA_REQUEST_SIGNATURE = [
+  ["id", "INTEGER", 0, null, 1],
+  ["person_id", "INTEGER", 1, null, 0],
+  ["patient_id", "INTEGER", 1, null, 0],
+  ["request_type", "TEXT", 1, null, 0],
+  ["status", "TEXT", 1, "'pending'", 0],
+  ["created_at", "TEXT", 1, null, 0],
+  ["updated_at", "TEXT", 1, null, 0],
+  ["completed_at", "TEXT", 0, null, 0],
+  ["operator_id", "INTEGER", 0, null, 0],
+  ["note", "TEXT", 0, null, 0]
+];
+
+function createMpDataRequestsTable() {
+  db.exec(`CREATE TABLE IF NOT EXISTS mp_data_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL,
+    patient_id INTEGER NOT NULL,
+    request_type TEXT NOT NULL CHECK(request_type IN ('export','delete')),
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK(status IN ('pending','processing','completed','rejected')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    operator_id INTEGER,
+    note TEXT
+  )`);
+}
+
+function dataRequestLegacyText(columns, name) {
+  if (!columns.has(name)) return "NULL";
+  return `CASE WHEN "${name}" IS NULL THEN NULL ELSE substr(CAST("${name}" AS TEXT),1,2000) END`;
+}
+
+function dataRequestLegacyNote(columns) {
+  if (!columns.has("note")) return "NULL";
+  return `CASE WHEN "note" IS NULL THEN NULL ELSE CAST("note" AS TEXT) END`;
+}
+
+function rebuildMpDataRequestsTable(schema) {
+  const columns = new Set(schema.map((row) => row.name));
+  const legacyTable = `mp_data_requests_legacy_${process.pid}_${Date.now()}`;
+  let duplicateActiveCount = 0;
+  db.exec(`ALTER TABLE mp_data_requests RENAME TO "${legacyTable}"`);
+  db.exec("DROP INDEX IF EXISTS idx_mp_data_requests_person");
+  db.exec("DROP INDEX IF EXISTS idx_mp_data_requests_active_unique");
+  createMpDataRequestsTable();
+  const required = ["person_id", "patient_id", "request_type", "status"];
+  const sourceCount = Number(
+    db.prepare(`SELECT COUNT(*) AS c FROM "${legacyTable}"`).get().c
+  );
+  if (sourceCount > 0) {
+    if (!required.every((name) => columns.has(name))) {
+      throw new Error("mp_data_requests_migration_missing_columns");
+    }
+    const preserveId = columns.has("id");
+    const insertId = preserveId ? "id, " : "";
+    const sourceId = preserveId ? `CAST("id" AS INTEGER) AS id, ` : "";
+    const rankedId = preserveId ? "id, " : "";
+    const validId = preserveId
+      ? `AND typeof("id")='integer' AND "id" > 0`
+      : "";
+    const createdAt = columns.has("created_at")
+      ? `NULLIF(trim(CAST("created_at" AS TEXT)),'')`
+      : columns.has("requested_at")
+        ? `NULLIF(trim(CAST("requested_at" AS TEXT)),'')`
+        : "NULL";
+    const updatedAt = columns.has("updated_at")
+      ? `NULLIF(trim(CAST("updated_at" AS TEXT)),'')`
+      : createdAt;
+    const completedSource = columns.has("completed_at")
+      ? dataRequestLegacyText(columns, "completed_at")
+      : dataRequestLegacyText(columns, "processed_at");
+    const operatorId = columns.has("operator_id")
+      ? `CASE WHEN CAST("operator_id" AS INTEGER) > 0
+          THEN CAST("operator_id" AS INTEGER) ELSE NULL END`
+      : "NULL";
+    const note = dataRequestLegacyNote(columns);
+    const invalidCount = Number(db.prepare(`
+      SELECT COUNT(*) AS c
+      FROM "${legacyTable}"
+      WHERE CASE WHEN (
+        CAST("person_id" AS INTEGER) > 0
+        AND CAST("patient_id" AS INTEGER) > 0
+        AND "request_type" IN ('export','delete')
+        AND "status" IN ('pending','processing','completed','rejected','cancelled')
+        AND COALESCE(${createdAt}, ${updatedAt}) IS NOT NULL
+        AND COALESCE(${updatedAt}, ${createdAt}) IS NOT NULL
+        ${validId}
+      ) THEN 0 ELSE 1 END = 1
+    `).get().c);
+    if (invalidCount > 0) {
+      throw new Error("mp_data_requests_migration_invalid_rows");
+    }
+    duplicateActiveCount = Number(db.prepare(`
+      WITH active AS (
+        SELECT ROW_NUMBER() OVER (
+          PARTITION BY
+            CAST("person_id" AS INTEGER),
+            CAST("request_type" AS TEXT)
+          ORDER BY
+            COALESCE(${createdAt}, ${updatedAt}) ASC,
+            ${preserveId ? `CAST("id" AS INTEGER)` : "rowid"} ASC
+        ) AS active_rank
+        FROM "${legacyTable}"
+        WHERE "status" IN ('pending','processing')
+      )
+      SELECT COUNT(*) AS c FROM active WHERE active_rank > 1
+    `).get().c);
+
+    db.exec(`WITH source AS (
+      SELECT
+        ${sourceId}
+        CAST("person_id" AS INTEGER) AS person_id,
+        CAST("patient_id" AS INTEGER) AS patient_id,
+        CAST("request_type" AS TEXT) AS request_type,
+        CAST("status" AS TEXT) AS source_status,
+        COALESCE(${createdAt}, ${updatedAt}) AS created_at,
+        COALESCE(${updatedAt}, ${createdAt}) AS updated_at,
+        CASE WHEN "status"='completed' THEN ${completedSource} ELSE NULL END
+          AS completed_at,
+        ${operatorId} AS operator_id,
+        ${note} AS note,
+        ${preserveId ? `CAST("id" AS INTEGER)` : "rowid"} AS migration_order
+      FROM "${legacyTable}"
+    ),
+    ranked AS (
+      SELECT
+        source.*,
+        CASE WHEN source_status IN ('pending','processing') THEN
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              person_id,
+              request_type,
+              CASE
+                WHEN source_status IN ('pending','processing') THEN 'active'
+                ELSE 'row:' || CAST(migration_order AS TEXT)
+              END
+            ORDER BY created_at ASC, migration_order ASC
+          )
+        ELSE 1 END AS active_rank
+      FROM source
+    )
+    INSERT INTO mp_data_requests(
+      ${insertId}person_id, patient_id, request_type, status,
+      created_at, updated_at, completed_at, operator_id, note
+    )
+    SELECT
+      ${rankedId}
+      person_id,
+      patient_id,
+      request_type,
+      CASE
+        WHEN source_status='cancelled' THEN 'rejected'
+        WHEN source_status IN ('pending','processing') AND active_rank > 1
+          THEN 'rejected'
+        ELSE source_status
+      END,
+      created_at,
+      updated_at,
+      completed_at,
+      operator_id,
+      note
+    FROM ranked
+    ORDER BY migration_order ASC`);
+  }
+
+  const migratedCount = Number(
+    db.prepare("SELECT COUNT(*) AS c FROM mp_data_requests").get().c
+  );
+  if (migratedCount !== sourceCount) {
+    throw new Error("mp_data_requests_migration_count_mismatch");
+  }
+  db.exec(`DROP TABLE "${legacyTable}"`);
+  return { duplicateActiveCount };
+}
+
+function hasCanonicalMpDataRequestSchema(schema, tableSql) {
+  if (schema.length !== MP_DATA_REQUEST_SIGNATURE.length) return false;
+  const signatureMatches = MP_DATA_REQUEST_SIGNATURE.every((expected, index) => {
+    const row = schema[index];
+    return (
+      row &&
+      row.name === expected[0] &&
+      String(row.type || "").toUpperCase() === expected[1] &&
+      Number(row.notnull) === expected[2] &&
+      row.dflt_value === expected[3] &&
+      Number(row.pk) === expected[4]
+    );
+  });
+  const normalizedSql = String(tableSql || "").replace(/\s+/g, "").toLowerCase();
+  return (
+    signatureMatches &&
+    normalizedSql.includes("check(request_typein('export','delete'))") &&
+    normalizedSql.includes(
+      "check(statusin('pending','processing','completed','rejected'))"
+    ) &&
+    !normalizedSql.includes("'cancelled'")
+  );
+}
+
+function mpDataRequestIndexDefinition(name) {
+  const row = db.prepare("PRAGMA index_list(mp_data_requests)").all()
+    .find((item) => item.name === name);
+  if (!row) return null;
+  const columns = db.prepare(
+    `PRAGMA index_info("${String(name).replace(/"/g, '""')}")`
+  ).all().map((item) => item.name);
+  const stored = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?"
+  ).get(name);
+  return {
+    unique: Number(row.unique),
+    partial: Number(row.partial),
+    columns,
+    sql: String((stored && stored.sql) || "")
+  };
+}
+
+function sameIndexColumns(actual, expected) {
+  return (
+    actual.length === expected.length &&
+    expected.every((name, index) => actual[index] === name)
+  );
+}
+
+function canonicalMpDataRequestIndex(name, definition) {
+  if (!definition) return false;
+  if (name === "idx_mp_data_requests_person") {
+    return (
+      definition.unique === 0 &&
+      definition.partial === 0 &&
+      sameIndexColumns(definition.columns, [
+        "person_id",
+        "request_type",
+        "status",
+        "created_at"
+      ])
+    );
+  }
+  const normalized = definition.sql
+    .replace(/\s+/g, "")
+    .replace(/;$/, "")
+    .toLowerCase();
+  const where = normalized.includes("where")
+    ? normalized.slice(normalized.indexOf("where") + 5)
+    : "";
+  return (
+    definition.unique === 1 &&
+    definition.partial === 1 &&
+    sameIndexColumns(definition.columns, ["person_id", "request_type"]) &&
+    where === "statusin('pending','processing')"
+  );
+}
+
+function ensureMpDataRequestIndexes() {
+  for (const name of [
+    "idx_mp_data_requests_person",
+    "idx_mp_data_requests_active_unique"
+  ]) {
+    const definition = mpDataRequestIndexDefinition(name);
+    if (definition && !canonicalMpDataRequestIndex(name, definition)) {
+      db.exec(`DROP INDEX "${name}"`);
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_mp_data_requests_person
+    ON mp_data_requests(person_id, request_type, status, created_at)`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mp_data_requests_active_unique
+    ON mp_data_requests(person_id, request_type)
+    WHERE status IN ('pending','processing')`);
+  for (const name of [
+    "idx_mp_data_requests_person",
+    "idx_mp_data_requests_active_unique"
+  ]) {
+    if (!canonicalMpDataRequestIndex(name, mpDataRequestIndexDefinition(name))) {
+      throw new Error("mp_data_requests_index_invalid");
+    }
+  }
+}
+
+function ensureMpDataRequestsTable() {
+  let migrationSummary = null;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const table = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='mp_data_requests'"
+    ).get();
+    if (!table) {
+      createMpDataRequestsTable();
+    } else {
+      const schema = db.prepare("PRAGMA table_info(mp_data_requests)").all();
+      if (!hasCanonicalMpDataRequestSchema(schema, table.sql)) {
+        migrationSummary = rebuildMpDataRequestsTable(schema);
+      }
+    }
+    ensureMpDataRequestIndexes();
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch (rollbackError) {}
+    throw error;
+  }
+  if (migrationSummary && migrationSummary.duplicateActiveCount > 0) {
+    console.info(
+      "[db/mp_data_requests] normalized_duplicate_active count=" +
+      migrationSummary.duplicateActiveCount
+    );
+  }
+}
+
+ensureMpDataRequestsTable();
+
+db.exec(`CREATE TABLE IF NOT EXISTS mp_private_files (
+  id TEXT PRIMARY KEY,
+  doctor_id INTEGER NOT NULL,
+  person_id INTEGER NOT NULL,
+  patient_id INTEGER NOT NULL,
+  storage_name TEXT NOT NULL UNIQUE,
+  original_name TEXT,
+  mime TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('pending','ready')),
+  claimed_at TEXT
+)`);
+db.exec("BEGIN IMMEDIATE");
+try {
+  ensureColumn(
+    "mp_private_files",
+    "state",
+    "TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('pending','ready'))"
+  );
+  const privateFileColumns = db.prepare(
+    "PRAGMA table_info(mp_private_files)"
+  ).all();
+  if (!privateFileColumns.some((column) => column.name === "claimed_at")) {
+    db.exec("ALTER TABLE mp_private_files ADD COLUMN claimed_at TEXT");
+    db.prepare(`UPDATE mp_private_files
+      SET claimed_at=COALESCE(NULLIF(created_at,''),?)
+      WHERE state='ready' AND claimed_at IS NULL`
+    ).run(new Date().toISOString());
+  }
+  db.exec("COMMIT");
+} catch (error) {
+  try { db.exec("ROLLBACK"); } catch (rollbackError) {}
+  throw error;
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mp_private_files_patient_created
+  ON mp_private_files(patient_id, created_at)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mp_private_files_state_created
+  ON mp_private_files(state, created_at)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mp_private_files_unclaimed_created
+  ON mp_private_files(state, claimed_at, created_at)`);
+
+const MP_AI_AUDIT_SIGNATURE = [
+  ["id", "INTEGER", 0, null, 1],
+  ["openid", "TEXT", 1, null, 0],
+  ["person_id", "INTEGER", 1, null, 0],
+  ["patient_id", "INTEGER", 1, null, 0],
+  ["doctor_id", "INTEGER", 1, null, 0],
+  ["session_id", "TEXT", 0, null, 0],
+  ["model", "TEXT", 0, null, 0],
+  ["input_chars", "INTEGER", 1, "0", 0],
+  ["history_turns", "INTEGER", 1, "0", 0],
+  ["status", "TEXT", 1, null, 0],
+  ["error_code", "TEXT", 0, null, 0],
+  ["created_at", "TEXT", 1, null, 0],
+  ["updated_at", "TEXT", 1, null, 0]
+];
+
+function createMpAiAuditTable() {
+  db.exec(`CREATE TABLE IF NOT EXISTS mp_ai_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    openid TEXT NOT NULL,
+    person_id INTEGER NOT NULL,
+    patient_id INTEGER NOT NULL,
+    doctor_id INTEGER NOT NULL,
+    session_id TEXT,
+    model TEXT,
+    input_chars INTEGER NOT NULL DEFAULT 0,
+    history_turns INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+}
+
+function nullableLegacyText(columns, name, limit) {
+  if (!columns.has(name)) return "NULL";
+  return `CASE WHEN "${name}" IS NULL THEN NULL ELSE substr(CAST("${name}" AS TEXT),1,${limit}) END`;
+}
+
+function rebuildMpAiAuditTable(columns) {
+  const legacyTable = `mp_ai_audit_legacy_${process.pid}_${Date.now()}`;
+  const required = [
+    "id", "openid", "person_id", "patient_id", "doctor_id", "status", "created_at"
+  ];
+  if (!required.every((name) => columns.has(name))) {
+    throw new Error("mp_ai_audit_missing_required_columns");
+  }
+  const sourceCount = Number(
+    db.prepare("SELECT COUNT(*) AS count FROM mp_ai_audit").get().count
+  );
+  const invalidIds = db.prepare(`SELECT COUNT(*) AS count
+    FROM mp_ai_audit
+    WHERE typeof(id)!='integer' OR id <= 0`).get().count;
+  const distinctIds = db.prepare(
+    "SELECT COUNT(DISTINCT id) AS count FROM mp_ai_audit"
+  ).get().count;
+  if (Number(invalidIds) !== 0 || Number(distinctIds) !== sourceCount) {
+    throw new Error("mp_ai_audit_unmappable_ids");
+  }
+  db.exec(`ALTER TABLE mp_ai_audit RENAME TO "${legacyTable}"`);
+  db.exec("DROP INDEX IF EXISTS idx_mp_ai_audit_person_created");
+  createMpAiAuditTable();
+
+  const sessionId = nullableLegacyText(columns, "session_id", 128);
+  const model = nullableLegacyText(columns, "model", 255);
+  const legacyErrorCode = nullableLegacyText(columns, "error_code", 128);
+  const inputChars = columns.has("input_chars")
+    ? `CASE WHEN CAST("input_chars" AS INTEGER) >= 0 THEN CAST("input_chars" AS INTEGER) ELSE 0 END`
+    : "0";
+  const historyTurns = columns.has("history_turns")
+    ? `CASE WHEN CAST("history_turns" AS INTEGER) BETWEEN 0 AND 10 THEN CAST("history_turns" AS INTEGER) ELSE 0 END`
+    : "0";
+  const normalizedCreatedAt = `CASE
+    WHEN trim(COALESCE(CAST("created_at" AS TEXT),''))=''
+      THEN '1970-01-01T00:00:00.000Z'
+    ELSE substr(trim(CAST("created_at" AS TEXT)),1,64)
+  END`;
+  const updatedAt = columns.has("updated_at")
+    ? `CASE
+        WHEN trim(COALESCE(CAST("updated_at" AS TEXT),''))=''
+          THEN ${normalizedCreatedAt}
+        ELSE substr(trim(CAST("updated_at" AS TEXT)),1,64)
+      END`
+    : normalizedCreatedAt;
+  const invalidMetadata = `(
+    trim(COALESCE(CAST("openid" AS TEXT),''))='' OR
+    CAST("person_id" AS INTEGER) <= 0 OR
+    CAST("patient_id" AS INTEGER) <= 0 OR
+    CAST("doctor_id" AS INTEGER) <= 0 OR
+    COALESCE(CAST("status" AS TEXT),'') NOT IN ('pending','success','error') OR
+    trim(COALESCE(CAST("created_at" AS TEXT),''))=''
+  )`;
+  db.exec(`INSERT INTO mp_ai_audit(
+      id, openid, person_id, patient_id, doctor_id, session_id, model,
+      input_chars, history_turns, status, error_code, created_at, updated_at
+    )
+    SELECT
+      CAST("id" AS INTEGER),
+      CASE
+        WHEN trim(COALESCE(CAST("openid" AS TEXT),''))=''
+          THEN 'legacy-invalid-openid-' || CAST("id" AS TEXT)
+        ELSE substr(trim(CAST("openid" AS TEXT)),1,255)
+      END,
+      CASE WHEN CAST("person_id" AS INTEGER) > 0 THEN CAST("person_id" AS INTEGER) ELSE 0 END,
+      CASE WHEN CAST("patient_id" AS INTEGER) > 0 THEN CAST("patient_id" AS INTEGER) ELSE 0 END,
+      CASE WHEN CAST("doctor_id" AS INTEGER) > 0 THEN CAST("doctor_id" AS INTEGER) ELSE 0 END,
+      ${sessionId},
+      ${model},
+      ${inputChars},
+      ${historyTurns},
+      CASE
+        WHEN CAST("status" AS TEXT) IN ('pending','success','error')
+          THEN CAST("status" AS TEXT)
+        ELSE 'error'
+      END,
+      CASE WHEN ${invalidMetadata}
+        THEN 'legacy_invalid_metadata'
+        ELSE ${legacyErrorCode}
+      END,
+      ${normalizedCreatedAt},
+      ${updatedAt}
+    FROM "${legacyTable}"`);
+
+  const migratedCount = Number(
+    db.prepare("SELECT COUNT(*) AS count FROM mp_ai_audit").get().count
+  );
+  const missingIds = Number(db.prepare(`SELECT COUNT(*) AS count
+    FROM "${legacyTable}" legacy
+    LEFT JOIN mp_ai_audit migrated ON migrated.id=legacy.id
+    WHERE migrated.id IS NULL`).get().count);
+  if (migratedCount !== sourceCount || missingIds !== 0) {
+    throw new Error("mp_ai_audit_migration_count_mismatch");
+  }
+
+  db.exec(`DROP TABLE "${legacyTable}"`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_mp_ai_audit_person_created
+    ON mp_ai_audit(person_id, created_at)`);
+}
+
+function hasCanonicalMpAiAuditSignature(schema) {
+  if (schema.length !== MP_AI_AUDIT_SIGNATURE.length) return false;
+  return MP_AI_AUDIT_SIGNATURE.every((expected, index) => {
+    const row = schema[index];
+    return (
+      row &&
+      row.name === expected[0] &&
+      String(row.type || "").toUpperCase() === expected[1] &&
+      Number(row.notnull) === expected[2] &&
+      row.dflt_value === expected[3] &&
+      Number(row.pk) === expected[4]
+    );
+  });
+}
+
+function ensureMpAiAuditTable() {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const exists = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='mp_ai_audit'"
+    ).get();
+    if (!exists) {
+      createMpAiAuditTable();
+    } else {
+      const schema = db.prepare("PRAGMA table_info(mp_ai_audit)").all();
+      if (!hasCanonicalMpAiAuditSignature(schema)) {
+        rebuildMpAiAuditTable(new Set(schema.map((row) => row.name)));
+      }
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_mp_ai_audit_person_created
+      ON mp_ai_audit(person_id, created_at)`);
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch (rollbackError) {}
+    throw error;
+  }
+}
+
+ensureMpAiAuditTable();
+try { db.exec(`DROP INDEX IF EXISTS idx_persons_qiwe_user_id`); } catch (e) {}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_persons_qiwe_user_id
+  ON persons(qiwe_user_id) WHERE qiwe_user_id IS NOT NULL AND trim(qiwe_user_id) != ''`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_persons_wechat_group_name
+  ON persons(wechat_group_name) WHERE wechat_group_name IS NOT NULL AND trim(wechat_group_name) != ''`);
+ensureColumn("patients", "person_id", "INTEGER");
+ensureColumn("patients", "archived_at", "TEXT");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_patients_person ON patients(person_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_patients_archived ON patients(doctor_id, archived_at)`);
+try {
+  require("./patient_archive.js").ensureSchema(db);
+} catch (e) {
+  console.warn("[migrate] patient_archive_ops:", e && e.message);
+}
+try {
+  const svcPkg = require("./modules/servicePackage");
+  svcPkg.ensureSchema(db);
+} catch (e) {
+  console.warn("[migrate] servicePackage schema:", e && e.message);
+}
+try {
+  require("./modules/outbound/schema.js").ensureSchema(db);
+} catch (e) {
+  console.warn("[migrate] outbound schema:", e && e.message);
+}
+try {
+  require("./modules/community/science_reminders_schema.js").ensureSchema(db);
+} catch (e) {
+  console.warn("[migrate] science_reminder_plans:", e && e.message);
+}
+try {
+  require("./modules/llm_config.js").ensureSchema(db);
+} catch (e) {
+  console.warn("[migrate] llm_global_config:", e && e.message);
+}
+ensureColumn("patient_profile_fields", "person_id", "INTEGER");
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ppf_person_key
+  ON patient_profile_fields(person_id, field_key) WHERE person_id IS NOT NULL`);
+ensureColumn("patient_health_records", "person_id", "INTEGER");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_phr_person ON patient_health_records(person_id, category, recorded_at)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS health_plans(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'self',
+  status TEXT NOT NULL DEFAULT 'draft',
+  source_json TEXT,
+  doctor_id INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_health_plans_person ON health_plans(person_id, status, updated_at)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS health_plan_items(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  schedule_json TEXT,
+  meta_json TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(plan_id) REFERENCES health_plans(id) ON DELETE CASCADE
+)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS health_task_instances(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_id INTEGER NOT NULL,
+  item_id INTEGER,
+  person_id INTEGER NOT NULL,
+  task_date TEXT NOT NULL,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  payload_json TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(person_id, plan_id, task_date, title)
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_health_tasks_day ON health_task_instances(person_id, task_date, status)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS health_metric_logs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id INTEGER NOT NULL,
+  task_id INTEGER,
+  metric_key TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS health_family_members(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  relation TEXT,
+  phone TEXT,
+  role TEXT NOT NULL DEFAULT 'helper',
+  created_at TEXT NOT NULL
+)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS health_feed_dismissals(
+  person_id INTEGER NOT NULL,
+  card_key TEXT NOT NULL,
+  dismissed_at TEXT NOT NULL,
+  PRIMARY KEY(person_id, card_key)
+)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS health_record_confirmations(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id INTEGER NOT NULL,
+  source_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'confirmed',
+  payload_json TEXT,
+  confirmed_at TEXT NOT NULL,
+  UNIQUE(person_id, source_key)
+)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS person_merge_log(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  keep_person_id INTEGER NOT NULL,
+  merged_person_ids TEXT NOT NULL,
+  operator TEXT,
+  reason TEXT,
+  created_at TEXT
+)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS patient_invite_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER NOT NULL,
+  token TEXT NOT NULL UNIQUE,
+  note TEXT,
+  max_uses INTEGER,
+  use_count INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT,
+  created_by TEXT,
+  created_at TEXT,
+  last_used_at TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  require_sms INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_invite_doctor ON patient_invite_links(doctor_id, active)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS patient_sessions (
+  token TEXT PRIMARY KEY,
+  doctor_id INTEGER NOT NULL,
+  patient_id INTEGER NOT NULL,
+  created_at TEXT,
+  expires_at TEXT,
+  last_seen_at TEXT
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_psid_patient ON patient_sessions(patient_id)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS admin_sessions (
+  token TEXT PRIMARY KEY,
+  admin_id INTEGER NOT NULL,
+  username TEXT,
+  role TEXT,
+  created_at_ms INTEGER NOT NULL,
+  last_seen_at_ms INTEGER NOT NULL,
+  expires_at_ms INTEGER NOT NULL
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin ON admin_sessions(admin_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires ON admin_sessions(expires_at_ms)`);
+
+ensureColumn("community_groups", "is_business", "INTEGER DEFAULT 0");
+ensureColumn("community_groups", "last_synced_at", "TEXT");
+ensureColumn("community_groups", "sync_version", "INTEGER DEFAULT 0");
+ensureColumn("community_groups", "data_source", "TEXT DEFAULT 'manual'");
+ensureColumn("community_members", "data_source", "TEXT DEFAULT 'manual'");
+ensureColumn("community_members", "last_synced_at", "TEXT");
+ensureColumn("community_messages", "data_source", "TEXT DEFAULT 'manual'");
+ensureColumn("outbound_queue", "data_source", "TEXT DEFAULT 'manual'");
+// 真企微群 data_source 提升改到 mergeDuplicateQiweGroups 之后（见文件末尾）。
+// 注意：禁止在启动时强写 is_business——业务群勾选属管理员配置，部署/重启不得覆盖。
+ensureColumn("community_groups", "weekly_auto_last_week", "TEXT");
+ensureColumn("community_groups", "share_visible_to_collab", "INTEGER DEFAULT 1");
+/* 切换 QiWe 账号时：当前托管号未加入的历史企微群软隐藏；切回 home_guid 后恢复。不删库、不改医生。 */
+ensureColumn("community_groups", "qiwe_hidden", "INTEGER DEFAULT 0");
+
+db.exec(`CREATE TABLE IF NOT EXISTS qiwe_account_state(
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  home_guid TEXT,
+  active_guid TEXT,
+  region TEXT,
+  updated_at TEXT
+)`);
+
+db.exec(`CREATE TABLE IF NOT EXISTS community_group_doctors (
+  group_id INTEGER NOT NULL,
+  doctor_id INTEGER NOT NULL,
+  role TEXT NOT NULL DEFAULT 'collaborator',
+  auto_reply INTEGER NOT NULL DEFAULT 0,
+  can_outbound INTEGER NOT NULL DEFAULT 1,
+  joined_at TEXT,
+  note TEXT,
+  PRIMARY KEY (group_id, doctor_id),
+  FOREIGN KEY (group_id) REFERENCES community_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+)`);
+
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cgd_one_primary
+  ON community_group_doctors(group_id) WHERE role = 'primary'`);
+
+try {
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cg_qiwe_external
+    ON community_groups(external_group_id)
+    WHERE data_source = 'qiwe'
+      AND external_group_id IS NOT NULL
+      AND trim(external_group_id) != ''
+      AND external_group_id NOT LIKE 'local-%'`);
+} catch (e) {
+  console.warn("[migrate] idx_cg_qiwe_external deferred:", e && e.message);
+}
+
+const groupsNeedPrimary = DB_FREEZE_EXISTING_DATA ? [] : db.prepare(`
+  SELECT g.id, g.doctor_id FROM community_groups g
+  WHERE g.doctor_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM community_group_doctors d
+      WHERE d.group_id = g.id AND d.role = 'primary'
+    )`).all();
+const insPrimary = db.prepare(`INSERT OR IGNORE INTO community_group_doctors
+  (group_id, doctor_id, role, auto_reply, can_outbound, joined_at)
+  VALUES (?, ?, 'primary', 1, 1, ?)`);
+const primaryBackfillNow = new Date().toISOString();
+for (const g of groupsNeedPrimary) {
+  if (!g.doctor_id) continue;
+  insPrimary.run(g.id, g.doctor_id, primaryBackfillNow);
+}
+if (DB_FREEZE_EXISTING_DATA) {
+  console.log("[db-freeze] skip community_group_doctors primary backfill");
+}
+
+// 院级聚合 + 患者身份枢纽：nullable 软指针（resolver 维护，删患者不级联清史）
+ensureColumn("doctors", "hospital_id", "INTEGER");
+ensureColumn("community_members", "patient_id", "INTEGER");
+ensureColumn("triage_sessions", "patient_id", "INTEGER");
+ensureColumn("submissions", "patient_id", "INTEGER");
+ensureColumn("followups", "patient_id", "INTEGER");
+// QiWe 第三方真实账号接入配置（老库/测试库若已有早期同名表，逐列补齐）
+ensureColumn("qiwe_configs", "doctor_id", "INTEGER");
+ensureColumn("qiwe_configs", "token", "TEXT");
+ensureColumn("qiwe_configs", "guid", "TEXT");
+ensureColumn("qiwe_configs", "self_user_id", "TEXT");
+ensureColumn("qiwe_configs", "test_to_id", "TEXT");
+ensureColumn("qiwe_configs", "callback_secret", "TEXT");
+ensureColumn("qiwe_configs", "api_url", "TEXT");
+ensureColumn("qiwe_configs", "enabled", "INTEGER DEFAULT 0");
+ensureColumn("qiwe_configs", "auto_send", "INTEGER DEFAULT 0");
+ensureColumn("qiwe_configs", "allow_group", "INTEGER DEFAULT 0");
+ensureColumn("qiwe_configs", "note", "TEXT");
+ensureColumn("qiwe_configs", "updated_at", "TEXT");
+// QiWe 小程序卡片模板：/msg/sendWeapp 需要的封面、原始 ID、path 等不能从 Short Link 反推，需从真实卡片回调采集。
+ensureColumn("qiwe_weapp_templates", "doctor_id", "INTEGER");
+ensureColumn("qiwe_weapp_templates", "code", "TEXT");
+ensureColumn("qiwe_weapp_templates", "source_type", "TEXT");
+ensureColumn("qiwe_weapp_templates", "source_page", "TEXT");
+ensureColumn("qiwe_weapp_templates", "source_short_link", "TEXT");
+ensureColumn("qiwe_weapp_templates", "title", "TEXT");
+ensureColumn("qiwe_weapp_templates", "app_id", "TEXT");
+ensureColumn("qiwe_weapp_templates", "username", "TEXT");
+ensureColumn("qiwe_weapp_templates", "page_path", "TEXT");
+ensureColumn("qiwe_weapp_templates", "thumb_url", "TEXT");
+ensureColumn("qiwe_weapp_templates", "cover_file_aes_key", "TEXT");
+ensureColumn("qiwe_weapp_templates", "cover_file_id", "TEXT");
+ensureColumn("qiwe_weapp_templates", "cover_file_size", "INTEGER");
+ensureColumn("qiwe_weapp_templates", "desc", "TEXT");
+ensureColumn("qiwe_weapp_templates", "raw_payload", "TEXT");
+ensureColumn("qiwe_weapp_templates", "updated_at", "TEXT");
+/* Dialogue Agent 多轮会话（2026-07-17）：slots/summary/turns JSON，按 doctor+patientKey 幂等 */
+db.exec(`CREATE TABLE IF NOT EXISTS agent_sessions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doctor_id INTEGER NOT NULL,
+  patient_key TEXT NOT NULL,
+  slots_json TEXT,
+  goal TEXT,
+  summary TEXT,
+  turns_json TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  UNIQUE(doctor_id, patient_key)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_doctor ON agent_sessions(doctor_id, updated_at);
+`);
+// RAG Phase 1 向量存储（docs/specs/rag-embedding-rerank-plan.md）：老库若已有早期同名表，逐列补齐（幂等）。
+ensureColumn("knowledge_vectors", "item_id", "INTEGER");
+ensureColumn("knowledge_vectors", "doctor_id", "INTEGER");
+ensureColumn("knowledge_vectors", "model_id", "TEXT");
+ensureColumn("knowledge_vectors", "dim", "INTEGER");
+ensureColumn("knowledge_vectors", "content_hash", "TEXT");
+ensureColumn("knowledge_vectors", "vector", "TEXT");
+ensureColumn("knowledge_vectors", "embedded_at", "TEXT");
+db.exec(`CREATE TABLE IF NOT EXISTS admin_doctors(
+  admin_id INTEGER, doctor_id INTEGER,
+  PRIMARY KEY(admin_id, doctor_id),
+  FOREIGN KEY(admin_id) REFERENCES admins(id) ON DELETE CASCADE,
+  FOREIGN KEY(doctor_id) REFERENCES doctors(id) ON DELETE CASCADE
+);`);
+
+  // [v2.1] 全量消息日志表
+  db.exec(`CREATE TABLE IF NOT EXISTS message_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    doctor_id INTEGER NOT NULL,
+    patient_id TEXT,
+    patient_name TEXT,
+    sender_id TEXT,
+    channel TEXT DEFAULT 'qiwe',
+    direction TEXT DEFAULT 'inbound',
+    text TEXT,
+    level INTEGER DEFAULT 4,
+    level_label TEXT,
+    action_taken TEXT,
+    ai_draft TEXT,
+    reply_sent TEXT,
+    reply_status TEXT DEFAULT 'pending',
+    triage_session_id INTEGER,
+    group_id TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    replied_at TEXT,
+    replied_by TEXT
+  )`);
+  ensureColumn("message_log", "source_message_id", "INTEGER");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_msglog_source_message ON message_log(source_message_id) WHERE source_message_id IS NOT NULL");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_msglog_doctor ON message_log(doctor_id, created_at DESC)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_msglog_patient ON message_log(patient_id, created_at DESC)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_msglog_level ON message_log(level, reply_status)");
+
+  /* [v2.1] 医生通知表（转医生通知 + 回流） */
+  db.exec(`CREATE TABLE IF NOT EXISTS doctor_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    doctor_id INTEGER NOT NULL,
+    message_log_id INTEGER,
+    patient_id TEXT,
+    patient_name TEXT,
+    text TEXT,
+    level INTEGER,
+    level_label TEXT,
+    note TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    reply_text TEXT,
+    replied_at TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_docnotif_doctor ON doctor_notifications(doctor_id, status)");
+
+function hashPw(pw, salt){ return crypto.scryptSync(pw, salt, 32).toString("hex"); }
+
+function seedIfEmpty(){
+  const n = db.prepare("SELECT COUNT(*) c FROM doctors").get().c;
+  if(n > 0) return;
+  const seed = require("./seed.js");
+  const insDoc = db.prepare(`INSERT INTO doctors(slug,name,title,hospital,dept,specialty,group_name,member_count,scope_note,hospital_phone,bots,clinic,accounts,content,intro,active)
+    VALUES(@slug,@name,@title,@hospital,@dept,@specialty,@group_name,@member_count,@scope_note,@hospital_phone,@bots,@clinic,@accounts,@content,@intro,@active)`);
+  const insRule = db.prepare(`INSERT INTO rules(doctor_id,code,aliases,match_type,bot,responses,enabled,sort) VALUES(?,?,?,?,?,?,1,?)`);
+  const insFaq = db.prepare(`INSERT INTO faq(doctor_id,grp,q,a,link,sort) VALUES(?,?,?,?,?,?)`);
+  for(const d of seed){
+    if(isRemovedDoctorSlug(d.slug)) continue;
+    const r = insDoc.run({
+      slug:d.slug, name:d.name, title:d.title, hospital:d.hospital, dept:d.dept, specialty:d.specialty,
+      group_name:d.group_name, member_count:d.member_count, scope_note:d.scope_note, hospital_phone:d.hospital_phone,
+      bots:JSON.stringify(d.bots), clinic:JSON.stringify(d.clinic), accounts:JSON.stringify(d.accounts),
+      content:JSON.stringify(d.content), intro:JSON.stringify(d.intro), active:d.active
+    });
+    const did = r.lastInsertRowid;
+    (d.rules||[]).forEach((rule,i)=>insRule.run(did,rule.code,JSON.stringify(rule.aliases||[]),rule.match,rule.bot,JSON.stringify(rule.responses),i));
+    (d.faq||[]).forEach(f=>insFaq.run(did,f.grp,f.q,f.a,f.link||null,f.sort||0));
+  }
+  // 默认管理员 admin（口令取环境变量 ADMIN_PASSWORD，缺省 admin888 仅供本地演示）
+  const salt = crypto.randomBytes(8).toString("hex");
+  db.prepare("INSERT INTO admins(username,salt,hash) VALUES(?,?,?)").run("admin", salt, hashPw(process.env.ADMIN_PASSWORD || "admin888", salt));
+  console.log(`✓ 已初始化种子数据：${seed.length} 位医生、默认管理员 admin`);
+}
+seedIfEmpty();
+// 每次启动：若设置了 ADMIN_PASSWORD，则把后台口令重置为该值（兼容已存在的库，生产用环境变量改密无需删库）
+(function applyAdminPasswordFromEnv(){
+  const pw = process.env.ADMIN_PASSWORD;
+  if(!pw) return;
+  const a = db.prepare("SELECT id,salt FROM admins WHERE username=?").get("admin");
+  if(a) db.prepare("UPDATE admins SET hash=? WHERE id=?").run(hashPw(pw, a.salt), a.id);
+})();
+
+function mergeMissing(target, patch){
+  let changed = false;
+  Object.keys(patch||{}).forEach(k=>{
+    if(target[k] == null){
+      target[k] = patch[k];
+      changed = true;
+    }else if(!Array.isArray(target[k]) && target[k] && typeof target[k] === "object" && patch[k] && typeof patch[k] === "object" && !Array.isArray(patch[k])){
+      if(mergeMissing(target[k], patch[k])) changed = true;
+    }
+  });
+  return changed;
+}
+
+function appendMissingByKey(target, patch, key){
+  if(!Array.isArray(target) || !Array.isArray(patch)) return false;
+  let changed = false;
+  const seen = new Set(target.map(x=>x && x[key]).filter(Boolean));
+  patch.forEach(x=>{
+    const v = x && x[key];
+    if(v && !seen.has(v)){
+      target.push(x);
+      seen.add(v);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function sameResponseCard(a, b){
+  if(!a || !b || a.type !== b.type) return false;
+  // 外链卡按 URL 同一性优先判同卡：两卡都带 external.url 且相等 → 视为同一张卡（即便 title 被管理员改过也算同卡 →
+  //   patchRuleResponses 走合并/跳过，绝不因 title 不匹配把种子卡当「缺失外链」重复追加 → 杜绝同 URL 双卡）。
+  //   仅在双方都有 external.url 时生效；无 external.url 的卡（mp/qr/popup 等）此分支不进入，仍走下方 page/title/code/modal 既有语义、行为不变。
+  const au = a.external && a.external.url, bu = b.external && b.external.url;
+  if(au && bu && au === bu) return true;
+  // 对称 shortLink 同一性判定：短链卡（external 只有 shortLink 无 url，如医院官方患者服务平台深链卡、春雨小程序短链卡）——
+  //   两卡的 external.shortLink 都存在且相等 → 视为同一张卡（即便 title 被管理员改成自定义也算同卡 → patchRuleResponses 走合并/跳过，
+  //   绝不因 title 失配把种子卡当「缺失外链」重复追加 → 杜绝同 shortLink 双卡）。补齐上方 url 分支的对称漏洞：
+  //   仅在双方都有 external.shortLink 时生效；无 external.shortLink 的卡不进此分支，仍走下方 page/title/code/modal 既有语义、行为零变化。
+  const as = a.external && a.external.shortLink, bs = b.external && b.external.shortLink;
+  if(as && bs && as === bs) return true;
+  // 域名深链卡同一性（甲方 2026-07-03）：深链卡无 external，按相对 linkUrl(/?p=<key>) 判同——两卡都带 linkUrl 且相等 → 同一张卡
+  //   （即便 title 被管理员改过也算同卡 → patchRuleResponses 走合并/跳过，不因 title 失配把种子深链当「缺失卡」重复追加）。
+  //   仅在双方都有 linkUrl 时生效；无 linkUrl 的卡不进此分支，仍走下方 page/title/code/modal 既有语义、行为零变化。
+  if(a.linkUrl && b.linkUrl && a.linkUrl === b.linkUrl) return true;
+  if(a.page && b.page && a.page === b.page) return true;
+  if(a.title && b.title && a.title === b.title) return true;
+  if(a.code && b.code && a.code === b.code) return true;
+  if(a.modal && b.modal && a.modal === b.modal) return true;
+  return false;
+}
+
+function jsonSame(a, b){
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function mergeExternalConfig(target, patch){
+  let changed = mergeMissing(target, patch);
+  ["provider", "label", "mode", "service", "note", "status", "requires", "urlTemplate", "pathTemplate", "appId", "shortLink", "shortLinkScope", "shortLinkCheckedAt", "jumpPriority"].forEach(k=>{
+    if(patch[k] != null && !jsonSame(target[k], patch[k])){
+      target[k] = patch[k];
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function mergeResponseCard(target, patch){
+  let changed = false;
+  ["external", "fallbackPage", "ctaLabel"].forEach(k=>{
+    if(k === "external" && Object.prototype.hasOwnProperty.call(patch, "external") && patch.external === null){
+      if(target.external != null){
+        delete target.external;
+        changed = true;
+      }
+    }else if(target[k] == null && patch[k] != null){
+      target[k] = patch[k];
+      changed = true;
+    }else if(k === "ctaLabel" && patch[k] != null && target[k] !== patch[k]){
+      target[k] = patch[k];
+      changed = true;
+    }else if(k === "external" && target[k] && patch[k] && typeof target[k] === "object" && typeof patch[k] === "object"){
+      if(mergeExternalConfig(target[k], patch[k])) changed = true;
+    }
+  });
+  return changed;
+}
+
+function patchRuleResponses(current, seeded){
+  if(!Array.isArray(current) || !Array.isArray(seeded)) return false;
+  let changed = false;
+  current.forEach((cr, i)=>{
+    const sr = seeded[i];
+    if(!cr || !sr || cr.type !== "text" || sr.type !== "text") return;
+    const oldText = String(cr.text || "");
+    if(/通过下方二维码\s*1对1\s*咨询|约\s*3\s*个工作日回复|3 个工作日左右回复|1对1 图文咨询/.test(oldText) && cr.text !== sr.text){
+      cr.text = sr.text;
+      changed = true;
+    }
+  });
+  const legacyEmergency = "🌻 如情况紧急，建议直接到医院就诊。";
+  const firstText = current.find(r=>r && r.type === "text" && typeof r.text === "string");
+  if(firstText && firstText.text.includes("小程序卡片") && !seeded.some(r=>r && r.type === "text" && r.text === legacyEmergency)){
+    for(let i=current.length-1; i>=0; i--){
+      if(current[i] && current[i].type === "text" && current[i].text === legacyEmergency){
+        current.splice(i, 1);
+        changed = true;
+      }
+    }
+  }
+  seeded.filter(r=>r && Object.prototype.hasOwnProperty.call(r, "external")).forEach(sr=>{
+    const hit = current.find(cr=>sameResponseCard(cr, sr));
+    if(hit){
+      if(mergeResponseCard(hit, sr)) changed = true;
+    }else if(sr.external){
+      current.push(sr);
+      changed = true;
+    }
+  });
+  // 域名深链卡老库回填（甲方 2026-07-03）：深链卡无 external，上面那轮 filter 漏掉它 → 老库六编号拿不到深链。
+  //   这里单独把种子里 deepLink:true 的卡「缺则补」到老库：按 sameResponseCard(按 linkUrl 判同) 命中 → 跳过（已有，幂等）；
+  //   未命中 → push（老库启动即获得深链卡）。只处理 deepLink 标记卡、不碰其它响应；幂等（补后再跑 sameResponseCard 命中→跳过）。
+  seeded.filter(r=>r && r.deepLink && r.linkUrl).forEach(sr=>{
+    if(!current.find(cr=>sameResponseCard(cr, sr))){
+      current.push(sr);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function applySeedPatches(){
+  const seed = require("./seed.js");
+  const insDoc = db.prepare(`INSERT INTO doctors(slug,name,title,hospital,dept,specialty,group_name,member_count,scope_note,hospital_phone,bots,clinic,accounts,content,intro,active)
+    VALUES(@slug,@name,@title,@hospital,@dept,@specialty,@group_name,@member_count,@scope_note,@hospital_phone,@bots,@clinic,@accounts,@content,@intro,@active)`);
+  const upd = db.prepare("UPDATE doctors SET content=?, intro=? WHERE slug=?");
+  const ruleExists = db.prepare("SELECT id,responses,aliases,match_type FROM rules WHERE doctor_id=? AND code=?");
+  const updRuleResponses = db.prepare("UPDATE rules SET responses=? WHERE id=?");
+  const updRuleAliases = db.prepare("UPDATE rules SET aliases=? WHERE id=?");
+  const updRuleMatch = db.prepare("UPDATE rules SET match_type=? WHERE id=?");
+  // 自然语言整句直达收口涉及的核心服务编号：对这几个 code 把现库 aliases + match_type 定点同步成种子。
+  const ALIAS_MATCH_SYNC_CODES = new Set(["101","102","103","105","201","301","302"]);
+  const insRule = db.prepare("INSERT INTO rules(doctor_id,code,aliases,match_type,bot,responses,enabled,sort) VALUES(?,?,?,?,?,?,1,?)");
+  const insFaq = db.prepare("INSERT INTO faq(doctor_id,grp,q,a,link,sort) VALUES(?,?,?,?,?,?)");
+  // 老库残留清理（codex 跨厂复核 round4/round5）：applySeedPatches 历来对已存在医生「只增补 + 定点同步、从不删 seed 已移除规则」
+  // （护管理员自定义），故种子里删掉的 demo 规则会永久残留在老库。残留的 includes 规则（如 病情，别名含「想咨询」）会被
+  // engine.match 的 includes 轮截胡返回编号话术（对 scanRisk=low 且非哨兵的急症变体如「嘴角歪想咨询」），
+  // 绕过 classifyIntent/handleIncoming 分诊（fail-closed）。故这里【按 seed 残留指纹定点删除】本次从种子移除的已知 demo 规则：
+  //   round4 只按 (doctor_id, code) 删太宽——管理员日后若自定义同名 code（如 code='病情' 的自定义规则）会被无条件误删。
+  //   round5 收窄为按【旧 seed 原始签名指纹】(code + match_type + aliases 三者全等) 才删：只删「确实是 seed 残留」的规则；
+  //   管理员自定义的同 code（match_type 不同 或 aliases 不同）→ 指纹不符 → 不删。
+  //   round7（codex 跨厂复核）：删除历来只在 seed.forEach 内对 seed 医生 row.id 执行，漏了后台克隆医生
+  //   （/api/admin/doctors/:id/clone 把旧 seed 残留原样复制到新 doctorId，其 slug 不在 seed 循环 → 残留不被清 →
+  //   克隆医生启用后「嘴角歪想咨询」仍被残留 includes 截胡绕过分诊）。故把指纹删除移出 seed.forEach，改对
+  //   【库里所有医生】(SELECT id FROM doctors，含克隆/任何来源) 执行；逐行指纹判定不变（残留删、自定义留）。
+  //   幂等（已删→查空→跳过、无副作用）；fresh-seed 这三 code 本就不在种子/库 → 查空 → 跳过、无影响。
+  //   REMOVED_SEED_RULES = 这三条规则从 seed 移除前的原始签名（见 git 0946a69 / 5fd906c 的 app/seed.js）。
+  const REMOVED_SEED_RULES = [
+    { code:"病情", match:"includes", aliases:["想咨询", "咨询病情"] },
+    { code:"风采", match:"exact", aliases:["医生风采", "简介"] },
+    { code:"视频", match:"exact", aliases:["医生视频"] },
+    // 甲方正式裁定不做（低优先级 1.0 不做）：313 特病 / 505 转诊 / 888 特权卡，从 seed 移除，按旧签名指纹定点清老库残留。
+    { code:"313", match:"exact", aliases:["特病", "特病流程", "特殊疾病门诊"] },
+    { code:"505", match:"exact", aliases:["转诊", "认识其他医生", "怎么转诊", "想转诊", "介绍别的医生"] },
+    { code:"888", match:"exact", aliases:["特权卡", "我的特权", "权益卡"] },
+  ];
+  const findRulesForRemoval = db.prepare("SELECT id,match_type,aliases FROM rules WHERE doctor_id=? AND code=?");
+  const delRuleById = db.prepare("DELETE FROM rules WHERE id=?");
+  // 老库定点回填（吕富靖 616/626 两条公众号外链标题）：原标题是占位描述（「住院办理流程（公众号图文）」/「就医常见问题（公众号图文）」），
+  //   与甲方提供的公众号真实文章标题对不上。按 U16(content.addNumber) 同款套路——指纹=旧标题字符串命中才替换 title/source
+  //   + external.label/provider；替换后指纹消失即幂等；管理员已改标题（指纹不符）自然跳过。按 slug(lvfujing) + external.url 双重锁定，
+  //   不硬编码 doctor_id。存储位置：这两张卡在 doctor 顶层 rules[] → rules 表 responses 列（engine.match/患者端 /api/rules/企微回复皆读此列），
+  //   content.menu.items / quickKeywords 只存短标签（非本次改的两串），故只需回填 rules 表 responses。
+  //   ⚠必须在 seed.forEach（内含 patchRuleResponses）之前跑：种子改了 title 后，patchRuleResponses 的 sameResponseCard 按 title 匹配——
+  //   老库旧 title 与种子新 title 不等 → 会把种子新卡当「新增外链」push 成重复卡。先在此把老库 title 就地升级为新 title，
+  //   patchRuleResponses 随后按 title 命中 → 走合并而非新增，不产生重复。
+  const LV_ARTICLE_TITLE_PATCHES = [
+    { url:"https://mp.weixin.qq.com/s/EraiHHJrtym62BBBjyrwYQ", oldTitle:"住院办理流程（公众号图文）",
+      title:"【友谊科普】手术前为什么要“饿肚子”？一篇给您讲明白", label:"手术前为什么要“饿肚子”",
+      source:"北京友谊医院服务号", provider:"北京友谊医院服务号" },
+    { url:"https://mp.weixin.qq.com/s/gmA7fYNVMIhrPlapQ8eFRQ", oldTitle:"就医常见问题（公众号图文）",
+      title:"【就诊指南】北京友谊医院异地医保患者就医攻略与常见问题解答", label:"异地医保就医攻略与常见问题",
+      source:"北京友谊医院服务号", provider:"北京友谊医院服务号" },
+  ];
+  const lvRowForArticles = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+  if(lvRowForArticles){
+    db.prepare("SELECT id,responses FROM rules WHERE doctor_id=?").all(lvRowForArticles.id).forEach(r=>{
+      let responses;
+      try{ responses = JSON.parse(r.responses||"[]"); }catch(e){ return; }   // 解析失败 → 不动
+      if(!Array.isArray(responses)) return;
+      let changed = false;
+      responses.forEach(card=>{
+        if(!card || card.type !== "link" || !card.external || typeof card.external !== "object") return;
+        LV_ARTICLE_TITLE_PATCHES.forEach(p=>{
+          if(card.external.url === p.url && card.title === p.oldTitle){   // 双重锁定：URL 精确 + 旧标题指纹
+            card.title = p.title;
+            card.source = p.source;
+            card.external.provider = p.provider;
+            card.external.label = p.label;
+            changed = true;
+          }
+        });
+      });
+      if(changed) updRuleResponses.run(JSON.stringify(responses), r.id);
+    });
+  }
+  // 老库残留「北京友谊医院患者服务平台 · 官方挂号」响应幂等清理（甲方 2026-07-03 裁定：303 删除该响应，只留春雨挂号卡）：
+  //   seed 已移除该响应，但 applySeedPatches 历来对已存在规则「只增补、不删 seed 已移除响应」（护管理员自定义）→ 老库 303 会永久残留这条。
+  //   故按 external.shortLink 指纹（含「北京友谊医院患者服务平台」的深链）定点删除：只删这一条、不跨医生（仅 lvfujing）、不误伤 303 其它响应
+  //   （春雨挂号卡、挂号说明文本、深链卡等 shortLink 均不含该串）。有变更才写回；幂等（删净后 filter 命中 0 → 不动）；fresh-seed 本无此响应 → 无影响。
+  //   schema_patches 短路（生产DB架构 v1.0 柱3-3）：一次性破坏性清理，跑过一次登记后不再重跑——防管理员日后自建含同指纹短链的卡被反复误删。
+  if(!patchApplied("cleanup_303_hosp_platform_card_v1")){
+    const HOSP_PLATFORM_SHORTLINK_MARK = "北京友谊医院患者服务平台";
+    const lvRowForHospClean = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    if(lvRowForHospClean){
+      const rr303 = db.prepare("SELECT id,responses FROM rules WHERE doctor_id=? AND code=?").get(lvRowForHospClean.id, "303");
+      if(rr303){
+        let responses;
+        try{ responses = JSON.parse(rr303.responses || "[]"); }catch(e){ responses = null; }   // 解析失败 → 不动
+        if(Array.isArray(responses)){
+          const before = responses.length;
+          const kept = responses.filter(c=>!(c && c.external && typeof c.external.shortLink === "string" && c.external.shortLink.indexOf(HOSP_PLATFORM_SHORTLINK_MARK) >= 0));
+          if(kept.length !== before) updRuleResponses.run(JSON.stringify(kept), rr303.id);   // 有删才写回（幂等）
+        }
+      }
+    }
+    markPatchApplied("cleanup_303_hosp_platform_card_v1");
+  }
+  // 吕富靖 606「科普合集」老库刷新（甲方 2026-07-06）：606 从旧「科普账号汇总」占位（1 条文本 + 1 张 mp page:accounts 卡）
+  //   演进为「引导语 + 4 张真实科普外链卡」。但 patchRuleResponses 对已存在规则历来「只增补/合并、从不删」——老库 606 的旧引导语
+  //   文本（不含「1对1咨询/3个工作日」正则，不被 text 分支替换）与旧 mp accounts 卡（无 external，不被 external/deepLink 分支触及）
+  //   都会永久残留，且新引导语纯文本卡在 patchRuleResponses 里补不回（该函数只 push external/deepLink 卡）→ 老库拿不到干净合集。
+  //   故按 schema_patch 一次性把老库 lvfujing 606 responses 整体对齐种子当前形态（单一数据源=seed）：随后 seed.forEach→
+  //   patchRuleResponses 跑，current 已等于种子 5 卡 → sameResponseCard 全命中走合并、无新增、无残留、幂等。
+  //   schema_patches 短路（生产DB架构 v1.0 柱3-3）：跑过一次登记后不再重跑——防管理员日后对 606 的自定义被每次启动强覆盖。
+  //   fresh-seed 本就由 insDoc 直接写入种子 606、无此老库残留 → 覆盖为等值、无影响。
+  if(!patchApplied("refresh_lv_606_kepu_collection_v1")){
+    const lvRowFor606 = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    const seed606 = (seed.find(s=>s.slug === "lvfujing") || {}).rules;
+    const seededRule606 = Array.isArray(seed606) ? seed606.find(r=>r.code === "606") : null;
+    if(lvRowFor606 && seededRule606){
+      const rr606 = db.prepare("SELECT id FROM rules WHERE doctor_id=? AND code=?").get(lvRowFor606.id, "606");
+      if(rr606) updRuleResponses.run(JSON.stringify(seededRule606.responses || []), rr606.id);
+    }
+    markPatchApplied("refresh_lv_606_kepu_collection_v1");
+  }
+  let insertedActiveSeed = false;
+  seed.forEach(s=>{
+    let row = db.prepare("SELECT id,content,intro FROM doctors WHERE slug=?").get(s.slug);
+    if(!row){
+      if(isRemovedDoctorSlug(s.slug)) return;
+      const r = insDoc.run({
+        slug:s.slug, name:s.name, title:s.title, hospital:s.hospital, dept:s.dept, specialty:s.specialty,
+        group_name:s.group_name, member_count:s.member_count, scope_note:s.scope_note, hospital_phone:s.hospital_phone,
+        bots:JSON.stringify(s.bots || []), clinic:JSON.stringify(s.clinic || {}), accounts:JSON.stringify(s.accounts || []),
+        content:JSON.stringify(s.content || {}), intro:JSON.stringify(s.intro || {}), active:s.active ? 1 : 0
+      });
+      row = { id:r.lastInsertRowid, content:JSON.stringify(s.content || {}), intro:JSON.stringify(s.intro || {}) };
+      (s.rules||[]).forEach((rule,i)=>insRule.run(row.id, rule.code, JSON.stringify(rule.aliases||[]), rule.match||"exact", rule.bot||"小宝医助", JSON.stringify(rule.responses||[]), i));
+      (s.faq||[]).forEach(f=>insFaq.run(row.id, f.grp, f.q, f.a, f.link||null, f.sort||0));
+      if(s.active) insertedActiveSeed = true;
+      return;
+    }
+    let content = {}, intro = {};
+    try{ content = JSON.parse(row.content||"{}"); }catch(e){}
+    try{ intro = JSON.parse(row.intro||"{}"); }catch(e){}
+    let changed = mergeMissing(content, s.content||{});
+    if(s.content && s.content.chunyuIntegration && !jsonSame(content.chunyuIntegration, s.content.chunyuIntegration)){
+      content.chunyuIntegration = s.content.chunyuIntegration;
+      changed = true;
+    }
+    // 升级回填：老库 content.addNumber 的出诊/停诊时段仍是「演示占位」时，整体替换为种子真实出诊档（mergeMissing 不覆盖已存在的数组键，故需定点）。
+    // 仅在检测到「演示占位」标记时触发 → 幂等（替换后占位消失不再触发）、定点（不无条件强覆盖，不误伤管理员已去占位的自定义）。
+    if(s.content && s.content.addNumber && content.addNumber && typeof content.addNumber === "object"){
+      const an = content.addNumber;
+      const slotPlaceholder = Array.isArray(an.unavailableSlots) && an.unavailableSlots.some(x=>/演示占位/.test(String(x)));
+      const optPlaceholder = Array.isArray(an.fields) && an.fields.some(f=>f && Array.isArray(f.options) && f.options.some(o=>/演示占位/.test(String(o))));
+      if(slotPlaceholder || optPlaceholder){
+        content.addNumber = JSON.parse(JSON.stringify(s.content.addNumber));
+        changed = true;
+      }
+    }
+    if(content.menu && s.content && s.content.menu && appendMissingByKey(content.menu.items, s.content.menu.items, "code")) changed = true;
+    if(Array.isArray(content.quickKeywords)){
+      const before = JSON.stringify(content.quickKeywords);
+      content.quickKeywords = content.quickKeywords.filter(qk=>!(qk && String(qk.c || "") === "3" && String(qk.l || "") === "全部功能"));
+      if(!content.quickKeywords.some(qk=>qk && String(qk.c || "") === "1" && String(qk.l || "") === "全部功能")){
+        content.quickKeywords.push({ c:"1", l:"全部功能" });
+      }
+      if(JSON.stringify(content.quickKeywords) !== before) changed = true;
+    }
+    if(appendMissingByKey(content.quickKeywords, (s.content||{}).quickKeywords, "c")) changed = true;
+    if(intro && Array.isArray(intro.items)){
+      intro.items.forEach((it,i)=>{
+        const newer = s.intro && s.intro.items && s.intro.items[i];
+        if(it && newer && typeof it.text === "string" && it.text.includes("建议把群昵称改为：姓名 + 疾病")){
+          it.text = newer.text;
+          changed = true;
+        }
+        if(it && typeof it.text === "string"){
+          const normalizedIntro = it.text
+            .replace(/数字「3」/g, "数字「1」")
+            .replace(/数字 “3”/g, "数字 “1”")
+            .replace(/发送 3 查看/g, "发送 1 查看")
+            .replace(/发 3 看/g, "发 1 看");
+          if(normalizedIntro !== it.text){
+            it.text = normalizedIntro;
+            changed = true;
+          }
+        }
+      });
+    }
+    if(changed) upd.run(JSON.stringify(content), JSON.stringify(intro), s.slug);
+    const cnt = db.prepare("SELECT COUNT(*) c FROM rules WHERE doctor_id=?").get(row.id).c;
+    let nextSort = cnt;
+    (s.rules||[]).forEach(rule=>{
+      const oldRule = ruleExists.get(row.id, rule.code);
+      if(oldRule){
+        let responses = [];
+        try{ responses = JSON.parse(oldRule.responses||"[]"); }catch(e){}
+        if(patchRuleResponses(responses, rule.responses||[])) updRuleResponses.run(JSON.stringify(responses), oldRule.id);
+        // 别名 + match_type 定点回填（自然语言整句直达收口）：applySeedPatches 历来对已存在规则只补 responses、
+        // 从不更新 aliases / match_type，故种子改了别名或匹配类型（exact→includes）也不在现库生效（且不能删库）。
+        // 仅对收口涉及的核心服务编号（101/102/303/404/414）把现库 aliases + match_type 同步成种子：
+        // 幂等（解析后相等则跳过，回填后即恒等）、定点（只这几个 code、不全量同步，避免每次启动清掉管理员对其它规则的自定义）。
+        if(ALIAS_MATCH_SYNC_CODES.has(rule.code)){
+          let curAliases = [];
+          try{ curAliases = JSON.parse(oldRule.aliases||"[]"); }catch(e){}
+          const seededAliases = Array.isArray(rule.aliases) ? rule.aliases : [];
+          if(JSON.stringify(curAliases) !== JSON.stringify(seededAliases)){
+            updRuleAliases.run(JSON.stringify(seededAliases), oldRule.id);
+          }
+          const seededMatch = rule.match || "exact";
+          if((oldRule.match_type || "") !== seededMatch){
+            updRuleMatch.run(seededMatch, oldRule.id);
+          }
+        }
+        return;
+      }
+      insRule.run(row.id, rule.code, JSON.stringify(rule.aliases||[]), rule.match||"exact", rule.bot||"小宝医助", JSON.stringify(rule.responses||[]), nextSort++);
+    });
+  });
+  // 加号类需求必须先建档：404/加号入口先引导「医患联络表」，后端也会按手机号校验联络表记录。
+  // seed 改动只覆盖新库；生产老库已有 doctors.content.addNumber 和 rules(404)，因此用一次性 patch 回填。
+  if(!patchApplied("seed_add_number_contact_form_gate_2026_07_07_v1")){
+    const seedBySlug = new Map(seed.map(s=>[s.slug, s]));
+    const allSeedDoctors = db.prepare("SELECT id,slug,content FROM doctors WHERE slug IS NOT NULL").all();
+    allSeedDoctors.forEach(row=>{
+      const s = seedBySlug.get(row.slug);
+      if(!s) return;
+      let content = {};
+      try{ content = JSON.parse(row.content || "{}"); }catch(e){ content = {}; }
+      const seedAdd = s.content && s.content.addNumber;
+      let contentChanged = false;
+      if(seedAdd && content.addNumber && typeof content.addNumber === "object"){
+        if(content.addNumber.requiresContactForm !== true){
+          content.addNumber.requiresContactForm = true;
+          contentChanged = true;
+        }
+        if(seedAdd.desc && !String(content.addNumber.desc || "").includes("医患联络表")){
+          content.addNumber.desc = seedAdd.desc;
+          contentChanged = true;
+        }
+      }
+      if(contentChanged) db.prepare("UPDATE doctors SET content=? WHERE id=?").run(JSON.stringify(content), row.id);
+      const seeded404 = Array.isArray(s.rules) ? s.rules.find(r=>r.code === "404") : null;
+      const rr404 = db.prepare("SELECT id FROM rules WHERE doctor_id=? AND code=?").get(row.id, "404");
+      if(seeded404 && rr404) updRuleResponses.run(JSON.stringify(seeded404.responses || []), rr404.id);
+    });
+    markPatchApplied("seed_add_number_contact_form_gate_2026_07_07_v1");
+  }
+  // 吕富靖 414/919/808/联络表 → 春雨医生小程序卡（h5_webview·appId wx2e72ecb9760b913c）+ 真机采集封面三件套（甲方 2026-07-06）。
+  //   ⚠️ 必须放在 seed.forEach 之后（codex 第 4 轮 durability 修 2026-07-06）：本 patch 依赖 lvfujing 医生行已存在。
+  //   反例（放在 seed.forEach 之前会漏种）：对「doctors 表非空但尚无 lvfujing」的库（如库里只有别的医生），seedIfEmpty 因表非空跳过、
+  //   本 patch 若在 seed.forEach 前跑则查不到 lvfujing 空跑却仍 markPatchApplied → 随后 seed.forEach 才补插 lvfujing → 4 张模板永久不落库。
+  //   放到 seed.forEach 之后，fresh 空库 / 生产库(已有 lvfujing) / 非空无 lvfujing 三种路径下 lvfujing 都已存在 → patch 必落 4 张模板。
+  //   两段一体，一个 patch_id 一次性完成：
+  //   ① 老库规则刷新：808 mp 卡从旧「医生主页 doctor-profile 卡(appId wx214b7e2bcde837d6·5ujZ 短链)」换成「profileWebview(h5_webview·config_id=2515·appId wx2e72ecb9760b913c)」，
+  //      919 新增一张 mp 触发卡（无 external，patchRuleResponses 的 external-only 增补路径补不回）。二者靠常规合并到不了老库（808 external 的 path/username 不在 mergeExternalConfig 同步列表、
+  //      919 无 external 不进增补循环），故按 schema_patch 把这两条 lvfujing 规则整体对齐种子当前形态（单一数据源=seed）。414/联络表 mp 卡本批不改规则（原生触发位早已具备）→ 不重写。
+  //      注：本 patch 现于 seed.forEach 之后跑——fresh 空库时 seed.forEach 已插入种子 808/919（已是当前形态），此处 updRuleResponses 覆盖为等值、幂等无副作用。
+  //   ② 模板行落库：把 4 个编号的完整 weapp 模板（appId/username/pagePath + 采集封面 coverFileAesKey/coverFileId/coverFileSize + thumbUrl + title）直写 qiwe_weapp_templates 并置 raw_payload 标记
+  //      → 模板永久锁（upsertWeappPlaceholder 对非空 app_id/username/page_path/thumb_url/cover_* 只保留不覆盖；有 raw_payload 的位拒绝运行时采集覆盖），生产重启后仍在、判为原生就绪（missingWeappFields=0）不降级。
+  //      808 用独立 source_short_link（lv808webview2515·与 101 主页卡 5ujZ 不同组）→ hydrateRelatedTemplates 不会把 101 主页封面串进 808；414/919/联络表 source_short_link 留空（本就不进 hydrate 组，各自独立封面）。
+  //   schema_patches 短路（生产DB架构 v1.0 柱3-3）：一次性登记后不再重跑——防管理员日后对这 4 张卡/规则的自定义被每次启动强覆盖。fresh-seed 由 insDoc 写入种子规则 + 本段直写模板行 → 等值/首次落库，无副作用。
+  if(!patchApplied("seed_lv_weapp_cards_2026_07_06_v1")){
+    const lvRowForWeapp = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    if(lvRowForWeapp){
+      // ① 老库 808/919 规则整体对齐种子当前形态（414/联络表 未改规则，不重写）
+      const seedLvRules = (seed.find(s=>s.slug === "lvfujing") || {}).rules || [];
+      ["808","919"].forEach(code=>{
+        const seededRule = seedLvRules.find(r=>r.code === code);
+        const rr = db.prepare("SELECT id FROM rules WHERE doctor_id=? AND code=?").get(lvRowForWeapp.id, code);
+        if(seededRule && rr) updRuleResponses.run(JSON.stringify(seededRule.responses || []), rr.id);
+      });
+      // ② 4 张 weapp 模板行落库（真机采集封面三件套；appId/username 固定，各自 pagePath/cover）。
+      //    coverFileId 为 DER 编码（内嵌服务器分配的文件定位 ID+UUID+md5+size，客户端拼不出）——只能由采集直供，故走 schema_patch 直写。
+      const WEAPP_APP_ID = "wx2e72ecb9760b913c";
+      const WEAPP_USERNAME = "gh_681d3fd5683f@app";
+      const WEAPP_THUMB = "http://mmbiz.qpic.cn/mmbiz_png/2tmFMYfaZ1SXBRzvZSX7ypiaVicPoibTznF12oibGfibujAbicuWgFunWiaaLGkUAtBlZykHx6ic66J0d6USPyko8zpQFQ/640?wx_fmt=png&wxfrom=200";
+      const LV_WEAPP_CARDS = [
+        { code:"414", title:"住院预约", sourceShortLink:"",
+          pagePath:"pages/h5_webview/index.html?url=https%3A%2F%2Fwww.chunyuyisheng.com%2Fv_m_questionnaire_vue%2Fquestionnaire%2F7106",
+          coverFileAesKey:"693b9c601ef1425cb8d7c4cfdeb90f25",
+          coverFileId:"3069020102046230600201000204b8bfd71702030f55ca02047e75c2dc02046a4b1af8042465616432313835322d343336642d343434642d396138352d303861313439346663346133020100020301d4e00410d5c022b6db26dfb548cfdf1c8b9944300201010201000400",
+          coverFileSize:120031 },
+        { code:"919", title:"评价吕富靖主任", sourceShortLink:"",
+          pagePath:"pages/h5_webview/index.html?url=https%3A%2F%2Fwww.chunyuyisheng.com%2Fv_m_questionnaire_vue%2Fquestionnaire%2F7108",
+          coverFileAesKey:"d8ca287dd0d04947b807c2bf775d1833",
+          coverFileId:"3069020102046230600201000204b8bfd71702030f55ca02047e75c2dc02046a4b1afe042435633232323734652d386462342d346434322d383534322d62306463303435376537313102010002030190a004109b85689b38963b416def50b53425b9790201010201000400",
+          coverFileSize:102550 },
+        { code:"979", title:"【必填】医患联络表", sourceShortLink:"",
+          pagePath:"pages/h5_webview/index.html?url=https%3A%2F%2Fwww.chunyuyisheng.com%2Fv_m_questionnaire_vue%2Fquestionnaire%2F7110",
+          coverFileAesKey:"dd4ba20a383e4c6b9538941becba4a03",
+          coverFileId:"3069020102046230600201000204b8bfd71702030f55ca02047e75c2dc02046a4b1b04042432616530653633662d353430322d346130612d383666332d3065663863643738626431360201000203028c4004103f57bd9f332a531174868651e92978830201010201000400",
+          coverFileSize:166964 },
+        { code:"808", title:"吕富靖主任 · 医生风采", sourceShortLink:"#小程序://春雨医生/lv808webview2515",
+          pagePath:"pages/h5_webview/index.html?url=https%3A%2F%2Fwww.chunyuyisheng.com%2Fevents%2Fspecial%2F%3Fconfig_id%3D2515",
+          coverFileAesKey:"df80cefc74c74856b19e3f567cd7e4fb",
+          coverFileId:"3069020102046230600201000204b8bfd71702030f55ca02047e75c2dc02046a4b1b1b042466346139333463302d306266372d346135372d383033312d66393563616537356639316602010002030868c00410dea1e586d0b1f934819f280155d8ab690201010201000400",
+          coverFileSize:551092 },
+      ];
+      const nowIsoWeapp = new Date().toISOString();
+      const insWeapp = db.prepare(`INSERT INTO qiwe_weapp_templates(
+        doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(doctor_id, code) DO UPDATE SET
+        source_short_link=excluded.source_short_link,
+        title=excluded.title,
+        app_id=excluded.app_id,
+        username=excluded.username,
+        page_path=excluded.page_path,
+        thumb_url=excluded.thumb_url,
+        cover_file_aes_key=excluded.cover_file_aes_key,
+        cover_file_id=excluded.cover_file_id,
+        cover_file_size=excluded.cover_file_size,
+        raw_payload=excluded.raw_payload,
+        updated_at=excluded.updated_at`);
+      LV_WEAPP_CARDS.forEach(c=>{
+        const rawMark = JSON.stringify({ seededBy:"seed_lv_weapp_cards_2026_07_06_v1", code:c.code, capturedAt:"2026-07-06" });
+        insWeapp.run(
+          lvRowForWeapp.id, c.code, "mp:h5_webview", "h5_webview", c.sourceShortLink,
+          c.title, WEAPP_APP_ID, WEAPP_USERNAME, c.pagePath, WEAPP_THUMB,
+          c.coverFileAesKey, c.coverFileId, c.coverFileSize, c.title, rawMark, nowIsoWeapp
+        );
+      });
+    }
+    markPatchApplied("seed_lv_weapp_cards_2026_07_06_v1");
+  }
+  // 吕富靖 404/909 真机小程序卡修正（甲方 2026-07-06 二次采集）：
+  //   404=预约就诊/出诊时间地点页面级卡（out_call_message），不再与 102 视频问诊页共用 S9bW6；
+  //   909=送心意页面级卡（send_heart），不再复用 101 医生主页 fallback。
+  //   同时刷新老库规则与模板，避免 seed/规则同步把生产采集模板串组覆盖。
+  if(!patchApplied("seed_lv_weapp_cards_2026_07_06_v2_404_909")){
+    const lvRowForWeappV2 = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    if(lvRowForWeappV2){
+      const seedLvRulesV2 = (seed.find(s=>s.slug === "lvfujing") || {}).rules || [];
+      ["404","909"].forEach(code=>{
+        const seededRule = seedLvRulesV2.find(r=>r.code === code);
+        const rr = db.prepare("SELECT id FROM rules WHERE doctor_id=? AND code=?").get(lvRowForWeappV2.id, code);
+        if(seededRule && rr) updRuleResponses.run(JSON.stringify(seededRule.responses || []), rr.id);
+      });
+      const WEAPP_APP_ID = "wx2e72ecb9760b913c";
+      const WEAPP_USERNAME = "gh_681d3fd5683f@app";
+      const WEAPP_THUMB = "http://mmbiz.qpic.cn/mmbiz_png/2tmFMYfaZ1SXBRzvZSX7ypiaVicPoibTznF12oibGfibujAbicuWgFunWiaaLGkUAtBlZykHx6ic66J0d6USPyko8zpQFQ/640?wx_fmt=png&wxfrom=200";
+      const LV_WEAPP_CARDS_V2 = [
+        { code:"404", title:"预约就诊", desc:"春雨医生", sourcePage:"add-number",
+          sourceShortLink:"#小程序://春雨医生/出诊时间地点/MCGKlVkiNDBumbz",
+          pagePath:"pages/out_call_message/index.html?doctorId=4ab15ad117fc8297c028&doctorName=吕富靖&isFirstComeIn=true",
+          coverFileAesKey:"37333663663332653331303133666166",
+          coverFileId:"306a020102046330610201000204b8bfd71702030f55ca02047745a16f02046a4b6bfe042464653463613862332d643965342d343835662d393634662d3733323235373830623134610203103800020238b004100780cdfcd75319ecce2bdba037ef2dcb0201010201000400",
+          coverFileSize:14508 },
+        { code:"909", title:"送心意", desc:"春雨医生", sourcePage:"thank-doctor",
+          sourceShortLink:"#小程序://春雨医生/送心意/pbycpPEVVipdyff",
+          pagePath:"pages/send_heart/index.html?id=4ab15ad117fc8297c028&name=吕富靖&img=https://resource.chunyu.mobi/@/media/images/7e2e/d02091f39f73",
+          coverFileAesKey:"e5870ea11c4c56d369dbbf33dfdc015e",
+          coverFileId:"306b020102046430620201000204b8bfd71702030f55ca02047745a16f02046a4b69c8042461376533633536322d373065322d343164662d616631392d6332366564643064643662300203102800020304e0800410754b6dd2860971778e4241d435807ca30201010201000400",
+          coverFileSize:319612 },
+      ];
+      const nowIsoWeappV2 = new Date().toISOString();
+      const insWeappV2 = db.prepare(`INSERT INTO qiwe_weapp_templates(
+        doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(doctor_id, code) DO UPDATE SET
+        source_type=excluded.source_type,
+        source_page=excluded.source_page,
+        source_short_link=excluded.source_short_link,
+        title=excluded.title,
+        app_id=excluded.app_id,
+        username=excluded.username,
+        page_path=excluded.page_path,
+        thumb_url=excluded.thumb_url,
+        cover_file_aes_key=excluded.cover_file_aes_key,
+        cover_file_id=excluded.cover_file_id,
+        cover_file_size=excluded.cover_file_size,
+        desc=excluded.desc,
+        raw_payload=excluded.raw_payload,
+        updated_at=excluded.updated_at`);
+      LV_WEAPP_CARDS_V2.forEach(c=>{
+        const rawMark = JSON.stringify({ seededBy:"seed_lv_weapp_cards_2026_07_06_v2_404_909", code:c.code, capturedAt:"2026-07-06" });
+        insWeappV2.run(
+          lvRowForWeappV2.id, c.code, "mp:mini_program", c.sourcePage, c.sourceShortLink,
+          c.title, WEAPP_APP_ID, WEAPP_USERNAME, c.pagePath, WEAPP_THUMB,
+          c.coverFileAesKey, c.coverFileId, c.coverFileSize, c.desc, rawMark, nowIsoWeappV2
+        );
+      });
+    }
+    markPatchApplied("seed_lv_weapp_cards_2026_07_06_v2_404_909");
+  }
+  // 吕富靖 303 挂号原生卡替换（甲方 2026-07-08 裁定·替换不并存·真机采集 payload 由 cc1 从生产 QIWE_RAW_CAPTURE 抓取，一字照抄·模板锁原则）：
+  //   从「春雨医生主页卡（LV_CY.appointment·企微原生卡由 101 主页短链 5ujZ hydrate·appId wx214b7e2bcde837d6）」
+  //   换成「北京友谊医院患者服务平台·吕富靖医生详情页」原生小程序卡（appId wxbc8c84999432ac95·gh_43eb4b5211ca@app·pages/doctor-detail）。
+  //   来源报文特征 msgType 78 / newMsgType "MINI_PROGRAM"（与既有 h5_webview 卡采集来源不同）；挂号时间地点由 303 首条文本承载（seed 原样保留）。
+  //   ⚠️ 必须放在 seed.forEach 之后（同 seed_lv_weapp_cards durability 修）：依赖 lvfujing 医生行已存在，否则空跑仍 markPatchApplied → 模板永久不落库。
+  //   两段一体（一个 patch_id）：
+  //   ① 老库/生产 303 规则整体对齐种子当前形态（春雨主页卡→友谊卡）：patchRuleResponses 对已存在规则「只增补/合并、不删 seed 已移除响应」（护管理员自定义）
+  //      → 老库 303 会永久残留旧春雨主页卡外链，靠常规合并到不了；故按 schema_patch 把 lvfujing 303 responses 整体覆盖成种子当前形态（单一数据源=seed）。
+  //   ② 模板行落库：把完整 weapp 模板（appId/username/pagePath + 真机采集封面 coverFileAesKey/coverFileId/coverFileSize + thumbUrl + title/desc）直写 qiwe_weapp_templates(code=303)
+  //      并置 raw_payload=真实采集 JSON → 模板永久锁（upsertWeappPlaceholder 对非空字段只保留不覆盖；templateCaptureLocked 拒绝运行时采集覆盖；hydrateRelatedTemplates 对非空 raw_payload 跳过）
+  //      → 生产重启仍在、判为原生就绪(missingWeappFields=0)不降级、不被 101 主页卡 hydrate 覆盖。coverFileId 为 DER 编码（内嵌服务器分配文件定位 ID+UUID+md5+size，客户端拼不出）——只能采集直供，故走 schema_patch 直写。
+  //   schema_patches 短路（生产DB架构 v1.0 柱3-3）：一次性登记后不再重跑——防管理员日后对该卡/规则的自定义被每次启动强覆盖。fresh-seed 由 insDoc 写入种子规则 + 本段直写模板行 → 首次落库，无副作用。
+  if(!patchApplied("seed_lv_friendship_303_card_2026_07_08_v1")){
+    const lvRowFor303 = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    if(lvRowFor303){
+      // ① 老库/生产 303 规则整体对齐种子当前形态（春雨主页卡→友谊卡）
+      //   codex 跨厂复核抓出反例：rules 表无 UNIQUE(doctor_id,code)，同医生同 code 可多行；engine.match 按 sort ASC 取第一条匹配。
+      //   若老库存在另一条排在前面（更小 sort）的启用 303 旧规则，只覆盖单条会让旧响应/旧尾句仍命中，破「替换不并存」。
+      //   故把该医生【所有】code='303' 规则行的 responses 统一对齐种子当前形态（UPDATE 全行、不删行、不改 enabled）→ 无论 sort 取哪条都是新友谊响应。
+      const seedLv303Rules = (seed.find(s=>s.slug === "lvfujing") || {}).rules || [];
+      const seededRule303 = seedLv303Rules.find(r=>r.code === "303");
+      if(seededRule303) db.prepare("UPDATE rules SET responses=? WHERE doctor_id=? AND code=?").run(JSON.stringify(seededRule303.responses || []), lvRowFor303.id, "303");
+      // ② 友谊卡 weapp 模板行落库（真机采集·甲方 2026-07-08·一字照抄）
+      const FRIENDSHIP_303 = {
+        appId:"wxbc8c84999432ac95",
+        username:"gh_43eb4b5211ca@app",
+        pagePath:"pages/doctor-detail/index.html?departmentCode=1CqsZB6iinEZFtiCx1Mr_g&doctorCode=oODcjMMW7D9u8-_IFF27FQ",
+        title:"北京友谊医院患者服务平台",
+        desc:"推荐好医生，希望能帮到您",
+        thumbUrl:"http://mmbiz.qpic.cn/mmbiz_png/gfnz8X9IpSV8m9TZDpNnAaJichU1pXKWMOSjibIA7blIsoJvUqhcYODS9pnGFRpXBibPWx22LS1G7S9m87AvMytzQ/640?wx_fmt=png&wxfrom=200",
+        coverFileAesKey:"7d26b33bb02515de6a75434a4d7391dc",
+        coverFileId:"306b020102046430620201000204b8bfd71702030f55c9020495ba512a02046a4dca7b042437636430643861332d313033662d343261342d383338342d323430343531663664626665020310200002030125b00410919085d4158978f024a96e345b014b0c0201010201000400",
+        coverFileMd5:"919085d4158978f024a96e345b014b0c",
+        coverFileSize:75177,
+        sourceShortLink:"#小程序://友谊医院/吕富靖医生详情页/lv303detail"
+      };
+      const rawPayload303 = JSON.stringify({
+        seededBy:"seed_lv_friendship_303_card_2026_07_08_v1", code:"303", capturedAt:"2026-07-08",
+        msgType:78, newMsgType:"MINI_PROGRAM",
+        appId:FRIENDSHIP_303.appId, username:FRIENDSHIP_303.username, pagePath:FRIENDSHIP_303.pagePath,
+        title:FRIENDSHIP_303.title, desc:FRIENDSHIP_303.desc, thumbUrl:FRIENDSHIP_303.thumbUrl,
+        coverFileAesKey:FRIENDSHIP_303.coverFileAesKey, coverFileId:FRIENDSHIP_303.coverFileId,
+        coverFileMd5:FRIENDSHIP_303.coverFileMd5, coverFileSize:FRIENDSHIP_303.coverFileSize
+      });
+      db.prepare(`INSERT INTO qiwe_weapp_templates(
+        doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(doctor_id, code) DO UPDATE SET
+        source_type=excluded.source_type,
+        source_page=excluded.source_page,
+        source_short_link=excluded.source_short_link,
+        title=excluded.title,
+        app_id=excluded.app_id,
+        username=excluded.username,
+        page_path=excluded.page_path,
+        thumb_url=excluded.thumb_url,
+        cover_file_aes_key=excluded.cover_file_aes_key,
+        cover_file_id=excluded.cover_file_id,
+        cover_file_size=excluded.cover_file_size,
+        desc=excluded.desc,
+        raw_payload=excluded.raw_payload,
+        updated_at=excluded.updated_at`).run(
+          lvRowFor303.id, "303", "mp:mini_program", "article:clinic", FRIENDSHIP_303.sourceShortLink,
+          FRIENDSHIP_303.title, FRIENDSHIP_303.appId, FRIENDSHIP_303.username, FRIENDSHIP_303.pagePath, FRIENDSHIP_303.thumbUrl,
+          FRIENDSHIP_303.coverFileAesKey, FRIENDSHIP_303.coverFileId, FRIENDSHIP_303.coverFileSize,
+          FRIENDSHIP_303.desc, rawPayload303, new Date().toISOString()
+        );
+    }
+    markPatchApplied("seed_lv_friendship_303_card_2026_07_08_v1");
+  }
+  // 吕富靖话术统一（甲方 2026-07-08 裁定：编号组话术全部以《医患通测试医生吕富靖相关信息.docx》固定话术为唯一来源，seed 旧口语化引导文全删）：
+  //   固定话术由发送侧前插机制 withConfiguredCodeScript 提供（docx 值在 ops_config.js LV_DOCX_SCRIPTS / server.js 同源），seed 各编号 responses 只留卡片/popup/menu/image
+  //   （303 保留精简版出诊文本、404 保留联络表门控提示、饮食/复印无 docx 值故保留其文本——详见 seed.js 各规则注释）。
+  //   老库/生产回填：patchRuleResponses 对已存在规则「只增补/合并、不删 seed 已移除响应」（护管理员自定义）→ 老库各编号旧引导 text 会永久残留；
+  //   故按 schema_patch 把 lvfujing 【全部编号】规则 responses 整体对齐种子当前形态（单一数据源=seed）。
+  //   沿用 303 批全行覆盖模式（codex 反例加固）：rules 表无 UNIQUE(doctor_id,code)，同 code 可多行、engine.match 按 sort ASC 取第一条 →
+  //   UPDATE 覆盖该医生同 code【所有】行（不删行、不改 enabled），无论 sort 取哪条都是新形态。置于 friendship patch 之后（303 规则以本 patch 为最终形态·精简版文本）。
+  //   schema_patches 短路（生产DB架构 v1.0 柱3-3）：一次性登记后不再重跑——防管理员日后对这些规则的自定义被每次启动强覆盖。fresh-seed 由 insDoc 写入种子规则 → 覆盖为等值、无副作用。
+  if(!patchApplied("seed_lv_docx_script_unify_2026_07_08_v1")){
+    const lvRowForScriptUnify = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    const seedLvForScriptUnify = seed.find(s=>s.slug === "lvfujing");
+    if(lvRowForScriptUnify && seedLvForScriptUnify && Array.isArray(seedLvForScriptUnify.rules)){
+      const updAllRows303 = db.prepare("UPDATE rules SET responses=? WHERE doctor_id=? AND code=?");
+      seedLvForScriptUnify.rules.forEach(sr=>{
+        if(!sr || sr.code == null) return;
+        updAllRows303.run(JSON.stringify(sr.responses || []), lvRowForScriptUnify.id, String(sr.code));
+      });
+    }
+    markPatchApplied("seed_lv_docx_script_unify_2026_07_08_v1");
+  }
+  // 吕富靖 102/404 复用 101 医生主页卡（甲方 2026-07-08 晚裁定·覆盖待办6·免真机重采）：
+  //   102 视频问诊卡、404 加号末卡 从各自页面级卡（102=预约页 S9bW / 404=出诊时间地点 MCGKl 锁卡）改回「101 医生主页卡」组：
+  //   规则卡 external 短链→5ujZ（lvDoctor·与 101 同 source_short_link 组），企微原生卡内容复用 101 已真机采集封面三件套（不为 102/404 单独重采）。
+  //   ⚠️ 必须放在 seed.forEach 之后（同 friendship durability 修）：依赖 lvfujing 医生行已存在，否则空跑仍 markPatchApplied → 模板永久不落库。
+  //   两段一体（一个 patch_id）：
+  //   ① 老库/生产 102/404 规则整体对齐种子当前形态（页面级卡→主页卡）：patchRuleResponses/mergeExternalConfig 对已存在规则「只增补/合并、护自定义 title」——
+  //      merge 虽同步 external.shortLink 到 5ujZ 但不改 card.title（护自定义）→ 老库 102/404 会残留旧 title；故按 schema_patch 把 lvfujing 【所有】code='102'/'404'
+  //      规则行 responses 整体覆盖成种子当前形态（单一数据源=seed；rules 表无 UNIQUE(doctor_id,code) 可多行·engine.match 取 sort ASC 首条·全行覆盖防旧行残留——沿用 303/docx 批 codex 反例加固）。
+  //      404 门控前三条（先填医患联络表·硬门控·404 加号硬门控配套）是种子响应的一部分 → 覆盖后原样保留、不回退。
+  //   ② 模板行落库：SELECT 该医生 code='101' 模板行——
+  //      · 生产态（101 封面三件套齐+source_short_link 非空）→ 把 101 的 source_type/source_short_link/title/app_id/username/page_path/thumb_url/封面三件套/desc
+  //        拷贝 upsert 到 code='102'/'404'（ON CONFLICT 全字段覆盖·含 raw_payload → 覆盖 404 旧出诊时间地点锁行成主页卡锁行）；raw_payload 写标记 JSON（copiedFrom:"101"）→ 成锁、判就绪、hydrate 跳过。source_page 记 video-consult/add-number。
+  //      · 本地新库（db.js 加载期 sync 未跑·101 模板行尚不存在或未就绪）→ 把 102/404 重置为 5ujZ 组【干净占位】（清封面+raw_payload=解锁·清 404 旧出诊锁、source_short_link=5ujZ、app_id=主页卡 wx214b7e2bcde837d6）
+  //        → 留给随后 sync/hydrate（101 真机采集/capture 触发 hydrateRelatedTemplates 按 5ujZ 同组补齐 102/404 封面·qiwe.js 已对 code IN('102','404') 特判 title/desc）；生产部署时 101 必已就绪 → 走拷贝分支。
+  //   patch 一次性短路（生产DB架构 v1.0 柱3-3·markPatchApplied）：无论 101 是否就绪都登记一次不再重跑——生产首启即拷贝+锁；本地占位分支靠 seed 规则(短链 5ujZ)+sync+hydrate 承载后续，
+  //   防管理员日后对 102/404 卡/规则自定义被每次启动强覆盖。fresh-seed 由 insDoc 写入种子规则 + 本段直写模板占位 → 等值/首次落库，无副作用。
+  if(!patchApplied("seed_lv_homepage_card_102_404_2026_07_09_v1")){
+    const lvRowForHome = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    if(lvRowForHome){
+      const HOMEPAGE_SHORT_LINK = "#小程序://春雨医生/5ujZ4dqouQjf8Fh";   // 101 医生主页短链 5ujZ（lvDoctor）
+      const HOMEPAGE_APP_ID = "wx214b7e2bcde837d6";
+      // ① 全行覆盖 lvfujing 102/404 规则 responses（对齐种子当前形态·主页卡；404 门控前三条随种子原样保留）
+      const seedLvHomeRules = (seed.find(s=>s.slug === "lvfujing") || {}).rules || [];
+      const updAllHomeRows = db.prepare("UPDATE rules SET responses=? WHERE doctor_id=? AND code=?");
+      ["102", "404"].forEach(code=>{
+        const sr = seedLvHomeRules.find(r=>r.code === code);
+        if(sr) updAllHomeRows.run(JSON.stringify(sr.responses || []), lvRowForHome.id, code);
+      });
+      // ② 模板行：101 就绪则拷贝真机采集封面 + 上锁；否则重置为 5ujZ 组干净占位（留给 sync/hydrate 从 101 补齐）
+      const t101 = db.prepare("SELECT * FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?").get(lvRowForHome.id, "101");
+      const ready101 = !!(t101 && t101.cover_file_aes_key && t101.cover_file_id && Number(t101.cover_file_size) > 0 && t101.source_short_link);
+      const upsertHome = db.prepare(`INSERT INTO qiwe_weapp_templates(
+        doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(doctor_id, code) DO UPDATE SET
+        source_type=excluded.source_type,
+        source_page=excluded.source_page,
+        source_short_link=excluded.source_short_link,
+        title=excluded.title,
+        app_id=excluded.app_id,
+        username=excluded.username,
+        page_path=excluded.page_path,
+        thumb_url=excluded.thumb_url,
+        cover_file_aes_key=excluded.cover_file_aes_key,
+        cover_file_id=excluded.cover_file_id,
+        cover_file_size=excluded.cover_file_size,
+        desc=excluded.desc,
+        raw_payload=excluded.raw_payload,
+        updated_at=excluded.updated_at`);
+      const nowIsoHome = new Date().toISOString();
+      [["102", "video-consult"], ["404", "add-number"]].forEach(([code, page])=>{
+        if(ready101){
+          // 生产态：拷贝 101 真机采集封面三件套 + 上锁（copiedFrom:101 标记 raw_payload → 覆盖 404 旧出诊时间地点锁行）
+          const rawMarkHome = JSON.stringify({
+            seededBy:"seed_lv_homepage_card_102_404_2026_07_09_v1", code, copiedFrom:"101", capturedAt:"2026-07-09",
+            appId:t101.app_id, username:t101.username, pagePath:t101.page_path, sourceShortLink:t101.source_short_link,
+            title:t101.title, desc:t101.desc, thumbUrl:t101.thumb_url,
+            coverFileAesKey:t101.cover_file_aes_key, coverFileId:t101.cover_file_id, coverFileSize:Number(t101.cover_file_size) || 0
+          });
+          upsertHome.run(
+            lvRowForHome.id, code, t101.source_type || "mp:mini_program", page, t101.source_short_link,
+            t101.title || "", t101.app_id || "", t101.username || "", t101.page_path || "", t101.thumb_url || "",
+            t101.cover_file_aes_key || "", t101.cover_file_id || "", Number(t101.cover_file_size) || 0,
+            t101.desc || "", rawMarkHome, nowIsoHome
+          );
+        }else{
+          // 本地新库/101 未就绪：重置为 5ujZ 组干净占位（清封面+raw_payload=解锁·清 404 旧出诊时间地点锁），留给 sync/hydrate 从 101 同组补齐
+          upsertHome.run(
+            lvRowForHome.id, code, "mp:mini_program", page, HOMEPAGE_SHORT_LINK,
+            "吕富靖医生主页", HOMEPAGE_APP_ID, "", "", "",
+            "", "", 0,
+            "", "", nowIsoHome
+          );
+        }
+      });
+    }
+    markPatchApplied("seed_lv_homepage_card_102_404_2026_07_09_v1");
+  }
+  // 吕富靖最新版 docx 编号重排（甲方 2026-07-09）：114->103、202查看回复->105、303->201、404->301、414->302；
+  // 202/501/888 为低优先级不做，不作为启用规则。该 patch 只锁 slug=lvfujing：
+  //   1) 新编号规则按 seed 全行回填（含 aliases/match/bot/responses/sort），避免旧库只新增不覆盖；
+  //   2) 删除吕富靖旧编号规则，避免旧 code 或旧 aliases 按更小 sort 抢先命中；
+  //   3) 企微原生卡模板从旧 code 复制到新 code，再删除旧 code 模板；
+  //   4) content.menu / quickKeywords / intro 对齐最新版 docx 固定配置。
+  if(!patchApplied("seed_lv_docx_codes_2026_07_09_v1")){
+    const lvRowForDocxCodes = db.prepare("SELECT id,content FROM doctors WHERE slug=?").get("lvfujing");
+    const seedLvForDocxCodes = seed.find(s=>s.slug === "lvfujing");
+    if(lvRowForDocxCodes && seedLvForDocxCodes){
+      const seedRules = Array.isArray(seedLvForDocxCodes.rules) ? seedLvForDocxCodes.rules : [];
+      const updateRuleAll = db.prepare("UPDATE rules SET aliases=?,match_type=?,bot=?,responses=?,enabled=1,sort=? WHERE doctor_id=? AND code=?");
+      seedRules.forEach((sr, i)=>{
+        if(!sr || sr.code == null) return;
+        const code = String(sr.code);
+        const exists = db.prepare("SELECT id FROM rules WHERE doctor_id=? AND code=? LIMIT 1").get(lvRowForDocxCodes.id, code);
+        if(exists){
+          updateRuleAll.run(JSON.stringify(sr.aliases || []), sr.match || "exact", sr.bot || "小宝医助", JSON.stringify(sr.responses || []), i, lvRowForDocxCodes.id, code);
+        }else{
+          insRule.run(lvRowForDocxCodes.id, code, JSON.stringify(sr.aliases || []), sr.match || "exact", sr.bot || "小宝医助", JSON.stringify(sr.responses || []), i);
+        }
+      });
+      db.prepare("DELETE FROM rules WHERE doctor_id=? AND code IN (?,?,?,?,?)")
+        .run(lvRowForDocxCodes.id, "114", "202", "303", "404", "414");
+
+      let content = {};
+      try{ content = JSON.parse(lvRowForDocxCodes.content || "{}"); }catch(e){ content = {}; }
+      if(!content || typeof content !== "object" || Array.isArray(content)) content = {};
+      if(seedLvForDocxCodes.content && seedLvForDocxCodes.content.menu) content.menu = JSON.parse(JSON.stringify(seedLvForDocxCodes.content.menu));
+      if(seedLvForDocxCodes.content && Array.isArray(seedLvForDocxCodes.content.quickKeywords)) content.quickKeywords = JSON.parse(JSON.stringify(seedLvForDocxCodes.content.quickKeywords));
+      if(seedLvForDocxCodes.content && seedLvForDocxCodes.content.clinicArticle) content.clinicArticle = JSON.parse(JSON.stringify(seedLvForDocxCodes.content.clinicArticle));
+      db.prepare("UPDATE doctors SET content=?,intro=? WHERE id=?")
+        .run(JSON.stringify(content), JSON.stringify(seedLvForDocxCodes.intro || {}), lvRowForDocxCodes.id);
+
+      const getTpl = db.prepare("SELECT * FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?");
+      const upsertTpl = db.prepare(`INSERT INTO qiwe_weapp_templates(
+        doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(doctor_id, code) DO UPDATE SET
+        source_type=excluded.source_type,
+        source_page=excluded.source_page,
+        source_short_link=excluded.source_short_link,
+        title=excluded.title,
+        app_id=excluded.app_id,
+        username=excluded.username,
+        page_path=excluded.page_path,
+        thumb_url=excluded.thumb_url,
+        cover_file_aes_key=excluded.cover_file_aes_key,
+        cover_file_id=excluded.cover_file_id,
+        cover_file_size=excluded.cover_file_size,
+        desc=excluded.desc,
+        raw_payload=excluded.raw_payload,
+        updated_at=excluded.updated_at`);
+      const nowIsoDocxCodes = new Date().toISOString();
+      const allServicePath = row=>/(^|\/)pages\/all_service\/index\.html(?:[?#]|$)/.test(String((row && row.page_path) || ""));
+      const readyTemplateRow = row=>!!(row && row.app_id && row.username && row.page_path && row.thumb_url
+        && row.cover_file_aes_key && row.cover_file_id && Number(row.cover_file_size) > 0);
+      const copyTemplate = (fromCode, toCode)=>{
+        const dst = getTpl.get(lvRowForDocxCodes.id, toCode);
+        if(dst && (readyTemplateRow(dst) || dst.raw_payload)) return;
+        const src = getTpl.get(lvRowForDocxCodes.id, fromCode);
+        if(!src) return;
+        // 202->105 只迁真实“我的全部服务/我的订单”原生卡；本地演示库曾有 pages/index 测试模板，不能锁进 105。
+        if(fromCode === "202" && toCode === "105" && !allServicePath(src)) return;
+        const srcReady = readyTemplateRow(src);
+        // 只有真实就绪/已采集模板才写 raw_payload 锁。占位模板不能上锁，否则 301 等新码会永久阻止后续 hydrate 补齐封面三件套。
+        const rawPayload = (srcReady || src.raw_payload) ? JSON.stringify({
+          seededBy:"seed_lv_docx_codes_2026_07_09_v1",
+          code:toCode,
+          copiedFrom:fromCode,
+          sourceRawPayload:src.raw_payload || ""
+        }) : "";
+        upsertTpl.run(
+          lvRowForDocxCodes.id, toCode, src.source_type || "", src.source_page || "", src.source_short_link || "",
+          src.title || "", src.app_id || "", src.username || "", src.page_path || "", src.thumb_url || "",
+          src.cover_file_aes_key || "", src.cover_file_id || "", Number(src.cover_file_size) || 0,
+          src.desc || "", rawPayload, nowIsoDocxCodes
+        );
+      };
+      copyTemplate("202", "105");
+      copyTemplate("303", "201");
+      copyTemplate("404", "301");
+      copyTemplate("414", "302");
+      db.prepare("DELETE FROM qiwe_weapp_templates WHERE doctor_id=? AND code IN (?,?,?,?,?)")
+        .run(lvRowForDocxCodes.id, "114", "202", "303", "404", "414");
+    }
+    markPatchApplied("seed_lv_docx_codes_2026_07_09_v1");
+  }
+  // 吕富靖最新版 docx 固定话术同步到已发布运营配置（甲方 2026-07-09）：
+  //   规则编号迁移只更新 rules/content；若老库 ops_configs.scripts 已发布过旧测试话术，
+  //   patient_reply.withConfiguredCodeScript 会优先读旧 published_json，导致新 docx 固定话术被覆盖。
+  //   这里按 slug=lvfujing 幂等覆盖 scripts 域里的 docx 固定字段，保留转人工/高危/语音等非 docx 字段。
+  if(!patchApplied("seed_lv_docx_scripts_2026_07_09_v1")){
+    const lvRowForDocxScripts = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    if(lvRowForDocxScripts){
+      const latestScripts = {
+        groupWelcome:"👏您好，欢迎加入吕富靖主任建立的【院外公益健康群】\n⭐点击【医患联络表】提交基础信息，便于医生了解您的情况☑\n⭐“1”😄在群里输入数字，查看所有群功能⭐\n💗点击下方小程序观看吕富靖主任给您的视频问候",
+        memberVisit:"【新患者到访 · 仅供医助关注，无需发送】{patient} 首次在群内发言，系统已发送入群欢迎。建议医助关注后续消息，必要时确认身份、备注为「姓名+疾病」，并主动引导 101 咨询/201 挂号等入口。",
+        code101:"为保护您的隐私，请通过医生小程序主页相关服务进行 1对1 咨询医生，医生利用空闲时间回复，请耐心等待。感谢您的理解和配合[玫瑰][玫瑰]。\n🌻 紧急情况，请及时到医院就诊。",
+        code102:"为保护您的隐私，请通过医生小程序主页视频问诊服务进行 1对1 咨询医生，医生利用空闲时间回复，请耐心等待。感谢您的理解和配合[玫瑰][玫瑰]。\n🌻 紧急情况，请及时到医院就诊。",
+        code103:"西城院区010-63138585、科室电话：010-63014411，地址 北京市西城区永安路95号。\n通州院区010-80838585，地址 北京市通州区潞苑东路101号院。\n顺义院区010-81608585，地址 北京市顺义区友谊南街1号。",
+        code105:"点击问诊小程序，查看医生回复，如果未回复请耐心等待一下。",
+        code201:"请您选择合适的时间，通过医院官方挂号平台挂号，挂号成功后持医保卡前往医院取号。",
+        code202:"-",
+        code301:"注意：本次加号为群内专属，与医院官方发布门诊信息不互通。请留意医院公众号及群内通知，排除医生停诊日，停诊日加号无效。\n📢 【申请加号】操作步骤如下：\n1、打开【小程序链接】，选择【预约就诊】，根据流程操作。\n2、申请加号后，您可通过订单页面查看加号结果。",
+        code302:"📝 填写须知：\n1、请填写【住院申请表】，向医生申请住院。最终能否入院及具体入院时间，由院方审核后再行通知。\n2、由于医院床位紧张，请各位朋友提前做好安排，避免错过最佳治疗时机。\n🌻 友情提醒：\n1. 填写完信息后，请在群里【告知医助】，以便及时为您跟进。\n2. 床位安排确定后，住院部医生会提前电话通知，最终住院时间以医生电话通知为准。",
+        code501:"-",
+        code606:"🌻 吕主任的科普在以下渠道发布，欢迎大家关注\n1、抖音：消化内科吕富靖\n2、小红书：消化内科吕富靖\n3、百家号：消化内科吕富靖\n4、快手：消化内科吕富靖\n5、微信公众号：吃好喝好",
+        code616:"直接弹出链接",
+        code626:"直接弹出链接",
+        code808:"直接弹出链接",
+        code818:"🌻 感谢您转发海报，让更多患者获得主任的帮助\n👉🏻 转发方法：保存图片，转发到朋友圈、微信好友或微信群",
+        code888:"-",
+        code909:"感谢您的信任与认可，祝您后续诊疗一切顺利，早日痊愈。",
+        code919:"分享您的就医感受，让更多人了解吕主任。",
+        code979:"👏您好，欢迎加入吕富靖主任建立的【院外公益健康群】\n⭐点击【医患联络表】提交基础信息，便于医生了解您的情况☑\n⭐“1”😄在群里输入数字，查看所有群功能⭐\n💗点击下方小程序观看吕富靖主任给您的视频问候",
+        "code联络表":"👏您好，欢迎加入吕富靖主任建立的【院外公益健康群】\n⭐点击【医患联络表】提交基础信息，便于医生了解您的情况☑\n⭐“1”😄在群里输入数字，查看所有群功能⭐\n💗点击下方小程序观看吕富靖主任给您的视频问候"
+      };
+      const row = db.prepare("SELECT id,draft_json,published_json FROM ops_configs WHERE doctor_id=? AND domain=?").get(lvRowForDocxScripts.id, "scripts");
+      const overlay = text=>{
+        let cfg = {};
+        try{ cfg = JSON.parse(text || "{}"); }catch(e){ cfg = {}; }
+        if(!cfg || typeof cfg !== "object" || Array.isArray(cfg)) cfg = {};
+        Object.keys(latestScripts).forEach(k=>{ cfg[k] = latestScripts[k]; });
+        return JSON.stringify(cfg, null, 2);
+      };
+      const nowIsoDocxScripts = new Date().toISOString();
+      if(row){
+        db.prepare("UPDATE ops_configs SET draft_json=?,published_json=?,status='published',updated_at=?,published_at=COALESCE(published_at, ?) WHERE id=?")
+          .run(overlay(row.draft_json), overlay(row.published_json), nowIsoDocxScripts, nowIsoDocxScripts, row.id);
+      }else{
+        const text = JSON.stringify(latestScripts, null, 2);
+        db.prepare(`INSERT INTO ops_configs(doctor_id,domain,title,scope,draft_json,published_json,published_version,status,updated_at,published_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?)`)
+          .run(lvRowForDocxScripts.id, "scripts", "话术脚本配置", "doctor", text, text, 1, "published", nowIsoDocxScripts, nowIsoDocxScripts);
+      }
+    }
+    markPatchApplied("seed_lv_docx_scripts_2026_07_09_v1");
+  }
+  // 主管 2026-07-14：欢迎语对齐腾讯文档排版；919 去掉「微医/好大夫」竞品入口；急危重症话术见 triage.js。
+  if(!patchApplied("seed_lv_welcome_review_fix_2026_07_14_v1")){
+    const lvRow = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    const WELCOME = "👏您好，欢迎加入吕富靖主任建立的【院外公益健康群】\n⭐点击【医患联络表】提交基础信息，便于医生了解您的情况☑\n⭐“1”😄在群里输入数字，查看所有群功能⭐\n💗点击下方小程序观看吕富靖主任给您的视频问候";
+    if(lvRow){
+      const overlayWelcome = text=>{
+        let cfg = {};
+        try{ cfg = JSON.parse(text || "{}"); }catch(e){ cfg = {}; }
+        if(!cfg || typeof cfg !== "object" || Array.isArray(cfg)) cfg = {};
+        cfg.groupWelcome = WELCOME;
+        cfg.code979 = WELCOME;
+        cfg["code联络表"] = WELCOME;
+        return JSON.stringify(cfg, null, 2);
+      };
+      const row = db.prepare("SELECT id,draft_json,published_json FROM ops_configs WHERE doctor_id=? AND domain=?").get(lvRow.id, "scripts");
+      const nowIso = new Date().toISOString();
+      if(row){
+        db.prepare("UPDATE ops_configs SET draft_json=?,published_json=?,status='published',updated_at=?,published_at=COALESCE(published_at,?) WHERE id=?")
+          .run(overlayWelcome(row.draft_json), overlayWelcome(row.published_json), nowIso, nowIso, row.id);
+      }
+      db.prepare("UPDATE community_groups SET welcome_text=?,updated_at=? WHERE doctor_id=?").run(WELCOME, nowIso, lvRow.id);
+      // 清理 919 规则里带微医/好大夫字样的响应
+      const r919 = db.prepare("SELECT id,responses FROM rules WHERE doctor_id=? AND code='919'").get(lvRow.id);
+      if(r919){
+        try{
+          const arr = JSON.parse(r919.responses || "[]");
+          if(Array.isArray(arr)){
+            const cleaned = arr.filter(x=>{
+              const blob = JSON.stringify(x || {});
+              return !/微医|好大夫/.test(blob);
+            });
+            if(cleaned.length !== arr.length){
+              db.prepare("UPDATE rules SET responses=? WHERE id=?").run(JSON.stringify(cleaned), r919.id);
+            }
+          }
+        }catch(e){}
+      }
+    }
+    markPatchApplied("seed_lv_welcome_review_fix_2026_07_14_v1");
+  }
+  // 待办#7/#8（2026-07-14）：606 无科普内容不发卡；主页报道仅春雨域+配图结构回填。
+  //   ① 清空老库 606 友谊/官网外链卡残留（对齐 seed responses=[]，靠 code606 话术）；
+  //   ② content.scienceArticles 缺省补 []；doctorProfile.news 回填春雨域报道（可带 img）；
+  //   ③ 若日后 scienceArticles 有条目，syncScienceRuleCards 重建 606 link 卡。
+  if(!patchApplied("seed_lv_science_gate_news_2026_07_14_v1")){
+    const lvRow = db.prepare("SELECT id,content FROM doctors WHERE slug=?").get("lvfujing");
+    const seedLv = seed.find(s=>s.slug === "lvfujing");
+    if(lvRow && seedLv){
+      let content = {};
+      try{ content = JSON.parse(lvRow.content || "{}") || {}; }catch(e){ content = {}; }
+      if(!Array.isArray(content.scienceArticles)) content.scienceArticles = [];
+      const seedNews = (((seedLv.content || {}).doctorProfile || {}).news) || [];
+      if(!content.doctorProfile || typeof content.doctorProfile !== "object") content.doctorProfile = {};
+      // 仅当报道为空或全无春雨域链接时回填（不覆盖运营已配好的春雨报道）
+      const curNews = Array.isArray(content.doctorProfile.news) ? content.doctorProfile.news : [];
+      const hasChunyuNews = curNews.some(n=>n && scienceContent.isChunyuUrl(n.url || n.link));
+      if(!hasChunyuNews && Array.isArray(seedNews) && seedNews.length){
+        content.doctorProfile.news = seedNews;
+      }
+      // howto 旧码 303/404 → 201/301
+      if(content.doctorProfile.profile && typeof content.doctorProfile.profile === "object"){
+        const howto = String(content.doctorProfile.profile.howto || "");
+        if(/发送?\s*303|发\s*404|发 303|发 404/.test(howto) || /初诊先发 303/.test(howto)){
+          content.doctorProfile.profile.howto = (seedLv.content.doctorProfile.profile || {}).howto
+            || "初诊先发 201 查看门诊与挂号方式；确需加号发 301；外地患者可发 101 获取线上咨询入口。";
+        }
+      }
+      db.prepare("UPDATE doctors SET content=? WHERE id=?").run(JSON.stringify(content), lvRow.id);
+      syncScienceRuleCards(lvRow.id, content);
+    }
+    markPatchApplied("seed_lv_science_gate_news_2026_07_14_v1");
+  }
+  // 吕富靖最新版卡片修复（甲方 2026-07-09 测试群复核）：
+  //   103 在 docx 中标记「是否卡片=否」，只能发电话固定话术，不能把内部 popup:hospitalPhone 当卡片话术外发。
+  //   101/102/105/301 迁移后必须使用新编号/新标题；可复用旧码已采集封面三件套，但落库 code/title/desc/source_short_link
+  //   必须按最新版规则写，随后清理旧码模板，避免测试或出站链路再次抓到 202/404 等旧卡。
+  if(!patchApplied("seed_lv_docx_card_cleanup_2026_07_09_v1")){
+    const lvRowForCardFix = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    const seedLvForCardFix = seed.find(s=>s.slug === "lvfujing");
+    if(lvRowForCardFix && seedLvForCardFix && Array.isArray(seedLvForCardFix.rules)){
+      const seedRule = code=>seedLvForCardFix.rules.find(r=>String(r.code) === String(code));
+      const metaFromSeed = code=>{
+        const sr = seedRule(code);
+        const responses = (sr && Array.isArray(sr.responses)) ? sr.responses : [];
+        const r = responses.find(x=>x && x.type === "mp" && x.external && x.external.shortLink)
+          || responses.find(x=>x && x.external && x.external.shortLink)
+          || responses.find(x=>x && x.type === "mp")
+          || responses[0]
+          || {};
+        const ext = r.external || {};
+        return {
+          sourceType:[r.type || "mp", ext.mode || ""].filter(Boolean).join(":"),
+          sourcePage:r.page || ext.service || ext.label || "",
+          sourceShortLink:ext.shortLink || r.shortLink || "",
+          title:r.title || r.name || r.modal || String(code),
+          desc:r.sub || ext.shortLinkScope || ext.label || ext.service || ext.provider || ""
+        };
+      };
+      const rule103 = seedRule("103");
+      if(rule103){
+        db.prepare("UPDATE rules SET aliases=?,match_type=?,bot=?,responses=?,enabled=1 WHERE doctor_id=? AND code=?")
+          .run(JSON.stringify(rule103.aliases || []), rule103.match || "exact", rule103.bot || "小友医助",
+            JSON.stringify(rule103.responses || []), lvRowForCardFix.id, "103");
+      }
+
+      const getTpl = db.prepare("SELECT * FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?");
+      const isReadyTpl = row=>!!(row && row.app_id && row.username && row.page_path && row.thumb_url
+        && row.cover_file_aes_key && row.cover_file_id && Number(row.cover_file_size) > 0);
+      const isAllServiceTpl = row=>isReadyTpl(row)
+        && /(^|\/)pages\/all_service\/index\.html(?:[?#]|$)/.test(String((row && row.page_path) || ""));
+      const upsertTpl = db.prepare(`INSERT INTO qiwe_weapp_templates(
+        doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(doctor_id, code) DO UPDATE SET
+        source_type=excluded.source_type,
+        source_page=excluded.source_page,
+        source_short_link=excluded.source_short_link,
+        title=excluded.title,
+        app_id=excluded.app_id,
+        username=excluded.username,
+        page_path=excluded.page_path,
+        thumb_url=excluded.thumb_url,
+        cover_file_aes_key=excluded.cover_file_aes_key,
+        cover_file_id=excluded.cover_file_id,
+        cover_file_size=excluded.cover_file_size,
+        desc=excluded.desc,
+        raw_payload=excluded.raw_payload,
+        updated_at=excluded.updated_at`);
+      const nowIsoCardFix = new Date().toISOString();
+      const writeFrom = (fromRow, toCode, sourcePage)=>{
+        if(!isReadyTpl(fromRow)) return false;
+        const meta = metaFromSeed(toCode);
+        upsertTpl.run(
+          lvRowForCardFix.id,
+          toCode,
+          meta.sourceType || fromRow.source_type || "mp:mini_program",
+          sourcePage || meta.sourcePage || fromRow.source_page || "",
+          meta.sourceShortLink || fromRow.source_short_link || "",
+          meta.title || fromRow.title || "",
+          fromRow.app_id || "",
+          fromRow.username || "",
+          fromRow.page_path || "",
+          fromRow.thumb_url || "",
+          fromRow.cover_file_aes_key || "",
+          fromRow.cover_file_id || "",
+          Number(fromRow.cover_file_size) || 0,
+          meta.desc || fromRow.desc || "",
+          JSON.stringify({ seededBy:"seed_lv_docx_card_cleanup_2026_07_09_v1", code:toCode, copiedFrom:fromRow.code || "", sourceRawPayload:fromRow.raw_payload || "" }),
+          nowIsoCardFix
+        );
+        return true;
+      };
+      const retitleExisting = code=>{
+        const row = getTpl.get(lvRowForCardFix.id, code);
+        if(!row) return false;
+        const meta = metaFromSeed(code);
+        upsertTpl.run(
+          lvRowForCardFix.id, code, meta.sourceType || row.source_type || "", meta.sourcePage || row.source_page || "",
+          meta.sourceShortLink || row.source_short_link || "", meta.title || row.title || "", row.app_id || "",
+          row.username || "", row.page_path || "", row.thumb_url || "", row.cover_file_aes_key || "", row.cover_file_id || "",
+          Number(row.cover_file_size) || 0, meta.desc || row.desc || "", row.raw_payload || "", nowIsoCardFix
+        );
+        return true;
+      };
+      retitleExisting("101");
+      const t101 = getTpl.get(lvRowForCardFix.id, "101");
+      const t202 = getTpl.get(lvRowForCardFix.id, "202");
+      let t105 = getTpl.get(lvRowForCardFix.id, "105");
+      const t301 = getTpl.get(lvRowForCardFix.id, "301");
+      const t404 = getTpl.get(lvRowForCardFix.id, "404");
+      if(isReadyTpl(t101)){
+        writeFrom(t101, "102", "video-consult");
+        if(!isReadyTpl(t301)) writeFrom(t101, "301", "add-number");
+      }else{
+        // 101 未采集时，102/301 保持 5ujZ 占位且必须解锁 raw_payload，等待同组 hydrate 补齐。
+        ["102", "301"].forEach(code=>{
+          const row = getTpl.get(lvRowForCardFix.id, code);
+          if(row && !isReadyTpl(row) && row.raw_payload){
+            db.prepare("UPDATE qiwe_weapp_templates SET raw_payload='',updated_at=? WHERE doctor_id=? AND code=?")
+              .run(nowIsoCardFix, lvRowForCardFix.id, code);
+          }
+        });
+      }
+      if(isReadyTpl(t404) && !isReadyTpl(t301)) writeFrom(t404, "301", "add-number");
+      if(t105 && !isAllServiceTpl(t105)){
+        db.prepare("DELETE FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?").run(lvRowForCardFix.id, "105");
+        t105 = null;
+      }
+      if(isAllServiceTpl(t105)){
+        retitleExisting("105");
+      }else if(isAllServiceTpl(t202)){
+        writeFrom(t202, "105", "replies");
+      }
+
+      db.prepare("DELETE FROM qiwe_weapp_templates WHERE doctor_id=? AND code IN (?,?,?,?,?,?,?)")
+        .run(lvRowForCardFix.id, "103", "114", "202", "303", "404", "414", "501");
+    }
+    markPatchApplied("seed_lv_docx_card_cleanup_2026_07_09_v1");
+  }
+  if(!patchApplied("seed_lv_docx_card_titles_2026_07_09_v2")){
+    const lvRowForCardTitles = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    const seedLvForCardTitles = seed.find(s=>s.slug === "lvfujing");
+    if(lvRowForCardTitles && seedLvForCardTitles && Array.isArray(seedLvForCardTitles.rules)){
+      const metaFromSeed = code=>{
+        const sr = seedLvForCardTitles.rules.find(r=>String(r.code) === String(code));
+        const responses = (sr && Array.isArray(sr.responses)) ? sr.responses : [];
+        const r = responses.find(x=>x && x.type === "mp" && x.external && x.external.shortLink)
+          || responses.find(x=>x && x.external && x.external.shortLink)
+          || responses.find(x=>x && x.type === "mp")
+          || null;
+        if(!r) return null;
+        const ext = r.external || {};
+        return {
+          sourceType:[r.type || "mp", ext.mode || ""].filter(Boolean).join(":"),
+          sourcePage:r.page || ext.service || ext.label || "",
+          sourceShortLink:ext.shortLink || r.shortLink || "",
+          title:r.title || String(code),
+          desc:r.sub || ext.shortLinkScope || ext.label || ext.service || ext.provider || ""
+        };
+      };
+      const nowIsoCardTitles = new Date().toISOString();
+      ["101","102","105","301"].forEach(code=>{
+        const meta = metaFromSeed(code);
+        if(!meta) return;
+        db.prepare(`INSERT OR IGNORE INTO qiwe_weapp_templates(
+          doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(lvRowForCardTitles.id, code, meta.sourceType || "", meta.sourcePage || "", meta.sourceShortLink || "",
+            meta.title || code, "", "", "", "", "", "", 0, meta.desc || "", "", nowIsoCardTitles);
+        db.prepare(`UPDATE qiwe_weapp_templates SET
+          source_type=COALESCE(NULLIF(?, ''), source_type),
+          source_page=COALESCE(NULLIF(?, ''), source_page),
+          source_short_link=COALESCE(NULLIF(?, ''), source_short_link),
+          title=?,
+          desc=?,
+          updated_at=?
+          WHERE doctor_id=? AND code=?`)
+          .run(meta.sourceType, meta.sourcePage, meta.sourceShortLink, meta.title, meta.desc, nowIsoCardTitles, lvRowForCardTitles.id, code);
+      });
+    }
+    markPatchApplied("seed_lv_docx_card_titles_2026_07_09_v2");
+  }
+  // 生产真相源纠偏（甲方 2026-07-09）：生产库 202 是已采集原生模板
+  // `pages/all_service/index.html`；本地演示库曾被测试假模板 `pages/index/index.html`
+  // 污染。这里把真实 202 迁到新编号 105，并删除旧/测试模板；假 105 只保留短链占位，
+  // 不允许 raw_payload 锁死。
+  if(!patchApplied("seed_lv_docx_weapp_template_truth_2026_07_09_v3")){
+    const lvRowForTruth = db.prepare("SELECT id FROM doctors WHERE slug=?").get("lvfujing");
+    const seedLvForTruth = seed.find(s=>s.slug === "lvfujing");
+    if(lvRowForTruth && seedLvForTruth && Array.isArray(seedLvForTruth.rules)){
+      const getTpl = db.prepare("SELECT * FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?");
+      const isReadyTpl = row=>!!(row && row.app_id && row.username && row.page_path && row.thumb_url
+        && row.cover_file_aes_key && row.cover_file_id && Number(row.cover_file_size) > 0);
+      const isAllServiceTpl = row=>isReadyTpl(row)
+        && /(^|\/)pages\/all_service\/index\.html(?:[?#]|$)/.test(String(row.page_path || ""));
+      const metaFromSeed = code=>{
+        const sr = seedLvForTruth.rules.find(r=>String(r.code) === String(code));
+        const responses = (sr && Array.isArray(sr.responses)) ? sr.responses : [];
+        const r = responses.find(x=>x && x.type === "mp" && x.external && x.external.shortLink)
+          || responses.find(x=>x && x.external && x.external.shortLink)
+          || responses.find(x=>x && x.type === "mp")
+          || null;
+        if(!r) return {};
+        const ext = r.external || {};
+        return {
+          sourceType:[r.type || "mp", ext.mode || ""].filter(Boolean).join(":"),
+          sourcePage:r.page || ext.service || ext.label || "",
+          sourceShortLink:ext.shortLink || r.shortLink || "",
+          title:r.title || String(code),
+          desc:r.sub || ext.shortLinkScope || ext.label || ext.service || ext.provider || ""
+        };
+      };
+      const upsertTpl = db.prepare(`INSERT INTO qiwe_weapp_templates(
+        doctor_id,code,source_type,source_page,source_short_link,title,app_id,username,page_path,thumb_url,cover_file_aes_key,cover_file_id,cover_file_size,desc,raw_payload,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(doctor_id, code) DO UPDATE SET
+        source_type=excluded.source_type,
+        source_page=excluded.source_page,
+        source_short_link=excluded.source_short_link,
+        title=excluded.title,
+        app_id=excluded.app_id,
+        username=excluded.username,
+        page_path=excluded.page_path,
+        thumb_url=excluded.thumb_url,
+        cover_file_aes_key=excluded.cover_file_aes_key,
+        cover_file_id=excluded.cover_file_id,
+        cover_file_size=excluded.cover_file_size,
+        desc=excluded.desc,
+        raw_payload=excluded.raw_payload,
+        updated_at=excluded.updated_at`);
+      const nowIsoTruth = new Date().toISOString();
+      const writePlaceholder = code=>{
+        const meta = metaFromSeed(code);
+        upsertTpl.run(lvRowForTruth.id, code, meta.sourceType || "", meta.sourcePage || "", meta.sourceShortLink || "",
+          meta.title || code, "", "", "", "", "", "", 0, meta.desc || "", "", nowIsoTruth);
+      };
+      const writeFrom = (fromRow, toCode, sourcePage)=>{
+        if(!isReadyTpl(fromRow)) return false;
+        const meta = metaFromSeed(toCode);
+        upsertTpl.run(
+          lvRowForTruth.id, toCode, meta.sourceType || fromRow.source_type || "",
+          sourcePage || meta.sourcePage || fromRow.source_page || "",
+          meta.sourceShortLink || fromRow.source_short_link || "",
+          meta.title || fromRow.title || "",
+          fromRow.app_id || "", fromRow.username || "", fromRow.page_path || "", fromRow.thumb_url || "",
+          fromRow.cover_file_aes_key || "", fromRow.cover_file_id || "", Number(fromRow.cover_file_size) || 0,
+          meta.desc || fromRow.desc || "",
+          JSON.stringify({ seededBy:"seed_lv_docx_weapp_template_truth_2026_07_09_v3", code:toCode, copiedFrom:fromRow.code || "", sourceRawPayload:fromRow.raw_payload || "" }),
+          nowIsoTruth
+        );
+        return true;
+      };
+
+      const t101 = getTpl.get(lvRowForTruth.id, "101");
+      const t202 = getTpl.get(lvRowForTruth.id, "202");
+      const t303 = getTpl.get(lvRowForTruth.id, "303");
+      const t404 = getTpl.get(lvRowForTruth.id, "404");
+      const t414 = getTpl.get(lvRowForTruth.id, "414");
+      const t105 = getTpl.get(lvRowForTruth.id, "105");
+      const t201 = getTpl.get(lvRowForTruth.id, "201");
+      const t301 = getTpl.get(lvRowForTruth.id, "301");
+      const t302 = getTpl.get(lvRowForTruth.id, "302");
+
+      if(isReadyTpl(t101)){
+        writeFrom(t101, "101", "doctor-profile");
+        writeFrom(t101, "102", "video-consult");
+        if(!isReadyTpl(t301)) writeFrom(t101, "301", "add-number");
+      }
+      if(isAllServiceTpl(t202)){
+        writeFrom(t202, "105", "replies");
+      }else if(t105 && !isAllServiceTpl(t105)){
+        db.prepare("DELETE FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?").run(lvRowForTruth.id, "105");
+        writePlaceholder("105");
+      }else if(!t105){
+        writePlaceholder("105");
+      }
+      if(isReadyTpl(t303) && !isReadyTpl(t201)) writeFrom(t303, "201", "article:clinic");
+      if(isReadyTpl(t404) && !isReadyTpl(t301)) writeFrom(t404, "301", "add-number");
+      if(isReadyTpl(t414) && !isReadyTpl(t302)) writeFrom(t414, "302", "admission");
+
+      db.prepare("DELETE FROM qiwe_weapp_templates WHERE doctor_id=? AND code IN (?,?,?,?,?,?,?)")
+        .run(lvRowForTruth.id, "103", "114", "202", "303", "404", "414", "501");
+      db.prepare("DELETE FROM qiwe_weapp_templates WHERE doctor_id=? AND code GLOB ?")
+        .run(lvRowForTruth.id, "z*");
+    }
+    markPatchApplied("seed_lv_docx_weapp_template_truth_2026_07_09_v3");
+  }
+  // 老库残留清理（对【所有】医生，含后台克隆医生）：按旧 seed 签名指纹删除残留的「seed 已移除」demo 规则（见上方 REMOVED_SEED_RULES 说明）。
+  //   round6（codex 跨厂复核）：rules 表无 (doctor_id, code) 唯一约束，后台允许同医生同 code 多条规则。故用 .all() 遍历该
+  //   (doctor_id, code) 的每一行、逐行独立判指纹：三者 (code + match_type + aliases) 全等旧 seed 签名 → 删（克隆来的残留签名与旧 seed 同 → 删）；
+  //   签名不符（管理员自定义）→ 留。并存时残留删、自定义留，互不影响。
+  //   round7：遍历范围从「seed 医生」扩到「SELECT id FROM doctors 所有医生」，堵克隆医生残留 includes 截胡绕过分诊。
+  //   放在 seed.forEach 之后（doctors 表已就绪）；findRulesForRemoval / delRuleById / REMOVED_SEED_RULES 定义在函数体顶部、此处可见。
+  const allDoctorIds = db.prepare("SELECT id FROM doctors").all();
+  //   schema_patches 短路（生产DB架构 v1.0 柱3-3）：一次性破坏性清理，登记后跳过——否则管理员日后若自建与旧 seed 签名恰好全等的规则，会被每次启动无差别误删。清单再加签名须换新 patch_id。
+  if(!patchApplied("cleanup_removed_seed_rules_v1")){
+    allDoctorIds.forEach(d=>{
+      REMOVED_SEED_RULES.forEach(sig=>{
+        const rows = findRulesForRemoval.all(d.id, sig.code);       // 该医生该 code 所有行（无此 code → 空数组 → 不删，幂等 / fresh-seed）
+        rows.forEach(cur=>{
+          if((cur.match_type||"") !== sig.match) return;            // match_type 不符 → 非 seed 残留（管理员自定义）→ 不删
+          let curAliases = [];
+          try{ curAliases = JSON.parse(cur.aliases||"[]"); }catch(e){ return; }  // aliases 解析失败 → 不当作 seed 残留 → 不删
+          if(JSON.stringify(curAliases) !== JSON.stringify(sig.aliases)) return; // aliases 不符 → 非 seed 残留 → 不删
+          delRuleById.run(cur.id);                                  // 三者全等旧 seed 签名 → 确认残留 → 删（同 code 多行只删匹配的）
+        });
+      });
+    });
+    markPatchApplied("cleanup_removed_seed_rules_v1");
+  }
+  // 老库 content 残留清理（补A，codex 红线复核）：REMOVED_SEED_RULES 只清「规则」，但 content.menu.items / quickKeywords 里的
+  //   313/505/888 项、以及 specialClinicArticle/privilegeCard/referral 三个内容块，mergeMissing/appendMissingByKey「只增不删」
+  //   永不清 → 老库发「3」菜单（从 DB content.menu 生成）仍显示三码、患者端仍渲染三块。故对【所有医生】按同一「全医生闭合」做法
+  //   幂等清理：只过滤这三码的菜单/快捷项、只删这三块，有变更才写回；不碰其它 content、不动 mergeMissing/appendMissingByKey 本身。
+  //   幂等（已清 → 无变更 → 不写）；fresh-seed 本就无三码/三块 → 无影响。甲方裁定 313/505/888 不做（低优先级 1.0 不做）。
+  //   schema_patches 短路（生产DB架构 v1.0 柱3-3）：一次性破坏性清理（313/505/888 菜单项/快捷项/内容块 + findDoctor 短链 + communityFaq 特病文案），
+  //   登记后跳过——防管理员日后自建同码菜单项/同键内容块被每次启动反复删除。
+  if(!patchApplied("cleanup_removed_content_313_505_888_v1")){
+  const REMOVED_CONTENT_CODES = new Set(["313","505","888"]);
+  const REMOVED_CONTENT_BLOCKS = ["specialClinicArticle","privilegeCard","referral"];
+  const updContentById = db.prepare("UPDATE doctors SET content=? WHERE id=?");
+  db.prepare("SELECT id,content FROM doctors").all().forEach(d=>{
+    let content;
+    try{ content = JSON.parse(d.content||"{}"); }catch(e){ return; }   // 解析失败 → 不动
+    if(!content || typeof content !== "object") return;
+    let changed = false;
+    if(content.menu && Array.isArray(content.menu.items)){
+      const before = content.menu.items.length;
+      content.menu.items = content.menu.items.filter(it=>!(it && REMOVED_CONTENT_CODES.has(it.code)));
+      if(content.menu.items.length !== before) changed = true;
+    }
+    if(Array.isArray(content.quickKeywords)){
+      const before = content.quickKeywords.length;
+      content.quickKeywords = content.quickKeywords.filter(qk=>!(qk && REMOVED_CONTENT_CODES.has(qk.c)));
+      if(content.quickKeywords.length !== before) changed = true;
+    }
+    REMOVED_CONTENT_BLOCKS.forEach(k=>{ if(k in content){ delete content[k]; changed = true; } });
+    // 老库残留「找医生」短链幂等清（补B，codex 红线复核·505转诊/找医生）：seed 医生的 chunyuIntegration 已被 db.js:608 整体覆盖
+    //   （findDoctor 已从 CHUNYU_SHORT_LINKS 种子删除 → 覆盖后自动无，这里对种子医生是幂等 no-op）；但后台克隆医生的 content
+    //   不走那次覆盖，其 knownShortLinks 里的 findDoctor 残留只能靠这里显式删。只删这一个键、不动其它短链；有变更才写回。
+    if(content.chunyuIntegration && content.chunyuIntegration.knownShortLinks && ("findDoctor" in content.chunyuIntegration.knownShortLinks)){
+      delete content.chunyuIntegration.knownShortLinks.findDoctor; changed = true;
+    }
+    // 老库残留 communityFaq「特病」幂等清（补C，codex 红线复核·313特病）：communityFaq 永不被 seed mergeMissing 覆盖，
+    //   老库 FAQ 项里的「医保/特病流程」等含「特病」文案只能靠这里显式清；保留合法的「医保」（正常 FAQ 话题、不在删除范围）。
+    //   只改含「特病」的字符串项、不动 section 结构与其它项；有变更才写回。幂等（清净后 indexOf 特病<0 → 不动）；fresh-seed 已无特病 → 无影响。
+    if(content.communityFaq && Array.isArray(content.communityFaq.sections)){
+      content.communityFaq.sections.forEach(sec=>{
+        if(sec && Array.isArray(sec.items)){
+          for(let i=0;i<sec.items.length;i++){
+            if(typeof sec.items[i]==="string" && sec.items[i].indexOf("特病")>=0){
+              const nv = sec.items[i].replace("医保/特病流程","医保流程").replace("特病流程","流程").replace("特病","");
+              if(nv!==sec.items[i]){ sec.items[i]=nv; changed=true; }
+            }
+          }
+        }
+      });
+    }
+    if(changed) updContentById.run(JSON.stringify(content), d.id);
+  });
+  markPatchApplied("cleanup_removed_content_313_505_888_v1");
+  }
+  // 老库残留 313/505/888 小程序卡片模板幂等清（codex r6 补）：这三码已整体下线，老库若残留 qiwe_weapp_templates 行 → 启动即清。
+  //   参数化、只删这三码、不动其它编号模板；幂等（删净后再删 0 行）；fresh-seed 无这三码模板 → 无影响。
+  //   schema_patches 短路（生产DB架构 v1.0 柱3-3）：一次性破坏性清理，登记后跳过（防日后自建这三码模板被每次启动反复删）。
+  if(!patchApplied("cleanup_weapp_templates_313_505_888_v1")){
+    db.prepare("DELETE FROM qiwe_weapp_templates WHERE code IN (?,?,?)").run("313","505","888");
+    markPatchApplied("cleanup_weapp_templates_313_505_888_v1");
+  }
+  // 101/102/201/301/302 等服务编号回退 exact 的【全医生】闭合（codex 跨厂复核 round9，与 病情 删除同等级）：这些服务编号已定为 exact；
+  //   includes 是本会话一度改过又回退的绕过反模式——症状哨兵漏词变体（如「嘴角歪想咨询医生」含别名子串「想咨询医生」，
+  //   scanRisk=low+非哨兵、过 engine.js includes 闸门）经编号 includes 截胡返回编号话术、绕过分诊，无正当用途。
+  //   上面 ALIAS_MATCH_SYNC_CODES 把 match_type 同步回 exact 只在 seed.forEach 内对 seed 医生跑，漏了后台克隆医生
+  //   （/api/admin/doctors/:id/clone 把规则原样复制到新 doctorId、slug∉seed → 不进 seed.forEach）——其残留
+  //   服务编号 includes 不被同步回 exact，仍绕过分诊。故对【所有医生】(复用 allDoctorIds) 把这些 code 的
+  //   match_type includes 强制改回 exact：只改 match_type、不删规则、不动 aliases/responses；只这三个已定 exact 的
+  //   服务编号。幂等（已 exact → UPDATE 0 行）；fresh-seed 无 includes → 无影响；exact 仍按整串/别名精确命中、功能不丢。
+  const REVERTED_EXACT_CODES = ["101","102","103","105","201","301","302","303"];
+  const forceExactStmt = db.prepare("UPDATE rules SET match_type='exact' WHERE doctor_id=? AND code=? AND match_type='includes'");
+  allDoctorIds.forEach(d=>{
+    REVERTED_EXACT_CODES.forEach(code=>forceExactStmt.run(d.id, code));
+  });
+  db.prepare("UPDATE faq SET a=REPLACE(a,'发 3 看完整菜单','发 1 看完整菜单') WHERE a LIKE '%发 3 看完整菜单%'").run();
+  if(insertedActiveSeed){
+    seed.forEach(s=>db.prepare("UPDATE doctors SET active=? WHERE slug=?").run(s.active ? 1 : 0, s.slug));
+  }
+
+  // 周玉春医生配置（2026-07-21）：种子落库 + 运营话术发布 + 将其名下企微群主诊改派给他。
+  // 春雨主页短链暂缺 → 规则不发卡，只发文案/问卷/医院小程序文本链接。
+  if(!patchApplied("seed_zhouyuchun_doctor_group_2026_07_21_v1")){
+    const seedMod = require("./seed.js");
+    const seedZhou = Array.isArray(seedMod) ? seedMod.find(s=>s && s.slug === "zhouyuchun") : null;
+    const zhouScripts = seedMod && seedMod.ZHOU_SCRIPTS ? seedMod.ZHOU_SCRIPTS : null;
+    let zhouRow = db.prepare("SELECT id FROM doctors WHERE slug=?").get("zhouyuchun");
+    if(!zhouRow && seedZhou){
+      const r = insDoc.run({
+        slug:seedZhou.slug, name:seedZhou.name, title:seedZhou.title, hospital:seedZhou.hospital, dept:seedZhou.dept, specialty:seedZhou.specialty,
+        group_name:seedZhou.group_name, member_count:seedZhou.member_count || 0, scope_note:seedZhou.scope_note || "", hospital_phone:seedZhou.hospital_phone || "",
+        bots:JSON.stringify(seedZhou.bots || []), clinic:JSON.stringify(seedZhou.clinic || {}), accounts:JSON.stringify(seedZhou.accounts || []),
+        content:JSON.stringify(seedZhou.content || {}), intro:JSON.stringify(seedZhou.intro || {}), active:1
+      });
+      zhouRow = { id:r.lastInsertRowid };
+    }
+    if(zhouRow && seedZhou){
+      db.prepare("UPDATE doctors SET name=?,title=?,hospital=?,dept=?,specialty=?,group_name=?,content=?,intro=?,active=1,bots=?,clinic=?,accounts=? WHERE id=?")
+        .run(
+          seedZhou.name, seedZhou.title, seedZhou.hospital, seedZhou.dept, seedZhou.specialty, seedZhou.group_name,
+          JSON.stringify(seedZhou.content || {}), JSON.stringify(seedZhou.intro || {}),
+          JSON.stringify(seedZhou.bots || []), JSON.stringify(seedZhou.clinic || {}), JSON.stringify(seedZhou.accounts || []),
+          zhouRow.id
+        );
+      db.prepare("DELETE FROM rules WHERE doctor_id=?").run(zhouRow.id);
+      (seedZhou.rules || []).forEach((rule, i)=>{
+        insRule.run(zhouRow.id, rule.code, JSON.stringify(rule.aliases || []), rule.match || "exact", rule.bot || "小周医助", JSON.stringify(rule.responses || []), i);
+      });
+      db.prepare("DELETE FROM faq WHERE doctor_id=?").run(zhouRow.id);
+      (seedZhou.faq || []).forEach(f=>insFaq.run(zhouRow.id, f.grp, f.q, f.a, f.link || null, f.sort || 0));
+
+      if(zhouScripts){
+        const nowIsoZhou = new Date().toISOString();
+        const text = JSON.stringify(zhouScripts, null, 2);
+        const row = db.prepare("SELECT id FROM ops_configs WHERE doctor_id=? AND domain=?").get(zhouRow.id, "scripts");
+        if(row){
+          db.prepare("UPDATE ops_configs SET draft_json=?,published_json=?,status='published',updated_at=?,published_at=COALESCE(published_at,?) WHERE id=?")
+            .run(text, text, nowIsoZhou, nowIsoZhou, row.id);
+        }else{
+          db.prepare(`INSERT INTO ops_configs(doctor_id,domain,title,scope,draft_json,published_json,published_version,status,updated_at,published_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)`)
+            .run(zhouRow.id, "scripts", "话术脚本配置", "doctor", text, text, 1, "published", nowIsoZhou, nowIsoZhou);
+        }
+      }
+
+      try{
+        const cgd = require("./community_group_doctors.js");
+        const groups = db.prepare(
+          "SELECT id FROM community_groups WHERE name LIKE ? OR external_group_id=?"
+        ).all("%周玉春%", "10744778603333430");
+        groups.forEach(g=>{
+          try{ cgd.setGroupDoctors(g.id, { primaryDoctorId:zhouRow.id, collaboratorIds:[] }); }
+          catch(e){ console.warn("[zhouyuchun] setGroupDoctors", g.id, e && e.message); }
+        });
+      }catch(e){
+        console.warn("[zhouyuchun] group reassign:", e && e.message);
+      }
+    }
+    markPatchApplied("seed_zhouyuchun_doctor_group_2026_07_21_v1");
+  }
+  // 周玉春群主诊改派补丁：v1 启动时偶发未改到企微真群 203，此处幂等再改一次。
+  if(!patchApplied("seed_zhouyuchun_group_primary_2026_07_21_v2")){
+    const zhouRow2 = db.prepare("SELECT id FROM doctors WHERE slug=?").get("zhouyuchun");
+    if(zhouRow2){
+      try{
+        const cgd2 = require("./community_group_doctors.js");
+        const groups2 = db.prepare(
+          "SELECT id FROM community_groups WHERE external_group_id=? OR (name LIKE ? AND COALESCE(data_source,'')='qiwe')"
+        ).all("10744778603333430", "%周玉春%");
+        groups2.forEach(g=>{
+          try{ cgd2.setGroupDoctors(g.id, { primaryDoctorId:zhouRow2.id, collaboratorIds:[] }); }
+          catch(e){ console.warn("[zhouyuchun] setGroupDoctors v2", g.id, e && e.message); }
+        });
+      }catch(e){
+        console.warn("[zhouyuchun] group reassign v2:", e && e.message);
+      }
+    }
+    markPatchApplied("seed_zhouyuchun_group_primary_2026_07_21_v2");
+  }
+
+  // 周玉春主页短链 LgKHx + 101/102/301/909 小程序卡（2026-07-22）；仅改 zhouyuchun，不动吕。
+  if(!patchApplied("seed_zhou_homepage_mp_cards_2026_07_22_v1")){
+    const seedMod = require("./seed.js");
+    const seedZhou = Array.isArray(seedMod) ? seedMod.find(s=>s && s.slug === "zhouyuchun") : null;
+    const zhouScripts = seedMod && seedMod.ZHOU_SCRIPTS ? seedMod.ZHOU_SCRIPTS : null;
+    const zhouRow = db.prepare("SELECT id, content FROM doctors WHERE slug=?").get("zhouyuchun");
+    if(zhouRow && seedZhou){
+      db.prepare("UPDATE doctors SET content=?, intro=?, bots=?, clinic=?, accounts=? WHERE id=?")
+        .run(
+          JSON.stringify(seedZhou.content || {}),
+          JSON.stringify(seedZhou.intro || {}),
+          JSON.stringify(seedZhou.bots || []),
+          JSON.stringify(seedZhou.clinic || {}),
+          JSON.stringify(seedZhou.accounts || []),
+          zhouRow.id
+        );
+      db.prepare("DELETE FROM rules WHERE doctor_id=?").run(zhouRow.id);
+      (seedZhou.rules || []).forEach((rule, i)=>{
+        insRule.run(zhouRow.id, rule.code, JSON.stringify(rule.aliases || []), rule.match || "exact", rule.bot || "小周医助", JSON.stringify(rule.responses || []), i);
+      });
+      if(zhouScripts){
+        const nowIsoZhou = new Date().toISOString();
+        const text = JSON.stringify(zhouScripts, null, 2);
+        const row = db.prepare("SELECT id FROM ops_configs WHERE doctor_id=? AND domain=?").get(zhouRow.id, "scripts");
+        if(row){
+          db.prepare("UPDATE ops_configs SET draft_json=?,published_json=?,status='published',updated_at=?,published_at=COALESCE(published_at,?) WHERE id=?")
+            .run(text, text, nowIsoZhou, nowIsoZhou, row.id);
+        }else{
+          db.prepare(`INSERT INTO ops_configs(doctor_id,domain,title,scope,draft_json,published_json,published_version,status,updated_at,published_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)`)
+            .run(zhouRow.id, "scripts", "话术脚本配置", "doctor", text, text, 1, "published", nowIsoZhou, nowIsoZhou);
+        }
+      }
+      // weapp 同步见文件末尾 setImmediate（禁止在此处 require qiwe，避免循环依赖）
+    }
+    markPatchApplied("seed_zhou_homepage_mp_cards_2026_07_22_v1");
+  }
+
+  if(!patchApplied("seed_wangyuncheng_group_config_2026_07_28_v1")){
+    const seedMod = require("./seed.js");
+    const seedWang = Array.isArray(seedMod) ? seedMod.find(s=>s && s.slug === "wangyuncheng") : null;
+    const wangScripts = seedMod && seedMod.WANG_SCRIPTS ? seedMod.WANG_SCRIPTS : null;
+    let wangRow = db.prepare("SELECT id, active FROM doctors WHERE slug=?").get("wangyuncheng");
+    if(!wangRow){
+      wangRow = db.prepare("SELECT id, slug, active FROM doctors WHERE name=? ORDER BY id LIMIT 1").get("王云程");
+    }
+    if(!wangRow && seedWang){
+      const r = insDoc.run({
+        slug:seedWang.slug, name:seedWang.name, title:seedWang.title, hospital:seedWang.hospital, dept:seedWang.dept, specialty:seedWang.specialty,
+        group_name:seedWang.group_name, member_count:seedWang.member_count || 0, scope_note:seedWang.scope_note || "", hospital_phone:seedWang.hospital_phone || "",
+        bots:JSON.stringify(seedWang.bots || []), clinic:JSON.stringify(seedWang.clinic || {}), accounts:JSON.stringify(seedWang.accounts || []),
+        content:JSON.stringify(seedWang.content || {}), intro:JSON.stringify(seedWang.intro || {}), active:0
+      });
+      wangRow = { id:r.lastInsertRowid, active:0 };
+    }
+    if(wangRow && seedWang){
+      db.prepare("UPDATE doctors SET slug=COALESCE(NULLIF(slug,''), ?), name=?, title=COALESCE(NULLIF(title,''), ?), hospital=COALESCE(NULLIF(hospital,''), ?), dept=COALESCE(NULLIF(dept,''), ?), specialty=COALESCE(NULLIF(specialty,''), ?), group_name=COALESCE(NULLIF(group_name,''), ?), hospital_phone=COALESCE(NULLIF(hospital_phone,''), ?), content=?, intro=?, bots=?, clinic=?, accounts=? WHERE id=?")
+        .run(
+          seedWang.slug, seedWang.name, seedWang.title, seedWang.hospital, seedWang.dept, seedWang.specialty, seedWang.group_name, seedWang.hospital_phone,
+          JSON.stringify(seedWang.content || {}), JSON.stringify(seedWang.intro || {}),
+          JSON.stringify(seedWang.bots || []), JSON.stringify(seedWang.clinic || {}), JSON.stringify(seedWang.accounts || []),
+          wangRow.id
+        );
+      db.prepare("DELETE FROM rules WHERE doctor_id=?").run(wangRow.id);
+      (seedWang.rules || []).forEach((rule, i)=>{
+        insRule.run(wangRow.id, rule.code, JSON.stringify(rule.aliases || []), rule.match || "exact", rule.bot || "小王医助", JSON.stringify(rule.responses || []), i);
+      });
+      db.prepare("DELETE FROM faq WHERE doctor_id=?").run(wangRow.id);
+      (seedWang.faq || []).forEach(f=>insFaq.run(wangRow.id, f.grp, f.q, f.a, f.link || null, f.sort || 0));
+      if(wangScripts){
+        const nowIsoWang = new Date().toISOString();
+        const text = JSON.stringify(wangScripts, null, 2);
+        const row = db.prepare("SELECT id FROM ops_configs WHERE doctor_id=? AND domain=?").get(wangRow.id, "scripts");
+        if(row){
+          db.prepare("UPDATE ops_configs SET draft_json=?,published_json=?,status='published',updated_at=?,published_at=COALESCE(published_at,?) WHERE id=?")
+            .run(text, text, nowIsoWang, nowIsoWang, row.id);
+        }else{
+          db.prepare(`INSERT INTO ops_configs(doctor_id,domain,title,scope,draft_json,published_json,published_version,status,updated_at,published_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)`)
+            .run(wangRow.id, "scripts", "话术脚本配置", "doctor", text, text, 1, "published", nowIsoWang, nowIsoWang);
+        }
+      }
+    }
+    markPatchApplied("seed_wangyuncheng_group_config_2026_07_28_v1");
+  }
+
+  // 周玉春主页卡 appId 对齐生产春雨卡（wx2e72…）+ 再同步 weapp 占位（采集前占位字段更准）。
+  if(!patchApplied("seed_zhou_homepage_mp_appid_2026_07_22_v2")){
+    const seedMod = require("./seed.js");
+    const seedZhou = Array.isArray(seedMod) ? seedMod.find(s=>s && s.slug === "zhouyuchun") : null;
+    const zhouRow = db.prepare("SELECT id FROM doctors WHERE slug=?").get("zhouyuchun");
+    if(zhouRow && seedZhou){
+      ["101","102","301","909"].forEach(code=>{
+        const seeded = (seedZhou.rules || []).find(r=>r && String(r.code) === code);
+        const rr = db.prepare("SELECT id FROM rules WHERE doctor_id=? AND code=?").get(zhouRow.id, code);
+        if(seeded && rr){
+          db.prepare("UPDATE rules SET responses=? WHERE id=?").run(JSON.stringify(seeded.responses || []), rr.id);
+        }
+      });
+    }
+    markPatchApplied("seed_zhou_homepage_mp_appid_2026_07_22_v2");
+  }
+}
+unlessDataFrozen("applySeedPatches", () => { applySeedPatches(); });
+function applyOpsDefaults(){
+  const doctors = db.prepare("SELECT id,name,hospital,dept,specialty FROM doctors ORDER BY id").all();
+  const insStrategy = db.prepare(`INSERT OR IGNORE INTO ops_strategy(
+    doctor_id,group_mode,private_chat_policy,doctor_profile,specialty_fit,pharma_value,notes,updated_at
+  ) VALUES(?,?,?,?,?,?,?,?)`);
+  const insKnowledge = db.prepare(`INSERT INTO knowledge_items(doctor_id,layer,mode,title,body,source,owner,status,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?)`);
+  const nowIso = new Date().toISOString();
+  doctors.forEach(d=>{
+    const specialty = d.specialty || d.dept || "";
+    const goodDept = /外科|骨科|消化/.test(specialty + d.dept);
+    const weakDept = /神经|皮肤|儿科/.test(specialty + d.dept);
+    insStrategy.run(
+      d.id,
+      "以微信群运营为主：入群欢迎、编号菜单、每周科普、门诊/复诊提醒、常见问题答疑；AI先做助理草稿和低风险自动回复。",
+      "默认不主动加患者微信私聊。仅在患者主动提交联络表、加号、住院等表单，或医生明确授权的场景下进入一对一承接。",
+      "优先匹配两类医生：一流三甲的二流医生（刚晋升副主任、业务热情高、追求个人发展），以及二流医院的一流医生（区域普通三甲主任/骨干专家）。",
+      goodDept ? "当前科室适配度高：外科/骨科/消化内科就医路径明确，复诊、检查、住院、加号和随访抓手强。" :
+        weakDept ? "当前科室需谨慎试点：神经/皮肤/儿科横向反馈偏弱，建议先小样本验证内容、转化和合规边界。" :
+        "当前科室建议作为观察组评估：先看医生配合度、可承接服务和群运营素材质量。",
+      "药企价值以医生合作破冰为主：把工具赠送给目标医生，帮助医生做患者服务与科普运营，从一次性拜访变成持续触点。",
+      "效果评估不做强因果承诺。建议每月回收医生门诊量趋势、群活跃、患者意向与医生主观感受；约40%医生可能直观感受到门诊量增长。",
+      nowIso
+    );
+    const existing = db.prepare("SELECT COUNT(*) c FROM knowledge_items WHERE doctor_id=?").get(d.id).c;
+    if(existing === 0){
+      [
+        ["医院通用","预制菜","医院就医基础信息",`${d.hospital || "医院"}地址、挂号规则、门诊电话、医保/病案复印/住院流程等通用信息。`,"医院服务号/官网","平台运营","ready"],
+        ["医院/科室通用","预制菜","科室常见问题与就医路径",`${d.dept || "科室"}常见病种、检查前准备、复诊节奏、住院/手术宣教和FAQ。`,"科室模板","医学运营","ready"],
+        ["医生个人","半预制","医生个人主页与科普素材",`${d.name}医生的擅长方向、出诊时间、个人科普、病例分享、感谢信和可分享海报。`,"医生/助理提供","医生运营","draft"],
+        ["群运营动态","现炒菜","本周群运营动作","每周科普、门诊变化、停诊/加号、患者高频问题和群内舆情处理。","运营实时整理","群运营","draft"]
+      ].forEach(x=>insKnowledge.run(d.id, ...x, nowIso));
+    }
+  });
+  // 老库策略文本幂等去「转诊」（补·codex 红线）：applyOpsDefaults 用 INSERT OR IGNORE 不覆盖既有行 → 老库 private_chat_policy 仍含「、转诊」。
+  //   甲方裁定转诊整体不做（不只编号 505），故对既有策略行这处文本做幂等清理：只删「、转诊」子串、不动其它策略文字。
+  //   幂等（删后无「、转诊」→ WHERE 不再命中 → 不再改）；fresh-seed 已是去转诊版 → 无命中 → 无影响。
+  db.prepare("UPDATE ops_strategy SET private_chat_policy = REPLACE(private_chat_policy, ?, ?) WHERE private_chat_policy LIKE ?")
+    .run("、转诊", "", "%、转诊%");
+  // 转诊提交残留幂等清理（补·codex 红线修2）：转诊已整体下线（SUBMIT_TYPES 已去转诊、患者端无入口），老库仍可能残留
+  //   type='转诊' 的历史提交，后台 stats/submissions 仍会显示。启动即幂等清掉这类已下线功能的残留提交；参数化、只删
+  //   type='转诊'、不动其它 type。幂等（删净后再删 0 行）；fresh-seed 无转诊提交 → 无影响。
+  db.prepare("DELETE FROM submissions WHERE type=?").run("转诊");
+}
+unlessDataFrozen("applyOpsDefaults", () => { applyOpsDefaults(); });
+
+/* health_chat 可检索知识样例：按医生+标题幂等补齐，不覆盖运营已改条目 */
+function applyHealthChatDemoKnowledge(){
+  if(patchApplied("health_chat_demo_kb_v2")) return;
+  const { healthChatDemoKnowledgeRows } = require("./knowledge_quality.js");
+  const doctors = db.prepare("SELECT id,name,hospital,dept FROM doctors ORDER BY id").all();
+  const exists = db.prepare("SELECT 1 FROM knowledge_items WHERE doctor_id=? AND title=?");
+  const ins = db.prepare(`INSERT INTO knowledge_items(doctor_id,layer,mode,title,body,source,owner,status,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?)`);
+  const nowIso = new Date().toISOString();
+  doctors.forEach(d=>{
+    healthChatDemoKnowledgeRows(d, nowIso).forEach(row=>{
+      if(exists.get(d.id, row.title)) return;
+      ins.run(d.id, row.layer, row.mode, row.title, row.body, row.source, row.owner, row.status, row.updated_at);
+    });
+  });
+  markPatchApplied("health_chat_demo_kb_v2");
+}
+unlessDataFrozen("applyHealthChatDemoKnowledge", () => {
+  try{ applyHealthChatDemoKnowledge(); }catch(e){ console.error("[health_chat_demo_kb]", e && e.message); }
+});
+
+function normalizePublicGroupNameValue(v){
+  return String(v || "").replace(/（群名待甲方确认）|\(群名待甲方确认\)/g, "").trim();
+}
+
+function normalizeWelcomeTextValue(v){
+  let s = String(v || "");
+  if(!s) return s;
+  s = normalizePublicGroupNameValue(s);
+  s = s.replace(/复杂情况再转人工[\/／]医生确认/g, "复杂情况再找医生确认");
+  s = s.replace(/会转人工处理/g, "会找医生确认");
+  s = s.replace(/转人工/g, "找医生");
+  s = s.replace(/呕血、黑便、/g, "呕血、");
+  s = s.replace(/、黑便/g, "");
+  return s;
+}
+
+function normalizeOpsConfigWelcomeJson(text){
+  let cfg = {};
+  try{ cfg = JSON.parse(text || "{}"); }catch(e){ return { text, changed:false }; }
+  if(!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return { text, changed:false };
+  if(typeof cfg.groupWelcome !== "string") return { text, changed:false };
+  const next = normalizeWelcomeTextValue(cfg.groupWelcome);
+  if(next === cfg.groupWelcome) return { text, changed:false };
+  cfg.groupWelcome = next;
+  return { text:JSON.stringify(cfg, null, 2), changed:true };
+}
+
+function normalizeExistingWelcomeDefaults(nowIso){
+  db.prepare("SELECT id,group_name FROM doctors WHERE group_name LIKE ?").all("%群名待甲方确认%").forEach(r=>{
+    db.prepare("UPDATE doctors SET group_name=? WHERE id=?").run(normalizePublicGroupNameValue(r.group_name), r.id);
+  });
+  db.prepare("SELECT id,name FROM community_groups WHERE name LIKE ?").all("%群名待甲方确认%").forEach(r=>{
+    db.prepare("UPDATE community_groups SET name=?,updated_at=? WHERE id=?").run(normalizePublicGroupNameValue(r.name), nowIso, r.id);
+  });
+  db.prepare("SELECT id,welcome_text FROM community_groups WHERE welcome_text LIKE ? OR welcome_text LIKE ? OR welcome_text LIKE ?").all("%群名待甲方确认%", "%转人工%", "%黑便%").forEach(r=>{
+    db.prepare("UPDATE community_groups SET welcome_text=?,updated_at=? WHERE id=?").run(normalizeWelcomeTextValue(r.welcome_text), nowIso, r.id);
+  });
+  db.prepare("SELECT id,draft_json,published_json FROM ops_configs WHERE domain=?").all("scripts").forEach(r=>{
+    const draft = normalizeOpsConfigWelcomeJson(r.draft_json);
+    const published = normalizeOpsConfigWelcomeJson(r.published_json);
+    if(draft.changed || published.changed){
+      db.prepare("UPDATE ops_configs SET draft_json=?,published_json=?,updated_at=? WHERE id=?").run(draft.text, published.text, nowIso, r.id);
+    }
+  });
+}
+
+function applyCommunityDefaults(){
+  const nowIso = new Date().toISOString();
+  normalizeExistingWelcomeDefaults(nowIso);
+  const doctors = db.prepare("SELECT id,name,dept,group_name,member_count FROM doctors ORDER BY id").all();
+  const LV_DOCX_GROUP_WELCOME = "👏您好，欢迎加入吕富靖主任建立的【院外公益健康群】\n⭐点击【医患联络表】提交基础信息，便于医生了解您的情况☑\n⭐“1”😄在群里输入数字，查看所有群功能⭐\n💗点击下方小程序观看吕富靖主任给您的视频问候";
+  const ins = db.prepare(`INSERT INTO community_groups(
+    doctor_id,channel_type,external_group_id,name,owner,member_count,status,welcome_enabled,welcome_text,
+    auto_reply_enabled,review_mode,notes,created_at,updated_at
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  doctors.forEach(d=>{
+    const exists = db.prepare("SELECT id FROM community_groups WHERE doctor_id=? LIMIT 1").get(d.id);
+    if(exists) return;
+    const groupName = d.group_name || `${d.name}医生健康班`;
+    ins.run(
+      d.id,
+      "wechat",
+      `local-${d.id}`,
+      groupName,
+      "医助运营",
+      d.member_count || 0,
+      "pilot",
+      1,
+      d.name === "吕富靖" ? LV_DOCX_GROUP_WELCOME : `新朋友，欢迎加入${groupName}！这里由${d.name}医生团队和医助共同维护，我会先帮大家整理问题、引导到合适入口，复杂情况再找医生确认。\n\n为方便医生快速识别您的情况，建议把群昵称改成「姓名+疾病」（例如：王先生+胃炎）。\n· 发送 1 查看群功能菜单\n· 发送 101 向医生咨询\n· 想了解挂号/出诊时间，发送 303\n\n群内以健康科普与就医服务为主；涉及具体病情、用药、检查报告判断会找医生确认。若出现胸痛、呼吸困难、呕血、剧烈腹痛等紧急情况，请直接线下就医或拨打 120。`,
+      1,
+      "human_review",
+      "本地默认社群配置。真实上线时把 external_group_id 替换为企微/微信群 ID，并将回调接入 /api/community/inbound。",
+      nowIso,
+      nowIso
+    );
+  });
+  // 老库默认欢迎语升级：只改仍是旧模板的行，不覆盖运营手动配置。
+  db.prepare(`SELECT g.id,g.name,g.welcome_text,d.name AS doctor_name
+    FROM community_groups g JOIN doctors d ON d.id=g.doctor_id
+    WHERE g.welcome_text LIKE '欢迎加入%医生团队和医助共同维护，可发送 3 查看群功能，紧急情况请直接线下就医或拨打 120。'`).all().forEach(g=>{
+    const text = g.doctor_name === "吕富靖" ? LV_DOCX_GROUP_WELCOME : `新朋友，欢迎加入${normalizePublicGroupNameValue(g.name || "医生健康群")}！这里由${g.doctor_name || "医生"}医生团队和医助共同维护，我会先帮大家整理问题、引导到合适入口，复杂情况再找医生确认。\n\n为方便医生快速识别您的情况，建议把群昵称改成「姓名+疾病」（例如：王先生+胃炎）。\n· 发送 1 查看群功能菜单\n· 发送 101 向医生咨询\n· 想了解挂号/出诊时间，发送 303\n\n群内以健康科普与就医服务为主；涉及具体病情、用药、检查报告判断会找医生确认。若出现胸痛、呼吸困难、呕血、剧烈腹痛等紧急情况，请直接线下就医或拨打 120。`;
+    db.prepare("UPDATE community_groups SET welcome_text=?,updated_at=? WHERE id=?").run(text, nowIso, g.id);
+  });
+  db.prepare("UPDATE community_groups SET welcome_text=REPLACE(welcome_text,'发送 3 查看群功能菜单','发送 1 查看群功能菜单'),updated_at=? WHERE welcome_text LIKE '%发送 3 查看群功能菜单%'").run(nowIso);
+  db.prepare("UPDATE community_groups SET welcome_text=REPLACE(welcome_text,'可发送 3 查看群功能','可发送 1 查看群功能'),updated_at=? WHERE welcome_text LIKE '%可发送 3 查看群功能%'").run(nowIso);
+  // 吕富靖真实企微群映射（甲方提供真实群 ID 10730375163571533；channel_type=wecom——community.js CHANNEL_TYPES 把 qiwe 回落 wechat，故用 wecom）。
+  // 在本地默认群之外【新增一行】真实群（不改 local-* 默认群语义）；按 slug 定位（不写死 id，兼容 fresh-seed 与现库 id 不同）。
+  // 幂等：INSERT OR IGNORE + 唯一索引 idx_community_groups_ext(doctor_id,channel_type,external_group_id) → 重复启动不重复插。
+  // 只读上下文：供企微侧边栏 GET /api/admin/wecom/sidebar?groupId=10730375163571533 按 external_group_id 命中展示；
+  // auto_reply_enabled=0、review_mode=human_review，不自动发任何消息。群名为甲方截图确认的真实群名。
+  const lv = db.prepare("SELECT id,name FROM doctors WHERE slug=?").get("lvfujing");
+  if(lv){
+    db.prepare(`INSERT OR IGNORE INTO community_groups(
+      doctor_id,channel_type,external_group_id,name,owner,member_count,status,welcome_enabled,welcome_text,
+      auto_reply_enabled,review_mode,notes,created_at,updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      lv.id,
+      "wecom",
+      "10730375163571533",
+      "医患通测试-吕富靖主任健康群①",
+      "医助运营",
+      0,
+      "pilot",
+      1,
+      LV_DOCX_GROUP_WELCOME,
+      0,
+      "human_review",
+      "甲方提供的真实企微群映射（external_group_id 为真实群 ID，channel_type=wecom）。侧边栏只读上下文展示用，不自动发消息。",
+      nowIso,
+      nowIso
+    );
+    // 老库占位群名升级（INSERT OR IGNORE 不会更新已存在行）：仅把已知占位名定点改成真名。
+    // 幂等（真名已就位则 name=占位 不匹配、不再改）、定点（只命中占位串，不误伤管理员自定义群名）。
+    db.prepare("UPDATE community_groups SET name=? WHERE doctor_id=? AND channel_type=? AND external_group_id=? AND name=?")
+      .run("医患通测试-吕富靖主任健康群①", lv.id, "wecom", "10730375163571533", "吕富靖主任消化健康群（群名待甲方确认）");
+    db.prepare(`UPDATE community_groups SET welcome_text=?,updated_at=? WHERE doctor_id=? AND (
+      welcome_text LIKE ? OR welcome_text LIKE ? OR welcome_text LIKE ?
+    )`).run(LV_DOCX_GROUP_WELCOME, nowIso, lv.id, "%医生团队和医助共同维护%", "%院外公益医患群%", "%发送 101 向医生咨询%");
+  }
+}
+unlessDataFrozen("applyCommunityDefaults", () => { applyCommunityDefaults(); });
+
+/* ===== 患者身份枢纽：把分散在各渠道的「同一个人」收敛到一个 patient_id =====
+   强标识优先（渠道+外部ID → unionid → 已验证手机号）；不靠姓名模糊匹配（会错并不同人）。
+   企微通道统一归一为 qiwe（历史 wecom 身份会回并到同 patient）。
+   best-effort：任何异常都不应阻断消息主流程或启动。 */
+const PLACEHOLDER_DISPLAY_NAMES = /^(?:企微患者|群友|好友|新朋友|新成员|微信用户|患者|未知|匿名|企微用户)$/;
+
+function normalizePatientChannel(ch){
+  const c = (ch == null ? "" : String(ch)).trim().toLowerCase();
+  if(c === "wecom" || c === "wework" || c === "qiwei" || c === "qiwe") return "qiwe";
+  return c || "wechat";
+}
+
+function looksLikeExternalUserId(name){
+  return /^\d{10,}$/.test(String(name == null ? "" : name).trim());
+}
+
+function isPlaceholderDisplayName(name){
+  const s = (name == null ? "" : String(name)).trim();
+  if(!s) return true;
+  if(PLACEHOLDER_DISPLAY_NAMES.test(s)) return true;
+  if(looksLikeExternalUserId(s)) return true;
+  if(/^企微用户[·.\-_]?\d{2,}$/.test(s)) return true;
+  return false;
+}
+
+/* 渠道后缀：企微 / 微信 / 联络表 … */
+function channelSuffixLabel(channels){
+  const cs = String(channels == null ? "" : channels).toLowerCase();
+  if(/qiwe|wecom|wework/.test(cs)) return "企微";
+  if(/wechat|微信/.test(cs)) return "微信";
+  if(/联络|sms|h5|form|contact|invite/.test(cs)) return "联络表";
+  if(/manual|本地|sim/.test(cs)) return "本地";
+  if(cs.trim()) return "其他";
+  return "企微";
+}
+
+function stripChannelSuffix(name){
+  return String(name == null ? "" : name).trim()
+    .replace(/[·.\-_]?(?:企微|微信|联络表|本地|其他)$/, "")
+    .trim();
+}
+
+function withChannelSuffix(name, channelsOrSuffix){
+  const base = stripChannelSuffix(name) || "群友";
+  const suf = String(channelsOrSuffix || "").length <= 4 && /^(?:企微|微信|联络表|本地|其他)$/.test(String(channelsOrSuffix || "").trim())
+    ? String(channelsOrSuffix).trim()
+    : channelSuffixLabel(channelsOrSuffix);
+  if(base.endsWith("·" + suf) || base.endsWith(suf)) return base.slice(0, 80);
+  return (base + "·" + suf).slice(0, 80);
+}
+
+/* 群成员 → 群友；仅企微好友私聊（无社群成员行）→ 好友 */
+function patientPeerRoleLabel(doctorId, patientId, opts){
+  const o = opts || {};
+  if(o.isGroup === true) return "群友";
+  if(o.isGroup === false) return "好友";
+  const did = doctorId != null ? +doctorId : 0;
+  const pid = patientId != null ? +patientId : 0;
+  const sid = String(o.externalId || "").trim();
+  if(did && Number.isInteger(pid) && pid > 0){
+    try{
+      const hit = db.prepare(`SELECT 1 AS ok FROM community_members
+        WHERE doctor_id=? AND external_user_id IN (
+          SELECT external_id FROM patient_identities WHERE patient_id=?
+        ) LIMIT 1`).get(did, pid);
+      if(hit) return "群友";
+    }catch(e){}
+  }
+  if(did && sid){
+    try{
+      const hit = db.prepare(`SELECT 1 AS ok FROM community_members
+        WHERE doctor_id=? AND external_user_id=? LIMIT 1`).get(did, sid);
+      if(hit) return "群友";
+    }catch(e){}
+  }
+  return "好友";
+}
+
+/* 从社群成员/消息归档还原微信名称（不含渠道后缀；不用档案 real_name） */
+function resolvePatientWechatName(doctorId, patientId, fallbacks){
+  const fb = fallbacks || {};
+  const tryName = (v)=>{
+    const s = stripChannelSuffix(v);
+    return s && !isPlaceholderDisplayName(s) ? s.slice(0, 80) : "";
+  };
+  if(patientId && doctorId){
+    try{
+      const mem = db.prepare(`SELECT display_name FROM community_members
+        WHERE doctor_id=? AND external_user_id IN (
+          SELECT external_id FROM patient_identities WHERE patient_id=?
+        )
+        AND display_name IS NOT NULL AND trim(display_name) != ''
+        ORDER BY id DESC LIMIT 8`).all(+doctorId, +patientId);
+      for(const m of mem){ const n = tryName(m.display_name); if(n) return n; }
+    }catch(e){}
+    try{
+      const msg = db.prepare(`SELECT patient_name FROM message_log
+        WHERE doctor_id=? AND (
+          patient_id=? OR sender_id IN (SELECT external_id FROM patient_identities WHERE patient_id=?)
+        )
+        AND patient_name IS NOT NULL AND trim(patient_name) != ''
+        ORDER BY id DESC LIMIT 8`).all(+doctorId, String(patientId), +patientId);
+      for(const m of msg){ const n = tryName(m.patient_name); if(n) return n; }
+    }catch(e){}
+    try{
+      const p = db.prepare("SELECT display_name FROM patients WHERE id=? AND doctor_id=?").get(+patientId, +doctorId);
+      const n = tryName(p && p.display_name);
+      if(n) return n;
+    }catch(e){}
+  }
+  const disp = tryName(fb.displayName);
+  if(disp) return disp;
+  return "";
+}
+
+/* 从社群成员/消息归档尽量还原群聊名（不含渠道后缀）；档案展示可含 real_name 回退 */
+function resolvePatientChatName(doctorId, patientId, fallbacks){
+  const fb = fallbacks || {};
+  const tryName = (v)=>{
+    const s = stripChannelSuffix(v);
+    return s && !isPlaceholderDisplayName(s) ? s.slice(0, 80) : "";
+  };
+  const real = tryName(fb.realName);
+  if(real) return real;
+  if(patientId && doctorId){
+    try{
+      const mem = db.prepare(`SELECT display_name FROM community_members
+        WHERE doctor_id=? AND external_user_id IN (
+          SELECT external_id FROM patient_identities WHERE patient_id=?
+        )
+        AND display_name IS NOT NULL AND trim(display_name) != ''
+        ORDER BY id DESC LIMIT 8`).all(+doctorId, +patientId);
+      for(const m of mem){ const n = tryName(m.display_name); if(n) return n; }
+    }catch(e){}
+    try{
+      const msg = db.prepare(`SELECT patient_name FROM message_log
+        WHERE doctor_id=? AND (
+          patient_id=? OR sender_id IN (SELECT external_id FROM patient_identities WHERE patient_id=?)
+        )
+        AND patient_name IS NOT NULL AND trim(patient_name) != ''
+        ORDER BY id DESC LIMIT 8`).all(+doctorId, String(patientId), +patientId);
+      for(const m of msg){ const n = tryName(m.patient_name); if(n) return n; }
+    }catch(e){}
+  }
+  const disp = tryName(fb.displayName);
+  if(disp) return disp;
+  return "";
+}
+
+/** 患者主档上的微信名称（档案提示；与可编辑姓名分离） */
+function resolvePersonWechatName(personId, doctorId, patientId) {
+  if (!personId) return "";
+  try {
+    const row = db.prepare("SELECT wechat_group_name FROM persons WHERE id=?").get(+personId);
+    if (row && row.wechat_group_name && !isPlaceholderDisplayName(row.wechat_group_name)) {
+      return String(row.wechat_group_name).trim().slice(0, 80);
+    }
+  } catch (e) {}
+  if (doctorId && patientId) {
+    const chat = resolvePatientWechatName(+doctorId, +patientId, {});
+    if (chat) return chat;
+  }
+  try {
+    const pts = db.prepare(`
+      SELECT doctor_id, id, display_name FROM patients
+      WHERE person_id=? ORDER BY updated_at DESC LIMIT 8
+    `).all(+personId);
+    for (const pt of pts) {
+      const chat = resolvePatientWechatName(pt.doctor_id, pt.id, { displayName: pt.display_name });
+      if (chat) return chat;
+    }
+  } catch (e) {}
+  return "";
+}
+const resolvePersonWechatGroupName = resolvePersonWechatName;
+
+/* 患者档案展示：真名/微信名 + ·企微；无昵称时群成员称「群友」、纯私聊好友称「好友」 */
+function patientArchiveLabel(opts){
+  const o = opts || {};
+  const role = patientPeerRoleLabel(o.doctorId, o.patientId, o);
+  const chat = resolvePatientChatName(o.doctorId, o.patientId, {
+    displayName:o.displayName, realName:o.realName
+  });
+  return chat || role || "患者";
+}
+
+function isStalePatientLogName(name){
+  return isPlaceholderDisplayName(stripChannelSuffix(name));
+}
+
+function findPatientIdByExternal(doctorId, externalId){
+  const sid = String(externalId || "").trim();
+  if(!sid || !doctorId) return null;
+  try{
+    const ident = db.prepare(`SELECT patient_id FROM patient_identities
+      WHERE doctor_id=? AND external_id=?
+      ORDER BY CASE channel WHEN 'qiwe' THEN 0 WHEN 'wecom' THEN 1 ELSE 2 END LIMIT 1`).get(+doctorId, sid);
+    if(ident && ident.patient_id) return +ident.patient_id;
+  }catch(e){}
+  return null;
+}
+
+/* 用社群真昵称回写 patients.display_name（仅覆盖占位名） */
+function syncPatientDisplayFromChat(doctorId, patientId, fallbacks){
+  const pid = +patientId;
+  const did = +doctorId;
+  if(!Number.isInteger(pid) || pid <= 0 || !did) return null;
+  const chat = resolvePatientChatName(did, pid, fallbacks || {});
+  if(!chat || isPlaceholderDisplayName(chat)) return null;
+  try{
+    const p = db.prepare("SELECT display_name FROM patients WHERE id=? AND doctor_id=?").get(pid, did);
+    if(!p) return null;
+    const next = preferDisplayName(p.display_name, chat);
+    if(next && next !== p.display_name){
+      db.prepare("UPDATE patients SET display_name=?, updated_at=? WHERE id=?")
+        .run(next, new Date().toISOString(), pid);
+    }
+    return next;
+  }catch(e){ return null; }
+}
+
+/* 昵称 enrichment 后：把冻结的「企微患者/群友」回写成档案口径标签 */
+function backfillMessageLogPatientLabel(doctorId, patientId, senderId){
+  const did = +doctorId;
+  const pid = patientId != null ? +patientId : null;
+  const sid = String(senderId || "").trim();
+  if(!did || (!(Number.isInteger(pid) && pid > 0) && !sid)) return 0;
+  const label = patientArchiveLabel({
+    doctorId:did, patientId: Number.isInteger(pid) && pid > 0 ? pid : null,
+    channels:"qiwe", externalId:sid
+  });
+  if(isStalePatientLogName(label)) return 0;
+  let n = 0;
+  try{
+    if(Number.isInteger(pid) && pid > 0){
+      const rows = db.prepare("SELECT id,patient_name FROM message_log WHERE doctor_id=? AND patient_id=?").all(did, String(pid));
+      const stmt = db.prepare("UPDATE message_log SET patient_name=? WHERE id=?");
+      for(const r of rows){
+        if(isStalePatientLogName(r.patient_name)){ stmt.run(label, r.id); n++; }
+      }
+    }
+    if(sid){
+      const rows = db.prepare("SELECT id,patient_name,patient_id FROM message_log WHERE doctor_id=? AND sender_id=?").all(did, sid);
+      const stmtName = db.prepare("UPDATE message_log SET patient_name=? WHERE id=?");
+      const stmtBoth = db.prepare("UPDATE message_log SET patient_name=?, patient_id=? WHERE id=?");
+      for(const r of rows){
+        const needName = isStalePatientLogName(r.patient_name);
+        const needPid = (!r.patient_id || !String(r.patient_id).trim()) && Number.isInteger(pid) && pid > 0;
+        if(needName && needPid){ stmtBoth.run(label, String(pid), r.id); n++; }
+        else if(needName){ stmtName.run(label, r.id); n++; }
+        else if(needPid){ db.prepare("UPDATE message_log SET patient_id=? WHERE id=?").run(String(pid), r.id); n++; }
+      }
+    }
+  }catch(e){}
+  return n;
+}
+
+/* 消息媒资元数据：物理文件 db_message_media.js（再导出，零行为） */
+const {
+  preferImageUrlOrder,
+  collectImageUrls,
+  mediaMetaForMessageRow
+} = require("./db_message_media.js").attachMessageMediaHelpers(db, __dirname);
+
+/* 分诊台列表：与患者档案同口径标签；必要时回填 patient_id / 冻结占位名 */
+const _groupNameCache = new Map();
+
+function resolveAdminMessageGroupName(doctorId, groupId){
+  const key = String(groupId == null ? "" : groupId).trim();
+  if(!key) return "";
+  const did = +doctorId;
+  const cacheKey = `${Number.isFinite(did) ? did : 0}:${key}`;
+  if(!_groupNameCache.has(cacheKey)){
+    let name = "";
+    try{
+      const g = db.prepare(`SELECT name FROM community_groups
+        WHERE external_group_id=? OR CAST(id AS TEXT)=?
+        ORDER BY CASE WHEN doctor_id=? THEN 0 ELSE 1 END, id
+        LIMIT 1`).get(key, key, Number.isFinite(did) ? did : -1);
+      name = String((g && g.name) || "").trim();
+    }catch(e){}
+    if(!name) name = key.length > 16 ? ("群 ···" + key.slice(-6)) : ("群 " + key);
+    _groupNameCache.set(cacheKey, name);
+    if(_groupNameCache.size > 2000){
+      const first = _groupNameCache.keys().next().value;
+      if(first != null) _groupNameCache.delete(first);
+    }
+  }
+  return _groupNameCache.get(cacheKey) || "";
+}
+
+function hydrateAdminMessageRow(doctorId, row){
+  if(!row) return row;
+  const did = +doctorId;
+  let pid = null;
+  const rawPid = row.patient_id != null ? String(row.patient_id).trim() : "";
+  if(rawPid && Number.isInteger(+rawPid) && +rawPid > 0) pid = +rawPid;
+  const senderId = String(row.sender_id || "").trim();
+  if(!pid && senderId) pid = findPatientIdByExternal(did, senderId);
+  if(pid) syncPatientDisplayFromChat(did, pid, { displayName:row.patient_name });
+  const label = patientArchiveLabel({
+    doctorId:did,
+    patientId:pid,
+    displayName:row.patient_name,
+    channels: row.channel || "qiwe",
+    externalId:senderId,
+    isGroup: !!(row.group_id && String(row.group_id).trim())
+  });
+  if(row.id){
+    try{
+      const needPid = pid && String(row.patient_id || "") !== String(pid);
+      const needName = !isStalePatientLogName(label) && isStalePatientLogName(row.patient_name);
+      if(needPid && needName){
+        db.prepare("UPDATE message_log SET patient_id=?, patient_name=? WHERE id=?").run(String(pid), label, row.id);
+      }else if(needPid){
+        db.prepare("UPDATE message_log SET patient_id=? WHERE id=?").run(String(pid), row.id);
+      }else if(needName){
+        db.prepare("UPDATE message_log SET patient_name=? WHERE id=?").run(label, row.id);
+      }
+    }catch(e){}
+  }
+  const gid = row.group_id != null ? String(row.group_id).trim() : "";
+  const groupName = gid ? resolveAdminMessageGroupName(did, gid) : "";
+  return Object.assign({}, row, {
+    patient_id: pid != null ? String(pid) : row.patient_id,
+    patient_name: label,
+    patient_name_raw: row.patient_name,
+    group_name: groupName || null,
+    groupName: groupName || null,
+    media: mediaMetaForMessageRow(row)
+  });
+}
+
+/* 档案弹层：补 archiveLabel，并把占位 display_name 同步为社群微信名 */
+function decorateAdminPatient(doctorId, patient){
+  if(!patient) return null;
+  const did = +doctorId;
+  const pid = +patient.id;
+  let externalId = "";
+  let channels = patient.channels || "";
+  try{
+    const idn = db.prepare("SELECT channel,external_id FROM patient_identities WHERE patient_id=? ORDER BY CASE channel WHEN 'qiwe' THEN 0 WHEN 'wecom' THEN 1 ELSE 2 END LIMIT 1").get(pid);
+    if(idn){
+      externalId = idn.external_id || "";
+      if(!channels) channels = idn.channel || "qiwe";
+    }
+  }catch(e){}
+  const synced = syncPatientDisplayFromChat(did, pid, {
+    displayName:patient.display_name, realName:patient.real_name
+  });
+  const displayName = synced || patient.display_name || "";
+  const archiveLabel = patientArchiveLabel({
+    doctorId:did, patientId:pid, displayName, realName:patient.real_name || "",
+    channels: channels || (externalId ? "qiwe" : ""), externalId
+  });
+  if(pid && externalId) backfillMessageLogPatientLabel(did, pid, externalId);
+  return Object.assign({}, patient, {
+    display_name: displayName,
+    archiveLabel,
+    channels: channels || patient.channels || ""
+  });
+}
+
+/* 无真昵称时给医助可读标签（日志/分诊）；有昵称原样返回，不再造「企微用户·后四位」 */
+function friendlyPatientLabel(name, senderId, opts){
+  const n = (name == null ? "" : String(name)).trim();
+  if(n && !isPlaceholderDisplayName(n)) return stripChannelSuffix(n).slice(0, 80) || n.slice(0, 80);
+  void senderId;
+  const o = opts || {};
+  if(o.isGroup === true) return "群友";
+  if(o.isGroup === false) return "好友";
+  return "好友";
+}
+
+function preferDisplayName(existing, incoming, opts){
+  const inc = (incoming == null ? "" : String(incoming)).trim().slice(0, 80);
+  const ex = (existing == null ? "" : String(existing)).trim().slice(0, 80);
+  if(inc && !isPlaceholderDisplayName(inc)) return inc;           // 有真昵称 → 覆盖占位/旧名/纯数字 userId
+  if(ex && !isPlaceholderDisplayName(ex)) return ex;
+  const role = (opts && opts.isGroup === true) ? "群友" : "好友";
+  return ex || inc || role;
+}
+
+function findIdentityPatientId(doctorId, channel, externalId){
+  if(!externalId) return null;
+  const r = db.prepare("SELECT patient_id FROM patient_identities WHERE doctor_id=? AND channel=? AND external_id=?").get(doctorId, channel, externalId);
+  if(r) return r.patient_id;
+  // 企微历史分裂：wecom / qiwe 视为同一渠道
+  if(channel === "qiwe"){
+    const alt = db.prepare("SELECT id,patient_id FROM patient_identities WHERE doctor_id=? AND channel='wecom' AND external_id=?").get(doctorId, externalId);
+    if(alt){
+      try{
+        // 迁到统一渠道 qiwe；若已有 qiwe 行则只复用 patient_id
+        const hasQiwe = db.prepare("SELECT id FROM patient_identities WHERE doctor_id=? AND channel='qiwe' AND external_id=?").get(doctorId, externalId);
+        if(!hasQiwe) db.prepare("UPDATE patient_identities SET channel='qiwe' WHERE id=?").run(alt.id);
+      }catch(e){}
+      return alt.patient_id;
+    }
+  }
+  return null;
+}
+
+const { createPersonApi, SOURCE_RANK } = require("./person.js");
+const personApi = createPersonApi(db);
+
+function pickProfileRow(rows) {
+  if (!rows.length) return null;
+  return rows.slice().sort((a, b) => {
+    const ra = SOURCE_RANK[a.source] || 0;
+    const rb = SOURCE_RANK[b.source] || 0;
+    if (rb !== ra) return rb - ra;
+    return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+  })[0];
+}
+
+function linkPatientPerson(patientId, personId, operator) {
+  const row = db.prepare("SELECT person_id FROM patients WHERE id=?").get(patientId);
+  if (!row) return;
+  if (!row.person_id) {
+    db.prepare("UPDATE patients SET person_id=? WHERE id=?").run(personId, patientId);
+    return;
+  }
+  if (+row.person_id !== +personId) {
+    mergePersons(personId, [row.person_id], operator || "system", "linkPatientPerson");
+    db.prepare("UPDATE patients SET person_id=? WHERE id=?").run(personId, patientId);
+  }
+}
+
+/**
+ * 平台级合并 person 主档（跨医生）。不迁移 message_log。
+ */
+function mergePersons(keepPersonId, mergePersonIds, operator, reason) {
+  const keep = +keepPersonId;
+  const ids = [...new Set((mergePersonIds || []).map((x) => +x).filter((x) => Number.isInteger(x) && x > 0 && x !== keep))];
+  if (!Number.isInteger(keep) || keep <= 0) throw new Error("keepPersonId 非法");
+  if (!ids.length) throw new Error("无待合并 person");
+  if (!db.prepare("SELECT id FROM persons WHERE id=?").get(keep)) throw new Error("保留 person 不存在");
+
+  const nowIso = new Date().toISOString();
+  const doctorMerges = [];
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const mid of ids) {
+      if (!db.prepare("SELECT id FROM persons WHERE id=?").get(mid)) continue;
+
+      const midRows = db.prepare("SELECT * FROM patient_profile_fields WHERE person_id=?").all(mid);
+      for (const row of midRows) {
+        const onKeep = db.prepare("SELECT * FROM patient_profile_fields WHERE person_id=? AND field_key=?").all(keep, row.field_key);
+        if (!onKeep.length) {
+          db.prepare("UPDATE patient_profile_fields SET person_id=? WHERE id=?").run(keep, row.id);
+          continue;
+        }
+        const winner = pickProfileRow([...onKeep, row]);
+        const targetId = onKeep[0].id;
+        db.prepare("UPDATE patient_profile_fields SET field_value=?, source=?, updated_at=? WHERE id=?")
+          .run(winner.field_value, winner.source || "system", winner.updated_at || nowIso, targetId);
+        if (row.id !== targetId) db.prepare("DELETE FROM patient_profile_fields WHERE id=?").run(row.id);
+        for (let i = 1; i < onKeep.length; i++) {
+          db.prepare("DELETE FROM patient_profile_fields WHERE id=?").run(onKeep[i].id);
+        }
+      }
+
+      db.prepare("UPDATE patient_health_records SET person_id=? WHERE person_id=?").run(keep, mid);
+      db.prepare("UPDATE patients SET person_id=? WHERE person_id=?").run(keep, mid);
+      // 同步活跃小程序会话：否则已登录用户会话指向被删 person → /api/mp/archive 等 403 identity_mismatch
+      db.prepare(
+        "UPDATE mp_sessions SET person_id=?, last_seen_at=last_seen_at WHERE person_id=? AND revoked_at IS NULL"
+      ).run(keep, mid);
+
+      // 先摘出被合并行的身份字段，DELETE 之后再回填 keep：
+      // 1) 避免与自身唯一索引（phone/unionid/mp_openid）冲突；
+      // 2) 必须迁移 mp_openid，否则小程序微信绑定随 DELETE 丢失。
+      const mPerson = db.prepare("SELECT * FROM persons WHERE id=?").get(mid);
+      const carry = mPerson
+        ? {
+            real_name: mPerson.real_name || "",
+            gender: mPerson.gender || "",
+            birth_date: mPerson.birth_date || "",
+            phone: mPerson.phone || "",
+            unionid: mPerson.unionid || "",
+            avatar_url: mPerson.avatar_url || "",
+            phone_verified: mPerson.phone_verified || 0,
+            mp_openid: mPerson.mp_openid || "",
+            qiwe_user_id: mPerson.qiwe_user_id || "",
+            wechat_group_name: mPerson.wechat_group_name || "",
+          }
+        : null;
+      db.prepare("DELETE FROM persons WHERE id=?").run(mid);
+
+      if (carry) {
+        const copyCarry = () => db.prepare(`UPDATE persons SET
+          real_name=COALESCE(NULLIF(?,''), real_name),
+          gender=COALESCE(NULLIF(?,''), gender),
+          birth_date=COALESCE(NULLIF(?,''), birth_date),
+          phone=COALESCE(NULLIF(?,''), phone),
+          unionid=COALESCE(NULLIF(?,''), unionid),
+          avatar_url=COALESCE(NULLIF(?,''), avatar_url),
+          phone_verified=CASE WHEN ?=1 OR phone_verified=1 THEN 1 ELSE phone_verified END,
+          qiwe_user_id=COALESCE(NULLIF(?,''), qiwe_user_id),
+          wechat_group_name=COALESCE(NULLIF(?,''), wechat_group_name),
+          updated_at=? WHERE id=?`);
+        try {
+          copyCarry().run(
+            carry.real_name,
+            carry.gender,
+            carry.birth_date,
+            carry.phone,
+            carry.unionid,
+            carry.avatar_url,
+            carry.phone_verified,
+            carry.qiwe_user_id,
+            carry.wechat_group_name,
+            nowIso,
+            keep
+          );
+        } catch (e) {
+          if (!/UNIQUE constraint failed: persons\.(phone|unionid)/i.test(String(e && e.message || ""))) throw e;
+          // keep 的 phone/unionid 已被其他存活行占用：保留 keep 原值
+        }
+        // mp_openid 单独迁移：仅当 keep 无绑定而 mid 有 → 迁入；keep 已有绑定 → 保留 keep
+        if (carry.mp_openid) {
+          try {
+            db.prepare(
+              "UPDATE persons SET mp_openid=CASE WHEN mp_openid IS NULL OR trim(mp_openid)='' THEN ? ELSE mp_openid END, updated_at=? WHERE id=?"
+            ).run(carry.mp_openid, nowIso, keep);
+          } catch (e) {
+            /* UNIQUE(idx_persons_mp_openid) 冲突：保留 keep 原 openid */
+          }
+        }
+      }
+    }
+
+    const dups = db.prepare(
+      "SELECT doctor_id FROM patients WHERE person_id=? GROUP BY doctor_id HAVING COUNT(*)>1"
+    ).all(keep);
+    for (const d of dups) {
+      const pRows = db.prepare("SELECT id FROM patients WHERE doctor_id=? AND person_id=? ORDER BY id").all(d.doctor_id, keep);
+      if (pRows.length > 1) {
+        doctorMerges.push({ doctorId: d.doctor_id, keepId: pRows[0].id, mergeIds: pRows.slice(1).map((r) => r.id) });
+      }
+    }
+
+    db.prepare(`INSERT INTO person_merge_log(keep_person_id, merged_person_ids, operator, reason, created_at)
+      VALUES(?,?,?,?,?)`).run(keep, JSON.stringify(ids), operator || null, reason || null, nowIso);
+    db.exec("COMMIT");
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch (e2) { /* ignore */ }
+    throw e;
+  }
+
+  for (const dm of doctorMerges) {
+    try { mergePatients(dm.doctorId, dm.keepId, dm.mergeIds); } catch (e) { console.error("[mergePersons] mergePatients", e && e.message); }
+  }
+  return { ok: true, keepPersonId: keep };
+}
+
+function resolvePatient(input){
+  const doctorId = +(input && input.doctorId);
+  if(!doctorId) return null;
+  const norm = s => (s == null ? "" : String(s)).trim();
+  const channel = normalizePatientChannel(input.channel);
+  const externalId = norm(input.externalId).slice(0, 160);
+  const unionid = norm(input.unionid);
+  const phone = norm(input.phone);
+  // F1：仅「本人短信验证」等可信来路才传 phoneVerified:true；社群/企微 webhook 的裸 member.phone 一律 false（不可信）。
+  const phoneVerified = input.phoneVerified === true;
+  const displayName = preferDisplayName("", norm(input.displayName).slice(0, 80));
+  const groupId = input.groupId ? +input.groupId : null;
+  const nowIso = new Date().toISOString();
+
+  // 企业微信主体账号：显示名形如「医生助手 @春雨家庭医生」（空格+@企业名），不建档为患者
+  if(/\s@[^\s·]+/.test(displayName) || /\s@[^\s·]+/.test(norm(input.realName))) return null;
+
+  const qiweUserId = isRealExternalUserId(externalId) ? externalId : "";
+  const preWechatName = resolvePatientWechatName(doctorId, null, { displayName });
+  let personId = personApi.resolvePerson({
+    qiweUserId,
+    wechatName: preWechatName,
+    realName: norm(input.realName),
+    gender: norm(input.gender),
+    birthDate: norm(input.birthDate),
+    phone,
+    phoneVerified,
+    unionid,
+    avatarUrl: norm(input.avatarUrl)
+  });
+
+  let pid = null;
+  if(externalId){
+    pid = findIdentityPatientId(doctorId, channel, externalId);
+    // 同 userId 跨渠道（qiwe/wecom/wechat）一律收敛到同一 patient，避免一人多档
+    if(!pid && !/^phone:|^local-|^join-name:/i.test(externalId)){
+      pid = findPatientIdByExternal(doctorId, externalId);
+    }
+  }
+  if(!pid){
+    const rel = db.prepare("SELECT id FROM patients WHERE doctor_id=? AND person_id=? LIMIT 1").get(doctorId, personId);
+    if(rel) pid = rel.id;
+  }
+  if(!pid){
+    const r = db.prepare(`INSERT INTO patients(doctor_id,person_id,display_name,real_name,phone,phone_verified,unionid,tags,follow_stage,notes,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(doctorId, personId, displayName, "", phone, phoneVerified ? 1 : 0, unionid, "[]", "", "", nowIso, nowIso);
+    pid = r.lastInsertRowid;
+  }else{
+    linkPatientPerson(pid, personId, "system");
+    const p = db.prepare("SELECT display_name,phone,unionid FROM patients WHERE id=?").get(pid);
+    if(p) db.prepare("UPDATE patients SET display_name=?,phone=?,unionid=?,updated_at=? WHERE id=?").run(
+      preferDisplayName(p.display_name, displayName), p.phone || phone, p.unionid || unionid, nowIso, pid);
+  }
+  // F1：可信来路（本人短信验证）→ 置 phone_verified=1，供后续合法手机号合并；非可信来路绝不碰该位。
+  if(phoneVerified){
+    db.prepare("UPDATE patients SET phone_verified=1, updated_at=? WHERE id=?").run(nowIso, pid);
+    personApi.resolvePerson({ qiweUserId, phone, phoneVerified: true, unionid });
+  }
+  if(externalId){
+    const ex = db.prepare("SELECT id,patient_id FROM patient_identities WHERE doctor_id=? AND channel=? AND external_id=?").get(doctorId, channel, externalId);
+    if(!ex){
+      try{ db.prepare("INSERT INTO patient_identities(doctor_id,patient_id,channel,external_id,group_id,open_kfid,unionid,created_at) VALUES(?,?,?,?,?,?,?,?)")
+        .run(doctorId, pid, channel, externalId, groupId, norm(input.openKfid) || null, unionid, nowIso); }catch(e){}
+    }else if(ex.patient_id !== pid){
+      db.prepare("UPDATE patient_identities SET patient_id=? WHERE id=?").run(pid, ex.id);
+    }
+  }
+  const wechatName = resolvePatientWechatName(doctorId, pid, { displayName }) || preWechatName;
+  if (wechatName) {
+    const foundPersonId = personApi.findByWechatName(wechatName);
+    if (foundPersonId && foundPersonId !== personId) {
+      try {
+        mergePersons(foundPersonId, [personId], "system", "wechat_name");
+        personId = foundPersonId;
+        linkPatientPerson(pid, personId, "system");
+      } catch (e) {
+        console.error("[resolvePatient] wechat_name merge", e && e.message);
+      }
+    } else {
+      personApi.updateWechatName(personId, wechatName);
+    }
+  }
+  return pid;
+}
+
+/**
+ * 跨医生：已验证同手机号收敛到同一 person（不合并 patient 行）。
+ */
+function reconcileVerifiedPhonePersons(){
+  const rows = db.prepare(`
+    SELECT DISTINCT trim(COALESCE(per.phone, p.phone)) AS phone
+    FROM patients p
+    LEFT JOIN persons per ON per.id = p.person_id
+    WHERE trim(COALESCE(per.phone, p.phone)) != ''
+      AND COALESCE(per.phone_verified, p.phone_verified, 0) = 1`).all();
+  let linked = 0;
+  for(const r of rows){
+    const phone = String(r.phone || "").trim();
+    if(!/^1[3-9]\d{9}$/.test(phone)) continue;
+    let person;
+    try{
+      person = personApi.findOrCreateByVerifiedPhone({ phone });
+    }catch(e){
+      continue;
+    }
+    const canonicalId = person.id;
+    const patients = db.prepare(`
+      SELECT p.id, p.person_id FROM patients p
+      LEFT JOIN persons per ON per.id = p.person_id
+      WHERE trim(COALESCE(per.phone, p.phone)) = ?
+        AND COALESCE(per.phone_verified, p.phone_verified, 0) = 1`).all(phone);
+    const nowIso = new Date().toISOString();
+    for(const pt of patients){
+      if(+pt.person_id !== +canonicalId){
+        linkPatientPerson(pt.id, canonicalId, "system");
+        linked++;
+      }
+      db.prepare("UPDATE patients SET phone=?, phone_verified=1, updated_at=? WHERE id=?")
+        .run(phone, nowIso, pt.id);
+    }
+  }
+  return { linked };
+}
+
+/**
+ * 跨医生：同企微 userId / 同 external_id 收敛到同一 person。
+ * 修复历史分裂（如王云程端新建了独立 person，未并入已有主档）。
+ */
+function reconcileQiweIdentityPersons(){
+  let backfilled = 0;
+  let merged = 0;
+
+  // 1) 从 patient_identities 回填 persons.qiwe_user_id
+  const missingQiwe = db.prepare(`
+    SELECT per.id AS person_id, pi.external_id
+    FROM persons per
+    JOIN patients p ON p.person_id = per.id
+    JOIN patient_identities pi ON pi.patient_id = p.id
+    WHERE (per.qiwe_user_id IS NULL OR trim(per.qiwe_user_id) = '')
+      AND pi.external_id IS NOT NULL AND trim(pi.external_id) != ''
+      AND pi.external_id NOT LIKE 'phone:%'
+      AND pi.external_id NOT LIKE 'local-%'
+      AND pi.external_id NOT LIKE 'join-name:%'
+    ORDER BY per.id ASC, pi.id ASC
+  `).all();
+  const nowIso = new Date().toISOString();
+  for(const row of missingQiwe){
+    const uid = String(row.external_id || "").trim();
+    if(!personApi.isRealQiweUserId(uid)) continue;
+    const cur = db.prepare("SELECT qiwe_user_id FROM persons WHERE id=?").get(row.person_id);
+    if(cur && cur.qiwe_user_id && String(cur.qiwe_user_id).trim()) continue;
+    try{
+      db.prepare("UPDATE persons SET qiwe_user_id=?, updated_at=? WHERE id=?").run(uid, nowIso, row.person_id);
+      backfilled++;
+    }catch(e){}
+  }
+
+  // 2) 同 qiwe_user_id 的多个 person → 合并到最早 id
+  const qiweDupes = db.prepare(`
+    SELECT qiwe_user_id, GROUP_CONCAT(id) AS ids
+    FROM persons
+    WHERE qiwe_user_id IS NOT NULL AND trim(qiwe_user_id) != ''
+    GROUP BY qiwe_user_id
+    HAVING COUNT(*) > 1
+  `).all();
+  for(const g of qiweDupes){
+    const ids = String(g.ids || "").split(",").map(x => +x).filter(x => Number.isInteger(x) && x > 0).sort((a,b)=>a-b);
+    if(ids.length < 2) continue;
+    try{
+      mergePersons(ids[0], ids.slice(1), "system", "reconcileQiweIdentity:qiwe_user_id");
+      merged += ids.length - 1;
+    }catch(e){
+      console.error("[reconcileQiweIdentity] qiwe_user_id", g.qiwe_user_id, e && e.message);
+    }
+  }
+
+  // 3) 同 external_id 挂在不同 person 上 → 合并（兜底，含身份回填后仍分裂的情况）
+  const extDupes = db.prepare(`
+    SELECT pi.external_id, GROUP_CONCAT(DISTINCT p.person_id) AS person_ids
+    FROM patient_identities pi
+    JOIN patients p ON p.id = pi.patient_id
+    WHERE p.person_id IS NOT NULL
+      AND pi.external_id IS NOT NULL AND trim(pi.external_id) != ''
+      AND pi.external_id NOT LIKE 'phone:%'
+      AND pi.external_id NOT LIKE 'local-%'
+      AND pi.external_id NOT LIKE 'join-name:%'
+    GROUP BY pi.external_id
+    HAVING COUNT(DISTINCT p.person_id) > 1
+  `).all();
+  for(const g of extDupes){
+    const ids = String(g.person_ids || "").split(",").map(x => +x).filter(x => Number.isInteger(x) && x > 0).sort((a,b)=>a-b);
+    if(ids.length < 2) continue;
+    try{
+      mergePersons(ids[0], ids.slice(1), "system", "reconcileQiweIdentity:external_id");
+      merged += ids.length - 1;
+    }catch(e){
+      console.error("[reconcileQiweIdentity] external_id", g.external_id, e && e.message);
+    }
+  }
+
+  return { backfilled, merged };
+}
+
+/**
+ * 把某医生名下社群成员按企微 userId 挂到 patients，并复用已有 person（跨医生统一身份）。
+ * 代码种子落库与后台「新建/克隆医生」共用，避免新医生端再拆出独立 person。
+ */
+function linkDoctorPatientsFromMembers(doctorId){
+  const did = +doctorId;
+  if(!Number.isInteger(did) || did <= 0) return { linked:0 };
+  let linked = 0;
+  const rows = db.prepare(`
+    SELECT DISTINCT external_user_id, display_name, group_id
+    FROM community_members
+    WHERE doctor_id=? AND status='active'
+      AND external_user_id IS NOT NULL AND trim(external_user_id) != ''
+      AND external_user_id NOT LIKE 'phone:%'
+      AND external_user_id NOT LIKE 'local-%'
+      AND external_user_id NOT LIKE 'join-name:%'
+  `).all(did);
+  for(const row of rows){
+    const uid = String(row.external_user_id || "").trim();
+    if(!uid) continue;
+    try{
+      const pid = resolvePatient({
+        doctorId: did,
+        channel: "qiwe",
+        externalId: uid,
+        groupId: row.group_id || null,
+        displayName: row.display_name || ""
+      });
+      if(pid) linked++;
+    }catch(e){
+      console.error("[linkDoctorPatientsFromMembers]", did, uid, e && e.message);
+    }
+  }
+  return { linked };
+}
+
+/**
+ * 医生落库后的统一收口：成员挂档 + 企微身份收敛。
+ * 种子 patch / 后台新建 / 克隆 都必须走这里，行为一致。
+ */
+function afterDoctorProvisioned(doctorId){
+  const did = +doctorId;
+  if(!Number.isInteger(did) || did <= 0) return { linked:0, backfilled:0, merged:0 };
+  const linked = linkDoctorPatientsFromMembers(did);
+  let identity = { backfilled:0, merged:0 };
+  try{ identity = reconcileQiweIdentityPersons(); }
+  catch(e){ console.error("[afterDoctorProvisioned] reconcileQiweIdentity", e && e.message); }
+  return { linked: linked.linked || 0, backfilled: identity.backfilled || 0, merged: identity.merged || 0 };
+}
+
+/**
+ * 人工合并患者：把 mergeIds 并入 keepId（同医生）。
+ * 迁移身份/成员/消息/提交/健康记录/随访指针后删除被合并行。
+ */
+function mergePatients(doctorId, keepId, mergeIds){
+  const did = +doctorId;
+  let keep = +keepId;
+  let ids = [...new Set((mergeIds || []).map(x => +x).filter(x => Number.isInteger(x) && x > 0 && x !== keep))];
+  if(!Number.isInteger(did) || did <= 0) throw new Error("doctorId 非法");
+  if(!Number.isInteger(keep) || keep <= 0) throw new Error("keepId 非法");
+  if(!ids.length) throw new Error("请选择要合并的档案");
+  let keepRow = db.prepare("SELECT * FROM patients WHERE id=? AND doctor_id=?").get(keep, did);
+  if(!keepRow) throw new Error("保留档案不存在");
+  for(const mid of ids){
+    const row = db.prepare("SELECT id FROM patients WHERE id=? AND doctor_id=?").get(mid, did);
+    if(!row) throw new Error("待合并档案不存在: " + mid);
+  }
+
+  function resolveKeepAfterPersonMerge(){
+    keepRow = db.prepare("SELECT * FROM patients WHERE id=? AND doctor_id=?").get(keep, did);
+    if(keepRow) return;
+    const pool = [keep, ...ids].filter((id) => db.prepare("SELECT 1 AS ok FROM patients WHERE id=? AND doctor_id=?").get(id, did));
+    if(!pool.length) throw new Error("保留档案在 person 合并后丢失");
+    keep = Math.min(...pool);
+    keepRow = db.prepare("SELECT * FROM patients WHERE id=? AND doctor_id=?").get(keep, did);
+    if(!keepRow) throw new Error("保留档案在 person 合并后丢失");
+  }
+
+  for(const mid of ids){
+    const src = db.prepare("SELECT person_id FROM patients WHERE id=?").get(mid);
+    if(src && src.person_id && keepRow.person_id && +src.person_id !== +keepRow.person_id){
+      mergePersons(keepRow.person_id, [src.person_id], "system", "mergePatients");
+      resolveKeepAfterPersonMerge();
+    }
+  }
+
+  ids = ids.filter((mid) => mid !== keep && db.prepare("SELECT 1 AS ok FROM patients WHERE id=? AND doctor_id=?").get(mid, did));
+  if(!ids.length){
+    return { ok:true, patientId:keep, patient:keepRow };
+  }
+
+  const nowIso = new Date().toISOString();
+  // node:sqlite DatabaseSync 无 better-sqlite3 的 db.transaction()，用手写事务
+  db.exec("BEGIN IMMEDIATE");
+  try{
+    for(const mid of ids){
+      const src = db.prepare("SELECT * FROM patients WHERE id=?").get(mid);
+      if(!src) continue;
+      const keepCur = db.prepare("SELECT * FROM patients WHERE id=?").get(keep);
+      if(!keepCur) continue;
+
+      const idents = db.prepare("SELECT * FROM patient_identities WHERE patient_id=?").all(mid);
+      for(const idn of idents){
+        const other = db.prepare(
+          "SELECT id FROM patient_identities WHERE doctor_id=? AND channel=? AND external_id=? AND id!=?"
+        ).get(did, idn.channel, idn.external_id, idn.id);
+        if(other){
+          db.prepare("DELETE FROM patient_identities WHERE id=?").run(idn.id);
+        }else{
+          db.prepare("UPDATE patient_identities SET patient_id=? WHERE id=?").run(keep, idn.id);
+        }
+      }
+
+      db.prepare("UPDATE community_members SET patient_id=? WHERE patient_id=?").run(keep, mid);
+      db.prepare("UPDATE message_log SET patient_id=? WHERE doctor_id=? AND patient_id=?")
+        .run(String(keep), did, String(mid));
+      try{ db.prepare("UPDATE submissions SET patient_id=? WHERE patient_id=?").run(keep, mid); }catch(e){}
+      try{ db.prepare("UPDATE followups SET patient_id=? WHERE patient_id=?").run(keep, mid); }catch(e){}
+      try{ db.prepare("UPDATE patient_health_records SET patient_id=? WHERE patient_id=?").run(keep, mid); }catch(e){}
+      try{ db.prepare("UPDATE triage_sessions SET patient_id=? WHERE patient_id=?").run(keep, mid); }catch(e){}
+
+      db.prepare(`UPDATE patients SET
+        display_name=?, real_name=?, phone=?, phone_verified=?, unionid=?,
+        avatar_url=?, notes=?, family_role=?, family_household_id=?, family_doctor_enrolled=?,
+        updated_at=? WHERE id=?`).run(
+        preferDisplayName(keepCur.display_name, src.display_name),
+        keepCur.real_name || src.real_name || "",
+        keepCur.phone || src.phone || "",
+        (keepCur.phone_verified || src.phone_verified) ? 1 : 0,
+        keepCur.unionid || src.unionid || null,
+        keepCur.avatar_url || src.avatar_url || null,
+        [keepCur.notes, src.notes].filter(Boolean).join("\n").slice(0, 2000) || null,
+        keepCur.family_role || src.family_role || null,
+        keepCur.family_household_id || src.family_household_id || null,
+        (keepCur.family_doctor_enrolled || src.family_doctor_enrolled) ? 1 : 0,
+        nowIso,
+        keep
+      );
+
+      db.prepare("DELETE FROM patients WHERE id=?").run(mid);
+    }
+    db.exec("COMMIT");
+  }catch(e){
+    try{ db.exec("ROLLBACK"); }catch(e2){}
+    throw e;
+  }
+  const next = db.prepare("SELECT * FROM patients WHERE id=?").get(keep);
+  return { ok:true, patientId:keep, patient:next };
+}
+
+/** 真实企微 userId（排除占位/手机号键） */
+function isRealExternalUserId(externalId){
+  const s = String(externalId == null ? "" : externalId).trim();
+  if(!s) return false;
+  if(/^phone:/i.test(s)) return false;
+  if(/^local-/i.test(s)) return false;
+  if(/^join-name:/i.test(s)) return false;
+  return true;
+}
+
+/**
+ * 同医生下自动合并重复档案（无需人工审查）：
+ * 1) 相同 patient_identities.external_id
+ * 2) 相同 community_members.external_user_id 却挂了多个 patient_id
+ * 3) 相同非空 avatar_url
+ * 4) 展示名相同且身份/发言 sender 有交集
+ * 保留最小 patient_id。
+ */
+function autoMergePatientsByUserId(doctorId){
+  const did = +doctorId;
+  if(!Number.isInteger(did) || did <= 0) return { mergedGroups:0, mergedPatients:0 };
+  let mergedGroups = 0;
+  let mergedPatients = 0;
+
+  function mergePidGroup(pids, reason){
+    const uniq = [...new Set((pids || []).map(x => +x).filter(x => Number.isInteger(x) && x > 0))];
+    if(uniq.length < 2) return;
+    const keep = Math.min(...uniq);
+    const others = uniq.filter(x => x !== keep);
+    try{
+      mergePatients(did, keep, others);
+      mergedGroups++;
+      mergedPatients += others.length;
+    }catch(e){
+      console.error("[autoMergePatientsByUserId]", reason, e && e.message);
+    }
+  }
+
+  // 1) identities.external_id
+  const idRows = db.prepare(`
+    SELECT external_id, GROUP_CONCAT(DISTINCT patient_id) AS pids, COUNT(DISTINCT patient_id) AS n
+    FROM patient_identities
+    WHERE doctor_id=? AND external_id IS NOT NULL AND trim(external_id)!=''
+    GROUP BY external_id
+    HAVING n > 1`).all(did);
+  for(const r of idRows){
+    if(!isRealExternalUserId(r.external_id)) continue;
+    mergePidGroup(String(r.pids || "").split(","), "identity:" + r.external_id);
+  }
+
+  // 2) community_members.external_user_id → 多 patient_id
+  try{
+    const memRows = db.prepare(`
+      SELECT external_user_id, GROUP_CONCAT(DISTINCT patient_id) AS pids, COUNT(DISTINCT patient_id) AS n
+      FROM community_members
+      WHERE doctor_id=? AND patient_id IS NOT NULL
+        AND external_user_id IS NOT NULL AND trim(external_user_id)!=''
+      GROUP BY external_user_id
+      HAVING n > 1`).all(did);
+    for(const r of memRows){
+      if(!isRealExternalUserId(r.external_user_id)) continue;
+      mergePidGroup(String(r.pids || "").split(","), "member:" + r.external_user_id);
+    }
+  }catch(e){}
+
+  // 3) 相同头像 URL（企微头像相同基本可认定同一人）
+  try{
+    const avRows = db.prepare(`
+      SELECT avatar_url, GROUP_CONCAT(id) AS pids, COUNT(*) AS n
+      FROM patients
+      WHERE doctor_id=? AND avatar_url IS NOT NULL AND trim(avatar_url)!=''
+        AND avatar_url LIKE 'http%'
+      GROUP BY avatar_url
+      HAVING n > 1`).all(did);
+    for(const r of avRows){
+      mergePidGroup(String(r.pids || "").split(","), "avatar");
+    }
+  }catch(e){}
+
+  // 3b) display_name 本身就是长数字 userId，且重复
+  try{
+    const numRows = db.prepare(`
+      SELECT display_name, GROUP_CONCAT(id) AS pids, COUNT(*) AS n
+      FROM patients
+      WHERE doctor_id=? AND display_name GLOB '[0-9]*' AND length(display_name) >= 10
+      GROUP BY display_name
+      HAVING n > 1`).all(did);
+    for(const r of numRows){
+      mergePidGroup(String(r.pids || "").split(","), "numeric-name:" + r.display_name);
+    }
+  }catch(e){}
+
+  // 4) 同展示名（去渠道后缀）且 sender/identity 有交集 → 合并
+  try{
+    const patients = db.prepare("SELECT id, display_name, real_name FROM patients WHERE doctor_id=?").all(did);
+    const byName = new Map();
+    for(const p of patients){
+      const base = stripChannelSuffix(p.display_name || p.real_name || "").toLowerCase();
+      if(!base || base.length < 2 || isPlaceholderDisplayName(base)) continue;
+      if(/^\d{10,}$/.test(base)) continue;
+      if(!byName.has(base)) byName.set(base, []);
+      byName.get(base).push(p.id);
+    }
+    for(const [, pids] of byName){
+      if(pids.length < 2) continue;
+      // 收集每人的 external 集合（identity + member + message sender）
+      const sets = pids.map(pid => {
+        const s = new Set();
+        try{
+          db.prepare("SELECT external_id FROM patient_identities WHERE patient_id=?").all(pid)
+            .forEach(x => { if(isRealExternalUserId(x.external_id)) s.add(String(x.external_id)); });
+          db.prepare("SELECT external_user_id FROM community_members WHERE patient_id=?").all(pid)
+            .forEach(x => { if(isRealExternalUserId(x.external_user_id)) s.add(String(x.external_user_id)); });
+          db.prepare("SELECT DISTINCT sender_id FROM message_log WHERE doctor_id=? AND patient_id=?")
+            .all(did, String(pid))
+            .forEach(x => { if(isRealExternalUserId(x.sender_id)) s.add(String(x.sender_id)); });
+        }catch(e){}
+        return s;
+      });
+      // 并查集：sender 集合有交集则连通
+      const parent = pids.map((_, i) => i);
+      const find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+      const unite = (a, b) => { a = find(a); b = find(b); if(a !== b) parent[a] = b; };
+      for(let i = 0; i < pids.length; i++){
+        for(let j = i + 1; j < pids.length; j++){
+          let hit = false;
+          for(const eid of sets[i]){ if(sets[j].has(eid)){ hit = true; break; } }
+          if(hit) unite(i, j);
+        }
+      }
+      const clusters = new Map();
+      for(let i = 0; i < pids.length; i++){
+        const r = find(i);
+        if(!clusters.has(r)) clusters.set(r, []);
+        clusters.get(r).push(pids[i]);
+      }
+      for(const cluster of clusters.values()){
+        if(cluster.length > 1) mergePidGroup(cluster, "name+sender");
+      }
+      // 若同名组里「仅有一个真实 userId、其余无真实 id」，也并入该真实档
+      const withReal = [];
+      const withoutReal = [];
+      for(let i = 0; i < pids.length; i++){
+        if(sets[i].size > 0) withReal.push(pids[i]);
+        else withoutReal.push(pids[i]);
+      }
+      if(withReal.length === 1 && withoutReal.length > 0){
+        mergePidGroup([withReal[0], ...withoutReal], "name+orphan");
+      }
+    }
+  }catch(e){
+    console.error("[autoMerge name]", e && e.message);
+  }
+
+  return { mergedGroups, mergedPatients };
+}
+
+/* 院级信息从每位医生的扁平字段抽到共享 hospitals 表；doctors.hospital 保留为反规范缓存 */
+function applyHospitalDefaults(){
+  const nowIso = new Date().toISOString();
+  const docs = db.prepare("SELECT id,hospital,hospital_phone,hospital_id FROM doctors WHERE hospital IS NOT NULL AND hospital!=''").all();
+  const insH = db.prepare("INSERT OR IGNORE INTO hospitals(name,phone,created_at,updated_at) VALUES(?,?,?,?)");
+  const getH = db.prepare("SELECT id FROM hospitals WHERE name=?");
+  docs.forEach(d=>{
+    if(d.hospital_id) return;
+    try{
+      insH.run(d.hospital, d.hospital_phone || "", nowIso, nowIso);
+      const h = getH.get(d.hospital);
+      if(h) db.prepare("UPDATE doctors SET hospital_id=? WHERE id=?").run(h.id, d.id);
+    }catch(e){}
+  });
+}
+
+/* 把已存在库里散落的成员/会话/建档/随访回填到 patient_id（仅处理未链接行，可重复运行） */
+function applyPatientBackfill(){
+  try{
+    db.prepare(`SELECT m.id mid,m.doctor_id,m.group_id,m.external_user_id,m.phone,m.display_name,g.channel_type
+      FROM community_members m LEFT JOIN community_groups g ON g.id=m.group_id WHERE m.patient_id IS NULL`).all().forEach(m=>{
+      try{
+        const pid = resolvePatient({ doctorId:m.doctor_id, channel:m.channel_type || "wechat", externalId:m.external_user_id, groupId:m.group_id, phone:m.phone, displayName:m.display_name });
+        if(pid) db.prepare("UPDATE community_members SET patient_id=? WHERE id=?").run(pid, m.mid);
+      }catch(e){}
+    });
+  }catch(e){}
+  try{
+    db.prepare("SELECT id,doctor_id,patient_key FROM triage_sessions WHERE patient_id IS NULL").all().forEach(s=>{
+      try{
+        const mk = /^community:(\d+):(.+)$/.exec(s.patient_key || "");
+        if(!mk) return;
+        const ch = (db.prepare("SELECT channel_type FROM community_groups WHERE id=?").get(+mk[1]) || {}).channel_type || "wechat";
+        const idn = db.prepare("SELECT patient_id FROM patient_identities WHERE doctor_id=? AND channel=? AND external_id=?").get(s.doctor_id, ch, mk[2]);
+        if(idn) db.prepare("UPDATE triage_sessions SET patient_id=? WHERE id=?").run(idn.patient_id, s.id);
+      }catch(e){}
+    });
+  }catch(e){}
+  try{
+    db.prepare("SELECT id,doctor_id,payload FROM submissions WHERE patient_id IS NULL AND type='联络表'").all().forEach(su=>{
+      try{
+        let payload = {}; try{ payload = JSON.parse(su.payload || "{}"); }catch(e){}
+        const phone = String(payload["手机号"] || payload["手机"] || payload["电话"] || "").trim();
+        const name = String(payload["姓名"] || payload["微信昵称"] || "").trim();
+        if(!phone) return;
+        const pid = resolvePatient({ doctorId:su.doctor_id, channel:"sms", externalId:"phone:" + phone, phone, displayName:name });
+        if(pid){
+          db.prepare("UPDATE submissions SET patient_id=? WHERE id=?").run(pid, su.id);
+          db.prepare("UPDATE patients SET real_name=COALESCE(NULLIF(real_name,''),?), phone_verified=1, updated_at=? WHERE id=?").run(name, new Date().toISOString(), pid);
+        }
+      }catch(e){}
+    });
+  }catch(e){}
+  try{
+    db.prepare("SELECT id,doctor_id,patient_name,patient_phone FROM followups WHERE patient_id IS NULL AND patient_phone IS NOT NULL AND patient_phone!=''").all().forEach(f=>{
+      try{
+        const pid = resolvePatient({ doctorId:f.doctor_id, channel:"sms", externalId:"phone:" + f.patient_phone, phone:f.patient_phone, displayName:f.patient_name });
+        if(pid) db.prepare("UPDATE followups SET patient_id=? WHERE id=?").run(pid, f.id);
+      }catch(e){}
+    });
+  }catch(e){}
+  try{ backfillPersonIds(); }catch(e){}
+}
+
+function backfillPersonIds(){
+  db.prepare("SELECT * FROM patients WHERE person_id IS NULL").all().forEach((p)=>{
+    let qiweUserId = "";
+    try{
+      const idn = db.prepare(`SELECT external_id FROM patient_identities WHERE patient_id=?
+        ORDER BY CASE channel WHEN 'qiwe' THEN 0 WHEN 'wecom' THEN 1 ELSE 2 END, id LIMIT 1`).get(p.id);
+      if(idn && isRealExternalUserId(idn.external_id)) qiweUserId = String(idn.external_id).trim();
+    }catch(e){}
+    const chatName = resolvePatientWechatName(p.doctor_id, p.id, {
+      displayName: p.display_name
+    });
+    const personId = personApi.resolvePerson({
+      qiweUserId,
+      wechatName: chatName,
+      realName: p.real_name,
+      gender: p.gender,
+      birthDate: p.birth_date,
+      phone: p.phone,
+      phoneVerified: p.phone_verified === 1,
+      unionid: p.unionid,
+      avatarUrl: p.avatar_url
+    });
+    db.prepare("UPDATE patients SET person_id=? WHERE id=?").run(personId, p.id);
+  });
+  // 按微信名称合并误分裂的 person
+  try{
+    const dupes = db.prepare(`
+      SELECT wechat_group_name, GROUP_CONCAT(id) AS ids, COUNT(*) c
+      FROM persons WHERE wechat_group_name IS NOT NULL AND trim(wechat_group_name)!=''
+      GROUP BY wechat_group_name HAVING c > 1`).all();
+    for(const d of dupes){
+      const ids = String(d.ids || "").split(",").map((x) => +x).filter((x) => x > 0);
+      if(ids.length < 2) continue;
+      mergePersons(ids[0], ids.slice(1), "system", "backfillPersonIds:wechat_name");
+    }
+  }catch(e){ console.error("[backfillPersonIds] wechat_name dedupe", e && e.message); }
+  db.exec(`UPDATE patient_profile_fields SET person_id=(
+    SELECT person_id FROM patients WHERE patients.id=patient_profile_fields.patient_id
+  ) WHERE person_id IS NULL AND patient_id IS NOT NULL`);
+  db.exec(`UPDATE patient_health_records SET person_id=(
+    SELECT person_id FROM patients WHERE patients.id=patient_health_records.patient_id
+  ) WHERE person_id IS NULL AND patient_id IS NOT NULL`);
+}
+try{ unlessDataFrozen("applyHospitalDefaults", () => applyHospitalDefaults()); }catch(e){}
+try{ unlessDataFrozen("applyPatientBackfill", () => applyPatientBackfill()); }catch(e){}
+try{ unlessDataFrozen("reconcileQiweIdentityPersons-boot", () => reconcileQiweIdentityPersons()); }catch(e){ if(!DB_FREEZE_EXISTING_DATA) console.error("[boot] reconcileQiweIdentityPersons", e && e.message); }
+/* 每次启动：种子落库与存量医生统一走 afterDoctorProvisioned（幂等；与后台新建/克隆同口径） */
+unlessDataFrozen("afterDoctorProvisioned-boot", () => {
+try{
+  const docs = db.prepare("SELECT id FROM doctors ORDER BY id").all();
+  for(const d of docs){
+    try{ afterDoctorProvisioned(d.id); }
+    catch(e){ console.error("[boot] afterDoctorProvisioned", d.id, e && e.message); }
+  }
+}catch(e){ console.error("[boot] afterDoctorProvisioned batch", e && e.message); }
+});
+
+module.exports = {
+  db, hashPw, resolvePatient, resolvePerson: personApi.resolvePerson, mergePersons, mergePatients, autoMergePatientsByUserId, reconcileVerifiedPhonePersons, reconcileQiweIdentityPersons, linkDoctorPatientsFromMembers, afterDoctorProvisioned, applySeedPatches, rememberRemovedDoctorSlug, forgetRemovedDoctorSlug, isRemovedDoctorSlug, preferDisplayName, isPlaceholderDisplayName,
+  patientArchive: require("./patient_archive.js"),
+  normalizePatientChannel, friendlyPatientLabel, channelSuffixLabel, withChannelSuffix,
+  stripChannelSuffix, resolvePatientWechatName, resolvePatientChatName, resolvePersonWechatName, resolvePersonWechatGroupName, patientArchiveLabel, patientPeerRoleLabel, syncScienceRuleCards,
+  hydrateAdminMessageRow, decorateAdminPatient, backfillMessageLogPatientLabel, syncPatientDisplayFromChat,
+  allocateStaffId, staffIdPrefixForRole, backfillAdminStaffIds, STAFF_ID_PREFIX,
+  collectImageUrls, preferImageUrlOrder
+};
+
+/* outbound：rules/scripts → outbound 表（须在 module.exports 之后，避免 repo→db 循环依赖） */
+unlessDataFrozen("outbound_v1_migrate_from_rules_scripts", () => {
+  try {
+    require("./modules/outbound/migrate.js").migrateAllDoctors(db);
+  } catch (e) {
+    console.warn("[migrate] outbound_v1_migrate_from_rules_scripts:", e && e.message);
+  }
+});
+
+/* outbound：修正入群误迁 808→视频问候链接卡（与正式群聊对齐） */
+unlessDataFrozen("outbound_v1_repair_join_welcome_video", () => {
+  try {
+    require("./modules/outbound/migrate.js").repairAllJoinWelcomes(db);
+  } catch (e) {
+    console.warn("[migrate] outbound_v1_repair_join_welcome_video:", e && e.message);
+  }
+});
+
+/* 仅周玉春：把“发送 1”纳入标准触发编排；已存在时不覆盖运营修改。 */
+unlessDataFrozen("outbound_zhou_code1_menu", () => {
+  try {
+    require("./modules/outbound/migrate.js").ensureZhouMenuTrigger(db);
+  } catch (e) {
+    console.warn("[migrate] outbound_zhou_code1_menu:", e && e.message);
+  }
+});
+
+unlessDataFrozen("mergeDuplicateQiweGroups", () => {
+try{
+  const { mergeDuplicateQiweGroups } = require("./community_group_doctors.js");
+  mergeDuplicateQiweGroups();
+  // 退役：旧逻辑每次启动把真企微群 is_business 强写为 1，覆盖管理员「非业务群」选择。
+  if(!patchApplied("retire_boot_force_qiwe_is_business_v1")){
+    markPatchApplied("retire_boot_force_qiwe_is_business_v1");
+  }
+  // 一次性：仅把尚未标成 qiwe 的真群补 data_source（不改 is_business）
+  if(!patchApplied("promote_legacy_qiwe_datasource_only_v1")){
+    db.prepare(`UPDATE community_groups
+      SET data_source='qiwe', updated_at=COALESCE(updated_at, datetime('now'))
+      WHERE IFNULL(data_source,'') != 'qiwe'
+        AND external_group_id IS NOT NULL AND TRIM(external_group_id) != ''
+        AND external_group_id NOT LIKE 'local-%'
+        AND external_group_id NOT LIKE 'test-%'
+        AND external_group_id NOT LIKE 'ft-%'
+        AND (
+          channel_type IN ('wecom','qiwe')
+          OR notes LIKE '%真实企微%'
+          OR notes LIKE '%真实群%'
+          OR LENGTH(TRIM(external_group_id)) >= 10
+        )
+        AND id = (
+          SELECT MIN(g3.id) FROM community_groups g3
+          WHERE g3.external_group_id = community_groups.external_group_id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM community_groups g2
+          WHERE g2.id != community_groups.id
+            AND g2.external_group_id = community_groups.external_group_id
+            AND g2.data_source = 'qiwe'
+        )`).run();
+    markPatchApplied("promote_legacy_qiwe_datasource_only_v1");
+  }
+}catch(e){
+  console.warn("[migrate] mergeDuplicateQiweGroups:", e && e.message);
+}
+});
+
+/* 周玉春 weapp 占位同步：必须在 module.exports 之后，避免 applySeedPatches → qiwe → db 循环依赖把 qiwe.db 钉死为 undefined。 */
+unlessDataFrozen("zhou-weapp-sync-deferred", () => {
+setImmediate(()=>{
+  try{
+    const zhou = db.prepare("SELECT id FROM doctors WHERE slug=?").get("zhouyuchun");
+    if(zhou) require("./qiwe.js").syncWeappTemplatesFromRules(zhou.id);
+  }catch(e){
+    console.warn("[zhou weapp sync deferred]", e && e.message);
+  }
+});
+});

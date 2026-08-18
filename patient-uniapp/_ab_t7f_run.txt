@@ -1,0 +1,49 @@
+﻿鉁?01.鎵瑰噯绋裤€佽璁¤鑼冨拰瀹炴柦钃濆浘鏂囦欢瀹屾暣瀛樺湪 (0.8835ms)
+鉁?02.鏂扮増浠ょ墝浣跨敤娴呴紶灏捐崏缁?#0B6B47) + 澶у渾瑙?+ 48px 瑙︽帶 (0.4154ms)
+鉁?02.tokens.json 涓?CSS 鍚屾簮鍊硷紙棰滆壊/鍦嗚/瑙︽帶锛?(0.2494ms)
+鉁?02.寰俊 WXSS 浠嶄粎浣跨敤 page 椤跺眰閫夋嫨鍣紙闃?:root 涓嶅吋瀹癸級 (0.2286ms)
+鉁?03.鏍稿績鍖荤枟 / 鏈嶅姟 PNG 鍥炬爣宸插鍑?(0.5036ms)
+鉁?03.搴曢儴 Tab 涓夌瓑瀹?PNG 璧勪骇宸插氨缁?(0.2637ms)
+鉁?03.鍥炬爣鎬婚绠?鈮?400 KB (5.4645ms)
+鉁?04.鏂扮増绫诲瀷涓庨€傞厤鍣ㄧ函鍑€鍑芥暟鍙敤 (156.1188ms)
+鉁?04.棣栭〉浠诲姟鎺掑簭锛氱揣鎬?> 閲嶈 > 鏅€?(13.591ms)
+鉁?05.涔濅釜鍏叡 UI 缁勪欢鏂囦欢瀛樺湪 (0.4533ms)
+鉁?05.AppStatePanel 鏆撮湶鐘舵€佹満鍥涙€?+ actionLabel (0.2612ms)
+鉁?05.AppBottomSheet 鏆撮湶 v-model 鍙屽悜缁戝畾 (0.1757ms)
+鉁?05.AppFormField 鍖呭惈 label / error / hint 璇箟 (0.1424ms)
+鉁?05.鎵€鏈?UI 缁勪欢鏈€灏忚Е鎺ч珮搴?鈮?48px (0.4988ms)
+鉁?06.搴曢儴瀵艰埅鍥哄畾 3 涓?Tab锛堥椤?/ 鍋ュ悍鏈嶅姟 / 鎴戠殑锛?(0.2223ms)
+鉁?06.tabBar 涓嶅嚭鐜版偓娴?/ 鎶崌 / 涓棿鎸夐挳 (0.162ms)
+鉁?06.鍋ュ悍鏈嶅姟 Tab 宸插湪 tabBar 椤跺眰锛堜笉鍦?subpackage 鍐咃級 (1.1242ms)
+鉁?07.瀹跺涵鎴愬憳 store 鏆撮湶鎵€鏈夊绾?API (0.2752ms)
+鉁?07.useCurrentMember 鏆撮湶褰撳墠鎴愬憳 + 鍒囨崲鍑芥暟 (0.269ms)
+鈩?tests 19
+鈩?suites 0
+鈩?pass 18
+鈩?fail 1
+鈩?cancelled 0
+鈩?skipped 0
+鈩?todo 0
+鈩?duration_ms 264.8039
+
+鉁?failing tests:
+
+test at tests\redesign-contract.test.mjs:181:1
+鉁?06.鍋ュ悍鏈嶅姟 Tab 宸插湪 tabBar 椤跺眰锛堜笉鍦?subpackage 鍐咃級 (1.1242ms)
+  AssertionError [ERR_ASSERTION]: pages/services/index 蹇呴』鍦?pages 椤跺眰锛坱ab 涓嶅彲鍦?subpackage锛?  
+  false !== true
+  
+      at TestContext.<anonymous> (file:///C:/Users/11/Desktop/www/chunyu-doctor-review/patient-uniapp/tests/redesign-contract.test.mjs:183:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

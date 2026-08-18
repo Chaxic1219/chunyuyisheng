@@ -1,0 +1,48 @@
+<view class="login-page">
+  <view class="brand">
+    <view class="brand-logo">医</view>
+    <text class="brand-name">医患通</text>
+    <text class="brand-sub">春雨医生 · 院外健康服务</text>
+  </view>
+
+  <!-- 步骤一：微信登录 -->
+  <block wx:if="{{step === 'login'}}">
+    <view class="card login-card">
+      <text class="card-title">登录</text>
+      <text class="card-sub">使用微信登录后即可购买健康服务</text>
+      <button class="btn-primary login-btn" loading="{{loading}}" disabled="{{loading}}" bindtap="onWechatLogin">
+        微信一键登录
+      </button>
+      <text wx:if="{{error}}" class="err">{{error}}</text>
+    </view>
+  </block>
+
+  <!-- 步骤二：绑定手机号 -->
+  <block wx:elif="{{step === 'bind'}}">
+    <view class="card login-card">
+      <text class="card-title">绑定手机号</text>
+      <text class="card-sub">为了向您提供健康服务，需要绑定手机号</text>
+
+      <!-- 方式一：微信一键授权（推荐） -->
+      <button class="btn-primary login-btn" open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber">
+        微信一键授权手机号
+      </button>
+
+      <view class="divider"><text>或使用短信验证码</text></view>
+
+      <!-- 方式二：短信验证码 -->
+      <text class="form-label">手机号</text>
+      <input class="form-input" type="number" maxlength="11" placeholder="请输入手机号"
+             value="{{phone}}" bindinput="onPhoneInput" />
+      <view class="sms-row">
+        <input class="form-input sms-input" type="number" maxlength="6" placeholder="验证码"
+               value="{{smsCode}}" bindinput="onSmsCodeInput" />
+        <button class="sms-btn" disabled="{{smsSending || smsCountdown > 0}}"
+                bindtap="onSendSms">{{smsCountdown > 0 ? smsCountdown + 's' : (smsSent ? '重新发送' : '获取验证码')}}</button>
+      </view>
+      <button class="btn-soft login-btn" disabled="{{smsSending}}" bindtap="onBindBySms">绑定手机号</button>
+
+      <text wx:if="{{bindError}}" class="err">{{bindError}}</text>
+    </view>
+  </block>
+</view>

@@ -1,0 +1,8 @@
+﻿
+> chunyu-patient-uniapp@0.0.0 build:h5
+> uni build
+
+Compiler version: 4.84锛坴ue3锛?Compiling...
+
+娆㈣繋灏唚eb绔欑偣閮ㄧ讲鍒皍niCloud鍓嶇缃戦〉鎵樼骞冲彴锛岄珮閫熴€佸厤璐广€佸畨鍏ㄣ€佺渷蹇冿紝璇﹁锛歨ttps://uniapp.dcloud.io/uniCloud/hosting
+DONE  Build complete.

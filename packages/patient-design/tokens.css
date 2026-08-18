@@ -1,0 +1,89 @@
+/* 春雨医生 · 患者端设计令牌
+ * 对齐医患通后台 Art Design Pro：工具感、克制主色、少装饰
+ * 仅使用 page 选择器，避免微信 WXSS 不支持的根伪类 */
+page {
+  /* 品牌与状态（春雨青绿） */
+  --primary: #176b52;
+  --primary-deep: #0c4535;
+  --primary-soft: #e5f3ec;
+  --success: #13deb9;
+  --warning: #ffae1f;
+  --danger: #fa896b;
+
+  /* 背景、表面与文字 */
+  --page-bg: #f3f4ef;
+  --surface: #ffffff;
+  --surface-muted: #f5f7fa;
+  --text-strong: #2a3547;
+  --text-secondary: #5a6a85;
+  --text-placeholder: #7c8ba5;
+  --line: #e5eaf2;
+  --line-soft: #eef2f6;
+  --card-border: #e5eaf2;
+
+  /* 4pt 间距 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* 圆角与层级：偏后台，避免过大圆角与重阴影 */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 12px;
+  --r-pill: 999px;
+  --shadow-card: 0 1px 2px rgba(42, 53, 71, 0.04);
+  --shadow-floating: 0 4px 12px rgba(42, 53, 71, 0.08);
+
+  /* 字号：默认普通模式（正文 18px） */
+  --font-caption: 14px;
+  --font-secondary: 16px;
+  --font-body: 18px;
+  --font-subheading: 19px;
+  --font-heading: 24px;
+  --line-compact: 1.4;
+  --line-body: 1.6;
+  --touch-target: 44px;
+  --btn-height-sm: 40px;
+  --btn-height-md: 48px;
+  --icon-scale: 1;
+
+  /* 兼容旧别名 */
+  --primary-d: var(--primary-deep);
+  --primary-50: var(--primary-soft);
+  --primary-light-9: var(--primary-soft);
+  --teal: var(--success);
+  --teal-50: #e8faf6;
+  --warning-50: #fff8e8;
+  --danger-50: #fff1ed;
+  --ink: var(--text-strong);
+  --ink-2: var(--text-secondary);
+  --line-2: var(--line-soft);
+  --bg: var(--page-bg);
+  --card: var(--surface);
+  --sh-1: var(--shadow-card);
+  --font-base: var(--font-body);
+  --mist-blue: var(--surface-muted);
+  --accent-violet: var(--primary);
+  --accent-teal: var(--success);
+}
+
+/* 长辈模式：沿用上一版全局大字号（正文 25px） */
+.elder {
+  --font-caption: 20px;
+  --font-secondary: 22px;
+  --font-body: 25px;
+  --font-subheading: 27px;
+  --font-heading: 33px;
+  --line-compact: 1.45;
+  --line-body: 1.7;
+  --touch-target: 52px;
+  --btn-height-sm: 52px;
+  --btn-height-md: 56px;
+  --icon-scale: 1.39;
+}

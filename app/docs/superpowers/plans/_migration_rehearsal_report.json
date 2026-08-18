@@ -1,0 +1,60 @@
+{
+  "workDir": "C:\\Users\\11\\Desktop\\www\\_prod_db_rehearsal_work\\run-26336-969e1f",
+  "preTables": [
+    "mp_sessions"
+  ],
+  "postTables": [
+    "mp_ai_audit",
+    "mp_data_requests",
+    "mp_private_files",
+    "mp_sessions",
+    "mp_storage_scopes"
+  ],
+  "missing": [],
+  "hasRevoked": true,
+  "preSessions": {
+    "total": 31,
+    "openids": 8,
+    "revoked": null,
+    "cols": [
+      "token",
+      "openid",
+      "doctor_id",
+      "person_id",
+      "patient_id",
+      "phone_bound",
+      "created_at",
+      "expires_at",
+      "last_seen_at"
+    ]
+  },
+  "postSessions": {
+    "total": 31,
+    "openids": 8,
+    "revoked": 0,
+    "cols": [
+      "token",
+      "openid",
+      "doctor_id",
+      "person_id",
+      "patient_id",
+      "phone_bound",
+      "created_at",
+      "expires_at",
+      "last_seen_at",
+      "revoked_at"
+    ]
+  },
+  "sessionCountUnchanged": true,
+  "revokedNotMassFilled": true,
+  "preIntegrity": [
+    {
+      "integrity_check": "ok"
+    }
+  ],
+  "postIntegrity": [
+    {
+      "integrity_check": "ok"
+    }
+  ]
+}

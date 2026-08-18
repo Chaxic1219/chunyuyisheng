@@ -1,0 +1,178 @@
+/* 群消息接管门控：只处理明确业务需求，普通群内闲聊静默。
+   纯确定性函数，不调用 LLM；QiWe 真回调与本地 community 通道共用。 */
+const { db } = require("./db.js");
+const engine = require("./engine.js");
+const triage = require("./triage.js");
+
+function clean(v, n){
+  return String(v == null ? "" : v).trim().slice(0, n || 1000);
+}
+
+function norm(v){
+  return clean(v, 1000).replace(/\s+/g, " ").toLowerCase();
+}
+
+function asList(v){
+  if(v == null || v === "") return [];
+  if(Array.isArray(v)) return v;
+  if(typeof v === "object") return [v];
+  const s = String(v).trim();
+  if(!s) return [];
+  if((s[0] === "[" && s[s.length - 1] === "]") || (s[0] === "{" && s[s.length - 1] === "}")){
+    try{ return asList(JSON.parse(s)); }catch(e){}
+  }
+  return s.split(/[,\s;；]+/).filter(Boolean);
+}
+
+function collectMentionIds(v, out, depth){
+  if(depth > 3 || v == null) return;
+  if(Array.isArray(v)){
+    v.forEach(x=>collectMentionIds(x, out, depth + 1));
+    return;
+  }
+  if(typeof v === "object"){
+    const keys = ["userId","userid","user_id","id","uid","externalUserId","external_userid","text","name"];
+    for(const k of keys){
+      if(v[k] != null && String(v[k]).trim()) out.push(clean(v[k], 160));
+    }
+    for(const k of ["atUserIds","at_user_ids","atUsers","at_users","atList","at_list","mentionList","mentions","mentionIds","mentionedUserIds","userIds","user_ids"]){
+      if(v[k] != null) collectMentionIds(v[k], out, depth + 1);
+    }
+    return;
+  }
+  for(const item of asList(v)) out.push(clean(item, 160));
+}
+
+function rawMentionsSelf(evt, cfg){
+  const raw = (evt && evt.raw) || {};
+  const msgData = (evt && evt.msgData) || raw.msgData || {};
+  if(raw.isAtMe === true || raw.atMe === true || raw.mentionedMe === true || raw.mentionMe === true || msgData.isAtMe === true || msgData.atMe === true) return true;
+  const selfIds = new Set([
+    clean(cfg && cfg.selfUserId, 160),
+    clean(evt && evt.loggedInUserId, 160),
+    clean(evt && evt.receiverId, 160),
+    clean(raw.userId, 160)
+  ].filter(Boolean));
+  if(!selfIds.size) return false;
+  const ids = [];
+  for(const k of ["atUserIds","at_user_ids","atUsers","at_users","atList","at_list","mentionList","mentions","mentionIds","mentionedUserIds","userIds","user_ids"]){
+    collectMentionIds(raw[k], ids, 0);
+    collectMentionIds(msgData[k], ids, 0);
+  }
+  return ids.some(x=>selfIds.has(clean(x, 160)));
+}
+
+function doctorMentionTokens(doctorId){
+  const out = ["小助手","医助","医生","主任","机器人","客服","助理","春雨","医患通"];
+  try{
+    const d = db.prepare("SELECT name,dept,hospital,group_name FROM doctors WHERE id=?").get(+doctorId);
+    if(d){
+      if(d.name) out.push(d.name);
+      const name = clean(d.name, 80);
+      if(name.length >= 2){
+        out.push(name + "医生", name + "主任");
+        out.push(name.slice(0, 1) + "主任");
+      }
+      if(d.group_name) out.push(d.group_name);
+    }
+  }catch(e){}
+  return Array.from(new Set(out.map(x=>clean(x, 80)).filter(Boolean)));
+}
+
+function textMentionsTarget(text, doctorId){
+  const t = clean(text, 1000);
+  if(!/@/.test(t)) return false;
+  return doctorMentionTokens(doctorId).some(token=>t.indexOf("@" + token) >= 0 || t.indexOf("@ " + token) >= 0);
+}
+
+function codeBoundaryRe(code){
+  const c = String(code).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("(^|[^0-9A-Za-z])" + c + "($|[^0-9A-Za-z])");
+}
+
+function parseAliases(s){
+  try{
+    const a = JSON.parse(s || "[]");
+    return Array.isArray(a) ? a : [];
+  }catch(e){
+    return [];
+  }
+}
+
+function hasKnownCodeOrMenu(doctorId, text){
+  const raw = clean(text, 1000);
+  const t = norm(raw);
+  if(!t) return false;
+  if(["1","菜单","功能","全部功能","群功能","群功能菜单","功能菜单"].includes(t)) return true;
+  if(/(?:发送|发|回复|输入|查看|看)\s*(?:1|菜单|功能|全部功能|群功能菜单)/.test(t)) return true;
+  if(/(?:菜单|功能).{0,4}(?:是什么|有哪些|列表|大全)/.test(t)) return true;
+  if(engine.match(doctorId, raw)) return true;
+  let rows = [];
+  try{
+    rows = db.prepare("SELECT code,aliases FROM rules WHERE doctor_id=? AND enabled=1").all(+doctorId);
+  }catch(e){}
+  for(const r of rows){
+    const code = clean(r.code, 40);
+    if(!code) continue;
+    if(t === code.toLowerCase()) return true;
+    if(/^\d$/.test(code)){
+      const c = code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if(new RegExp("(?:发送|发|回复|输入|查看|看)\\s*" + c + "(?:$|[^0-9A-Za-z])").test(t)) return true;
+    }else if(codeBoundaryRe(code).test(t)){
+      return true;
+    }
+    const aliases = parseAliases(r.aliases);
+    for(const a of aliases){
+      const al = norm(a);
+      if(al && (t === al || t.indexOf(al) >= 0)) return true;
+    }
+  }
+  return false;
+}
+
+const BUSINESS_INTENT_RE = /咨询|问诊|问医生|找医生|联系医生|联系医助|人工|转人工|客服|挂号|加号|住院|入院|预约|门诊|出诊|就诊|联络表|联系表|建档|档案|随访|复诊|报告|检查|检验|化验|用药|吃药|开药|处方|投诉|病历|病案|复印|胃镜|肠镜|胃肠镜|息肉|幽门|螺杆菌|hp\b|饮食|忌口|保养|调理|留意|注意|复查|严重吗|怎么办|咋办|怎么(?:办|处理|治疗|调理|保养|复查|预约|挂号|联系)|需要.*(?:看医生|就医|挂号|加号|复查|手术|住院|用药|吃药|检查)|可以.*(?:问|咨询|挂号|加号|预约|用药|吃药|检查)/i;
+const MENU_QUESTION_RE = /(?:这里|这群|这个群|群里|进群|新人|第一次|你|机器人|医助|助手|小助手|春雨|医患通).{0,12}(?:能干嘛|干什么|做什么|可以干嘛|可以做什么|有什么用|怎么用|如何用|怎么玩|怎么开始|怎么操作|操作说明|使用说明|新手引导|有哪些功能|有什么功能|功能介绍|有什么服务|能帮(?:我)?什么|能提供什么)/i;
+/* 常见症状短句（如「拉肚子」）在群内应进分诊，不能被当作闲聊静默 */
+const SYMPTOM_ASK_RE = /拉肚子|腹泻|拉稀|水样便|稀便|腹痛|肚子疼|肚疼|胃疼|胃痛|反酸|烧心|胃胀|腹胀|恶心|呕吐|便秘|便血|黑便|黄疸|发热|发烧|咳嗽|咽痛|头晕|头痛|胸闷|心慌|乏力|没劲|失眠|过敏|皮疹|红疹/;
+
+function hasBusinessIntent(text){
+  return BUSINESS_INTENT_RE.test(clean(text, 1000));
+}
+function hasSymptomAsk(text){
+  return SYMPTOM_ASK_RE.test(clean(text, 1000));
+}
+
+function hasMenuQuestion(text){
+  return MENU_QUESTION_RE.test(clean(text, 1000));
+}
+
+function shouldHandleGroupText(input){
+  input = input || {};
+  const text = clean(input.rawText || input.text, 1000);
+  const doctorId = Number(input.doctorId);
+  const evt = input.evt || {};
+  const cfg = input.cfg || null;
+  if(!text) return { ok:false, reason:"group_empty", skipped:"group_chitchat", riskLevel:"low" };
+  if(rawMentionsSelf(evt, cfg) || textMentionsTarget(text, doctorId)){
+    return { ok:true, reason:"mention" };
+  }
+  if(Number.isFinite(doctorId) && hasKnownCodeOrMenu(doctorId, text)){
+    return { ok:true, reason:"code_or_menu" };
+  }
+  if(hasMenuQuestion(text)){
+    return { ok:true, reason:"menu_question" };
+  }
+  if(hasBusinessIntent(text)){
+    return { ok:true, reason:"business_intent" };
+  }
+  if(hasSymptomAsk(text)){
+    return { ok:true, reason:"symptom_ask" };
+  }
+  const risk = triage.scanRisk(text);
+  if(risk && risk.riskLevel && risk.riskLevel !== "low"){
+    return { ok:true, reason:"medical_risk", riskLevel:risk.riskLevel, triggers:risk.triggers || [] };
+  }
+  return { ok:false, reason:"group_chitchat", skipped:"group_chitchat", riskLevel:(risk && risk.riskLevel) || "low", triggers:(risk && risk.triggers) || [] };
+}
+
+module.exports = { shouldHandleGroupText, hasBusinessIntent, hasSymptomAsk, hasKnownCodeOrMenu, hasMenuQuestion, textMentionsTarget };

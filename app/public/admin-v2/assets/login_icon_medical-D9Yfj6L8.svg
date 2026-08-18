@@ -1,0 +1,65 @@
+<svg viewBox="0 0 400 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <mask id="medical-login-mask" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="38" y="35" width="324" height="230">
+    <rect x="38" y="35" width="324" height="230" fill="#FFFFFF"/>
+  </mask>
+
+  <g mask="url(#medical-login-mask)">
+    <!-- 悬浮病历与协作轨迹 -->
+    <path d="M122 88C142 66 166 55 194 53" stroke="#071F4D" stroke-width="1.1" stroke-dasharray="5 6"/>
+    <path d="M250 59C277 66 298 81 314 104" stroke="#071F4D" stroke-width="1.1" stroke-dasharray="5 6"/>
+    <path d="M89 68L116 77L109 105C97 104 83 100 73 94C73 84 78 74 89 68Z" fill="#C7DEFF"/>
+    <path d="M89 68L116 77L109 105C97 104 83 100 73 94C73 84 78 74 89 68Z" stroke="#071F4D" stroke-width="1.1"/>
+    <path d="M102 101C104 105 108 106 113 104L109 110C104 112 97 109 94 106L102 101Z" fill="#071F4D"/>
+    <path d="M206 42C220 39 239 42 252 50L248 80C238 70 224 65 207 66C201 57 201 50 206 42Z" fill="#DEEBFC"/>
+    <path d="M206 42C220 39 239 42 252 50L248 80C238 70 224 65 207 66C201 57 201 50 206 42Z" stroke="#071F4D" stroke-width="1.1"/>
+    <path d="M207 66C213 63 220 62 227 63C220 66 214 71 210 77C205 74 203 70 207 66Z" fill="#071F4D"/>
+
+    <!-- 共享工作台 -->
+    <path d="M47 253H354" stroke="#071F4D" stroke-width="1.1"/>
+    <path d="M83 245H299L296 253H78L83 245Z" fill="#C7DEFF"/>
+    <path d="M78 253H326M332 253H353" stroke="#071F4D" stroke-width="1.1"/>
+    <path d="M77 231L51 133H226L253 231H77Z" fill="#FFFFFF"/>
+    <path d="M77 231L51 133H226L253 231H77Z" stroke="#071F4D" stroke-width="1.2"/>
+    <path d="M70 143L92 219H235L214 143" stroke="#071F4D" stroke-width="1.1"/>
+    <path d="M49 136L44 139L74 250H181" stroke="#071F4D" stroke-width="1.1"/>
+
+    <!-- 工作台内的医生与医助双席 -->
+    <rect x="96" y="157" width="109" height="48" rx="2" fill="#C7DEFF"/>
+    <path d="M96 205V157H205V205" stroke="#071F4D" stroke-width="1.1"/>
+    <circle cx="123" cy="174" r="10" fill="#006EFF"/>
+    <path d="M107 202C109 189 114 183 123 183C132 183 138 189 140 202H107Z" fill="#006EFF"/>
+    <path d="M120 171H126M123 168V174" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round"/>
+    <circle cx="169" cy="174" r="10" fill="#00E4E5"/>
+    <path d="M153 202C155 189 160 183 169 183C178 183 184 189 186 202H153Z" fill="#00E4E5"/>
+    <path d="M165 172L168 175L174 169" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M136 174H156" stroke="#071F4D" stroke-width="1.1" stroke-dasharray="3 4"/>
+    <path d="M130 211H209M158 219H211" stroke="#071F4D" stroke-width="1.1"/>
+
+    <!-- 患者资料卡 -->
+    <path d="M244 113H278L287 124H344V211H244V113Z" fill="#C7DEFF"/>
+    <path d="M230 133H274L282 145H329V218H230V133Z" fill="#071F4D"/>
+    <path d="M244 124H278L286 135H345V218H244V124Z" fill="#006EFF"/>
+    <path d="M244 124H278L286 135H345M244 218H350" stroke="#071F4D" stroke-width="1.1"/>
+    <rect x="261" y="148" width="67" height="48" rx="2" fill="#FFFFFF"/>
+    <circle cx="276" cy="163" r="7" fill="#00E4E5"/>
+    <path d="M265 180C267 172 270 169 276 169C282 169 285 172 287 180H265Z" fill="#00E4E5"/>
+    <path d="M295 158H318M295 168H318M295 178H311" stroke="#071F4D" stroke-width="1.1" stroke-linecap="round"/>
+    <path d="M273 205L280 212L296 195" stroke="#FFFFFF" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M296 205H326" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" opacity="0.9"/>
+
+    <!-- 医疗标识与信息流 -->
+    <rect x="309" y="84" width="35" height="35" rx="4" fill="#00E4E5"/>
+    <path d="M326.5 92V111M317 101.5H336" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/>
+    <path d="M298 122C299 111 306 104 315 101" stroke="#071F4D" stroke-width="1.1" stroke-dasharray="4 5"/>
+    <path d="M220 178C232 171 239 168 249 168" stroke="#071F4D" stroke-width="1.1" stroke-dasharray="4 5"/>
+    <circle cx="222" cy="178" r="2.5" fill="#071F4D"/>
+    <circle cx="249" cy="168" r="2.5" fill="#071F4D"/>
+
+    <!-- 桌边小物与留白平衡 -->
+    <path d="M296 250V226C296 223 298 221 301 221H322C325 221 327 223 327 226V250" fill="#FFFFFF"/>
+    <path d="M296 250V226C296 223 298 221 301 221H322C325 221 327 223 327 226V250M301 221V218H322V221" stroke="#071F4D" stroke-width="1.1"/>
+    <path d="M307 224C306 231 307 239 312 249M314 224C313 231 314 239 319 249" stroke="#006EFF" stroke-width="1.1"/>
+    <circle cx="357" cy="152" r="6" fill="#DEEBFC"/>
+    <path d="M55 171H64M59.5 166.5V175.5" stroke="#071F4D" stroke-width="1.1"/>
+  </g>
+</svg>

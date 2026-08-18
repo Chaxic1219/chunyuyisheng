@@ -1,0 +1,135 @@
+.pay-page {
+  min-height: 100vh;
+  padding: 32rpx;
+  background: #f2f3f5;
+}
+
+/* 仿真收银台 */
+.cashier {
+  margin: 40rpx auto 0;
+  max-width: 640rpx;
+  padding: 48rpx 40rpx 40rpx;
+  border-radius: 24rpx;
+  background: #ffffff;
+  box-shadow: 0 8rpx 32rpx rgba(23, 32, 28, 0.08);
+}
+
+.cashier-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16rpx;
+}
+
+.wechat-badge {
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 16rpx;
+  background: #07c160;
+  color: #fff;
+  font-size: 30rpx;
+  font-weight: 700;
+  line-height: 64rpx;
+  text-align: center;
+}
+
+.cashier-title {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: #17201c;
+}
+
+.cashier-amount {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  margin-top: 40rpx;
+  gap: 8rpx;
+}
+
+.cashier-cny {
+  font-size: 36rpx;
+  font-weight: 600;
+  color: #17201c;
+}
+
+.cashier-num {
+  font-size: 84rpx;
+  font-weight: 700;
+  color: #17201c;
+  line-height: 1;
+}
+
+.cashier-desc {
+  margin-top: 12rpx;
+  text-align: center;
+  font-size: 26rpx;
+  color: #8a938d;
+}
+
+.cashier-body {
+  margin-top: 40rpx;
+  padding-top: 24rpx;
+  border-top: 1px solid #eef1f3;
+}
+
+.cashier-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 16rpx;
+  font-size: 27rpx;
+}
+
+.row-label {
+  color: #8a938d;
+}
+
+.row-value {
+  color: #2a3547;
+  max-width: 380rpx;
+  text-align: right;
+  word-break: break-all;
+}
+
+.cashier-note {
+  margin-top: 24rpx;
+  text-align: center;
+  font-size: 22rpx;
+  color: #c0392b;
+}
+
+.cashier-confirm {
+  margin-top: 32rpx;
+}
+
+.cashier-cancel {
+  margin-top: 24rpx;
+  text-align: center;
+  font-size: 27rpx;
+  color: #8a938d;
+}
+
+/* 失败态 */
+.error-card {
+  margin-top: 80rpx;
+  padding: 48rpx;
+  text-align: center;
+}
+
+.error-title {
+  display: block;
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #17201c;
+}
+
+.error-sub {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 27rpx;
+  color: #6a756f;
+}
+
+.pay-btn {
+  margin-top: 28rpx;
+}

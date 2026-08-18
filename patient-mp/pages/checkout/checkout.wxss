@@ -1,0 +1,27 @@
+.amount-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16rpx;
+  margin-top: 16rpx;
+}
+
+.amount-row .amount {
+  font-size: 48rpx;
+}
+
+.sub-amount {
+  font-size: 24rpx;
+  color: #8a938d;
+}
+
+.form-head {
+  margin-bottom: 8rpx;
+}
+
+.hint {
+  display: block;
+  margin-top: 20rpx;
+  color: #9aa7ad;
+  font-size: 24rpx;
+  text-align: center;
+}

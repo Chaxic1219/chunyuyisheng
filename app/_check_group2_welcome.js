@@ -1,0 +1,14 @@
+const {db}=require("./db.js");
+const qiwe=require("./qiwe.js");
+const cfg=qiwe.loadConfig();
+console.log("testToId", cfg.testToId);
+console.log("allowGroup", cfg.allowGroup);
+console.log("autoSend", cfg.autoSend);
+const groups=db.prepare("SELECT id,name,external_group_id,data_source,is_business,welcome_enabled,status FROM community_groups ORDER BY id").all();
+console.log("groups", JSON.stringify(groups,null,2));
+const welcomes=db.prepare("SELECT id,status,source,text,created_at,payload FROM outbound_queue WHERE source IN ('welcome','member_visit') ORDER BY id DESC LIMIT 15").all();
+console.log("recent_welcome", JSON.stringify(welcomes.map(r=>({id:r.id,status:r.status,source:r.source,text:(r.text||"").slice(0,100),created_at:r.created_at,payload:r.payload})),null,2));
+const seen=db.prepare("SELECT * FROM qiwe_room_member_seen ORDER BY id DESC LIMIT 15").all();
+console.log("member_seen", JSON.stringify(seen,null,2));
+const g2=groups.filter(g=>String(g.name||"").includes("群②")||String(g.name||"").includes("健康群"));
+console.log("health_groups", JSON.stringify(g2,null,2));

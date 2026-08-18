@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>动效 B · 状态引导</title>
+  <style>
+    :root{--ink:#10251f;--green:#176b52;--pale:#edf4ef;--danger:#b5473f;--line:#d8ded7}*{box-sizing:border-box}body{margin:0;background:#f3f5ef;color:var(--ink);font-family:"Microsoft YaHei UI","Noto Sans SC",sans-serif}main{width:min(1080px,calc(100% - 32px));margin:32px auto 64px}
+    header{display:flex;justify-content:space-between;gap:24px;align-items:end;padding:28px;border-radius:28px;background:var(--ink);color:#fff}h1{margin:8px 0 0;font-size:clamp(34px,6vw,68px);letter-spacing:-.06em;line-height:1}.eyebrow{font:700 12px Consolas,monospace;letter-spacing:.16em;color:#91cfb8}.toggle{border:1px solid #577068;background:transparent;color:#fff;border-radius:999px;padding:12px 16px;cursor:pointer}
+    .timeline{margin:22px 0;display:grid;grid-template-columns:repeat(5,1fr);gap:2px}.step{padding:16px;background:#fff;border-top:3px solid var(--green)}.step b{display:block}.step span{font-size:12px;color:#69766f}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(235px,1fr));gap:14px}.demo{padding:20px;border:1px solid var(--line);border-radius:22px;background:#fff}.demo h2{margin:0 0 6px;font-size:18px}.demo p{min-height:42px;margin:0 0 18px;color:#65716c;font-size:13px;line-height:1.6}
+    .button{width:100%;min-height:52px;border:0;border-radius:16px;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;gap:10px;font-weight:700;cursor:pointer;transition:transform 140ms ease-out,opacity 140ms ease-out}.button:active{transform:scale(.98);opacity:.88}.icon{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;transition:transform 140ms ease-out,opacity 140ms ease-out}.up:active .icon{transform:translateY(-3px)}.right:active .icon{transform:translateX(3px)}.left:active .icon{transform:translateX(-3px)}.expand:active .icon{transform:scale(1.08)}
+    .spin .icon{animation:spin 800ms linear infinite}.confirm .icon{animation:confirm 220ms ease-out both}.error{background:#fff4f2;color:var(--danger);border:1px solid #efd4d0}.disabled{opacity:.45;cursor:not-allowed}.disabled:active{transform:none}.hint{margin-top:22px;padding:18px;border-left:3px solid var(--green);background:#fff;line-height:1.7}
+    body.reduced .button,body.reduced .icon{transition:opacity 140ms ease-out!important;animation:none!important}body.reduced .button:active,body.reduced .button:active .icon{transform:none!important}
+    @keyframes spin{to{transform:rotate(360deg)}}@keyframes confirm{from{opacity:0;transform:translateY(3px) scale(.94)}to{opacity:1;transform:none}}@media(max-width:720px){header{align-items:start;flex-direction:column}.timeline{grid-template-columns:1fr}}
+  </style>
+</head>
+<body><main><header><div><div class="eyebrow">MOTION SYSTEM / GUIDED B</div><h1>动作有方向，<br>状态有结果。</h1></div><button id="toggle" class="toggle" type="button">低动效：关闭</button></header>
+  <section class="timeline"><div class="step"><b>默认</b><span>动作可识别</span></div><div class="step"><b>按下</b><span>0.98 / 140ms</span></div><div class="step"><b>处理中</b><span>锁定重复点击</span></div><div class="step"><b>成功 / 失败</b><span>明确结果</span></div><div class="step"><b>恢复 / 跳转</b><span>布局不变化</span></div></section>
+  <section class="grid">
+    <article class="demo"><h2>上传 · up</h2><p>按住按钮，箭头向上 3px。</p><button class="button up"><svg class="icon" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4 4 4M5 15v4h14v-4"/></svg>上传档案</button></article>
+    <article class="demo"><h2>发送 · right</h2><p>发送方向明确，随后切换加载态。</p><button class="button right"><svg class="icon" viewBox="0 0 24 24"><path d="m4 5 16 7-16 7 3-7-3-7Zm3 7h13"/></svg>发送消息</button></article>
+    <article class="demo"><h2>返回 · left</h2><p>返回箭头向左 3px。</p><button class="button left"><svg class="icon" viewBox="0 0 24 24"><path d="m11 6-6 6 6 6M5 12h14"/></svg>返回健康服务</button></article>
+    <article class="demo"><h2>创建 · expand</h2><p>加号轻微放大后恢复。</p><button class="button expand"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>手动创建</button></article>
+    <article class="demo"><h2>处理中 · rotate</h2><p>仅请求期间持续旋转，并锁定重复提交。</p><button class="button spin"><svg class="icon" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v6h-6"/></svg>正在提交…</button></article>
+    <article class="demo"><h2>成功 · confirm</h2><p>勾选淡入并轻微上浮，220ms。</p><button class="button confirm"><svg class="icon" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>提交成功</button></article>
+    <article class="demo"><h2>失败</h2><p>错误图标与文字淡入，不摇晃。</p><button class="button error"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/></svg>请求失败，重新加载</button></article>
+    <article class="demo"><h2>禁用</h2><p>降低对比度，不播放动作动效。</p><button class="button disabled" disabled><svg class="icon" viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3M5 11h14v9H5z"/></svg>暂不可操作</button></article>
+  </section><div class="hint"><b>边界：</b>只动画 transform 与 opacity；普通动效不超过约 240ms；删除、解绑、退出不摇晃；底部导航不弹跳；低动效模式关闭位移、缩放和结果上浮，但保留颜色、文案、禁用和加载状态。</div>
+</main><script>const b=document.body,t=document.getElementById('toggle');t.addEventListener('click',()=>{const on=b.classList.toggle('reduced');t.textContent=`低动效：${on?'开启':'关闭'}`})</script></body></html>

@@ -1,0 +1,21 @@
+filename,source_path,size_kb,sha256,evidence_status
+archive.png,src/static/tab/archive.png,0.23,caf596191d8a81f02c38151f6bab38003431c61bcde3b4efcc5fd6dd2d27e50e,旧资产证据；禁止复制到 v2
+archive-active.png,src/static/tab/archive-active.png,0.22,f2c90502eaa40df028af554773092bd197e8b775606cf6e9e58278554de2eede,旧资产证据；禁止复制到 v2
+center-pedestal.png,src/static/tab/center-pedestal.png,4.93,a5626a0b3e13d7d1887f55406fda060dad7a11f73ccafba25b4e31ae3555e0a2,旧资产证据；禁止复制到 v2
+chat.png,src/static/tab/chat.png,2.55,27c359703d11b52b3e76d1c435e69072ffd3aeeb8e1c1b613f9c69c91b5a6f13,旧资产证据；禁止复制到 v2
+chat-active.png,src/static/tab/chat-active.png,2.37,e6344d2b261d828da20d0b75c863a936effff89d1f8f5689b6df7033c9f0a95d,旧资产证据；禁止复制到 v2
+chat-center-button.png,src/static/tab/chat-center-button.png,14.44,dd357277851cee280f15cf11629e51b7263ad3c0ca9a889c4fce240300283e2e,旧资产证据；禁止复制到 v2
+chat-fab.png,src/static/tab/chat-fab.png,1.48,c413ae3121c98e2b39a36b80c3489a152e73b70eb6631962230658735b18d6f5,旧资产证据；禁止复制到 v2
+home.png,src/static/tab/home.png,2.32,c84d72ee16c5c7e57547e22d13066029fe3cadf0a747e605a4ee960d1e155a15,旧资产证据；禁止复制到 v2
+home-active.png,src/static/tab/home-active.png,2.16,5f13513a67be9812547e5516340630025f2e00554a0532e2d1c83269043a4ff3,旧资产证据；禁止复制到 v2
+svg/center-pedestal.svg,src/static/tab/svg/center-pedestal.svg,0.26,8c72e5534fa80222641cee5464bd8eaeca18d3b8e3178cb8e1bf50eb6d83144e,旧资产证据；禁止复制到 v2
+svg/chat.svg,src/static/tab/svg/chat.svg,0.43,77bb264f702b886a2c6075d90ef37d0f017797a38fc590058178caa63e03809c,旧资产证据；禁止复制到 v2
+svg/chat-active.svg,src/static/tab/svg/chat-active.svg,0.43,34ae9c20d31ebca8a6d8520707b373cce105351c1e440cee4d2def2562d65494,旧资产证据；禁止复制到 v2
+svg/chat-center-button.svg,src/static/tab/svg/chat-center-button.svg,0.61,68afe49a406037eb9d209bfdfd61971792fe60f8684de6ab07c4321542266439,旧资产证据；禁止复制到 v2
+svg/chat-fab.svg,src/static/tab/svg/chat-fab.svg,0.43,d030b193e7057f2da0a1336a51ee85ae4e695634d290975678c46d1aaec0c304,旧资产证据；禁止复制到 v2
+svg/home.svg,src/static/tab/svg/home.svg,0.41,d90787a538c0ed5e241e88adef458bb8115ac4ab43cb7bf43766a138c0ca190b,旧资产证据；禁止复制到 v2
+svg/home-active.svg,src/static/tab/svg/home-active.svg,0.41,4dc57bee32b78fbdfd33e3ae633605c42b27786d3c0e332187eca732474578d4,旧资产证据；禁止复制到 v2
+svg/user.svg,src/static/tab/svg/user.svg,0.27,e30b569f27335bde55377efedd3a65c1953298bb2b6123c07a33a1cd67ff0e47,旧资产证据；禁止复制到 v2
+svg/user-active.svg,src/static/tab/svg/user-active.svg,0.27,2aa760fe078d4f70ef6a5e8dd18ec7c719be597c5732d3bd272519b647b49058,旧资产证据；禁止复制到 v2
+user.png,src/static/tab/user.png,2.97,ac85c39302fcca963acd8947176f14020cf5de6b23c95b762bcdd2f4d9a1b96b,旧资产证据；禁止复制到 v2
+user-active.png,src/static/tab/user-active.png,2.75,f22b3c907c5e46c6b82c0de59fa0caceed4a1e745b8f9f45a429daf591ed180f,旧资产证据；禁止复制到 v2

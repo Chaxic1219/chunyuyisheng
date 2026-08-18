@@ -1,0 +1,27 @@
+<view class="page">
+  <view class="head">
+    <text class="head-title">健康服务</text>
+    <text class="head-sub">王云程医生 · 北京市大兴区中西医结合医院</text>
+  </view>
+
+  <view wx:if="{{loading}}" class="empty">正在加载健康服务…</view>
+  <view wx:elif="{{error}}" class="empty pressable" bindtap="load">{{error}}，点击重试</view>
+
+  <block wx:else>
+    <view wx:if="{{products.length === 0}}" class="empty">暂无可购买的服务</view>
+    <view wx:for="{{products}}" wx:key="id" class="card product" data-key="{{item.key || item.id}}"
+          bindtap="onProductTap">
+      <view class="product-top">
+        <text class="product-title">{{item.title}}</text>
+        <text class="amount product-amount">¥{{item.amountLabel}}</text>
+      </view>
+      <text wx:if="{{item.subtitle}}" class="product-sub">{{item.subtitle}}</text>
+      <text wx:if="{{item.doctorName}}" class="product-doctor">{{item.doctorName}}医生{{item.doctorHospital ? ' · ' + item.doctorHospital : ''}}</text>
+      <view class="product-foot">
+        <text class="tag">服务 {{item.serviceDays}} 天</text>
+        <text wx:if="{{item.goods && item.goods.length}}" class="tag">含实物礼包</text>
+        <text class="buy">查看详情 ›</text>
+      </view>
+    </view>
+  </block>
+</view>

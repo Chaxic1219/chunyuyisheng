@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>医患通 — 智能医患社群管理平台</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--primary:#0a8a6e;--primary-light:#e7f7ee;--accent:#07c160;--dark:#1a1a1a;--gray:#666;--light-gray:#f8f9fa;--radius:16px}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif;color:var(--dark);line-height:1.7;overflow-x:hidden}
+a{color:var(--primary);text-decoration:none}
+
+/* Hero */
+.hero{background:linear-gradient(135deg,#0a8a6e 0%,#06d6a0 100%);color:#fff;padding:80px 20px 100px;text-align:center;position:relative;overflow:hidden}
+.hero::after{content:"";position:absolute;bottom:-50px;left:0;right:0;height:100px;background:#fff;border-radius:50% 50% 0 0}
+.hero h1{font-size:clamp(28px,5vw,48px);font-weight:800;margin-bottom:16px;letter-spacing:-0.5px}
+.hero p{font-size:clamp(16px,2.5vw,20px);opacity:0.92;max-width:680px;margin:0 auto 32px}
+.hero-badges{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.hero-badge{background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.4);border-radius:24px;padding:8px 18px;font-size:14px;backdrop-filter:blur(4px)}
+
+/* Section */
+.section{max-width:1100px;margin:0 auto;padding:60px 24px}
+.section-title{font-size:clamp(24px,4vw,36px);font-weight:700;text-align:center;margin-bottom:12px}
+.section-sub{text-align:center;color:var(--gray);font-size:16px;margin-bottom:48px;max-width:600px;margin-left:auto;margin-right:auto}
+
+/* Feature Grid */
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px}
+.feature-card{background:#fff;border:1px solid #eee;border-radius:var(--radius);padding:28px 24px;transition:transform 0.2s,box-shadow 0.2s}
+.feature-card:hover{transform:translateY(-4px);box-shadow:0 12px 40px rgba(0,0,0,0.08)}
+.feature-icon{width:52px;height:52px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:16px}
+.feature-card h3{font-size:18px;margin-bottom:8px}
+.feature-card p{color:var(--gray);font-size:14px;line-height:1.6}
+.fi-green{background:var(--primary-light)}
+.fi-blue{background:#eaf4ff}
+.fi-orange{background:#fff7e6}
+.fi-purple{background:#f3eeff}
+.fi-red{background:#fff0f0}
+.fi-cyan{background:#e6fcf5}
+
+/* Stats */
+.stats-section{background:var(--light-gray);padding:60px 24px}
+.stats-grid{max-width:900px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center}
+.stat-item .stat-num{font-size:36px;font-weight:800;color:var(--primary)}
+.stat-item .stat-label{font-size:14px;color:var(--gray);margin-top:4px}
+
+/* Flow */
+.flow-section{background:#fff;padding:60px 24px}
+.flow-steps{max-width:800px;margin:0 auto;position:relative}
+.flow-steps::before{content:"";position:absolute;left:24px;top:0;bottom:0;width:3px;background:linear-gradient(to bottom,var(--accent),var(--primary))}
+.flow-step{position:relative;padding-left:64px;margin-bottom:36px}
+.flow-step::before{content:attr(data-step);position:absolute;left:8px;top:0;width:36px;height:36px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.flow-step h4{font-size:16px;margin-bottom:6px}
+.flow-step p{color:var(--gray);font-size:14px}
+
+/* Architecture */
+.arch-section{background:var(--light-gray);padding:60px 24px}
+.arch-diagram{max-width:800px;margin:0 auto;background:#fff;border-radius:var(--radius);padding:32px;border:1px solid #eee}
+.arch-row{display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap;justify-content:center}
+.arch-box{border-radius:10px;padding:12px 18px;font-size:13px;font-weight:600;text-align:center;min-width:120px}
+.arch-patient{background:#e3f2fd;color:#1565c0;border:1px solid #90caf9}
+.arch-ai{background:#fce4ec;color:#c62828;border:1px solid #ef9a9a}
+.arch-backend{background:var(--primary-light);color:#0a8a6e;border:1px solid #a7e8d0}
+.arch-channel{background:#fff3e0;color:#e65100;border:1px solid #ffcc80}
+.arch-admin{background:#f3e5f5;color:#6a1b9a;border:1px solid #ce93d8}
+.arch-arrow{text-align:center;color:#aaa;font-size:20px;margin:8px 0}
+
+/* Safety */
+.safety-section{padding:60px 24px}
+.safety-grid{max-width:900px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.safety-item{background:#fff;border:1px solid #eee;border-radius:12px;padding:20px;display:flex;gap:12px;align-items:flex-start}
+.safety-icon{font-size:24px;flex-shrink:0}
+.safety-item h4{font-size:14px;margin-bottom:4px}
+.safety-item p{font-size:13px;color:var(--gray)}
+
+/* Roles */
+.roles-section{background:#fff;padding:60px 24px}
+.roles-table{max-width:900px;margin:0 auto;border-collapse:collapse;width:100%;font-size:14px}
+.roles-table th{background:var(--primary);color:#fff;padding:12px 16px;text-align:left}
+.roles-table td{padding:12px 16px;border-bottom:1px solid #f0f0f0}
+.roles-table tr:hover td{background:var(--primary-light)}
+
+/* CTA */
+.cta-section{background:linear-gradient(135deg,#0a8a6e,#06d6a0);padding:60px 24px;text-align:center;color:#fff}
+.cta-section h2{font-size:28px;margin-bottom:12px}
+.cta-section p{opacity:0.9;margin-bottom:28px;font-size:16px}
+.cta-btn{display:inline-block;background:#fff;color:var(--primary);padding:14px 36px;border-radius:30px;font-size:16px;font-weight:700;transition:transform 0.2s}
+.cta-btn:hover{transform:scale(1.05)}
+
+/* Footer */
+.footer{background:#1a1a1a;color:#aaa;padding:32px 24px;text-align:center;font-size:13px}
+
+/* Responsive */
+@media(max-width:768px){
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+  .hero{padding:60px 20px 80px}
+}
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<section class="hero">
+  <h1>医患通</h1>
+  <p>AI 驱动的智能医患社群管理平台<br/>让医生专注诊疗，让患者安心康复</p>
+  <div class="hero-badges">
+    <span class="hero-badge">🏥 三甲医院验证</span>
+    <span class="hero-badge">🤖 AI 分诊引擎</span>
+    <span class="hero-badge">🔒 医疗级安全</span>
+    <span class="hero-badge">💬 企微原生集成</span>
+  </div>
+</section>
+
+<!-- Stats -->
+<section class="stats-section">
+  <div class="stats-grid">
+    <div class="stat-item"><div class="stat-num">30+</div><div class="stat-label">数据库表</div></div>
+    <div class="stat-item"><div class="stat-num">81</div><div class="stat-label">API 路由</div></div>
+    <div class="stat-item"><div class="stat-num">3 级</div><div class="stat-label">风险分诊</div></div>
+    <div class="stat-item"><div class="stat-num">0</div><div class="stat-label">npm 运行时依赖</div></div>
+  </div>
+</section>
+
+<!-- Core Features -->
+<section class="section">
+  <h2 class="section-title">核心功能</h2>
+  <p class="section-sub">覆盖医患社群管理全链路，从患者入群到术后随访，一站式闭环</p>
+  <div class="features">
+    <div class="feature-card">
+      <div class="feature-icon fi-green">🧠</div>
+      <h3>AI 智能分诊</h3>
+      <p>三层风控引擎：本地红旗规则 + 症状哨兵 + LLM 天网。高风险恒走安全模板绝不自动发，低风险双闸验证后自动回复，中间态转人工。</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon fi-blue">💬</div>
+      <h3>企微社群运营</h3>
+      <p>企微群消息实时接入，编号指令精确响应，自然语言智能分诊。所有出站消息必须人工确认，零误发风险。</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon fi-orange">📋</div>
+      <h3>患者建档与随访</h3>
+      <p>医患联络表 → 自动建档 → 术后 SOP 随访。时间轴节点自动推进，宣教/复查/用药提醒精准触达。</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon fi-purple">📅</div>
+      <h3>门诊加号与候补</h3>
+      <p>线上加号申请 → 停诊日自动拦截 → 满号进入候补 → 释放时批量通知。支持家庭代办（子女为老人操作）。</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon fi-red">🔗</div>
+      <h3>春雨医生生态打通</h3>
+      <p>小程序短链直达：图文咨询、视频问诊、预约就诊、我的订单。无需跳出企微，一键触达春雨服务。</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon fi-cyan">👥</div>
+      <h3>多角色权限体系</h3>
+      <p>超级管理员 / 运营主管 / 医助 / 只读质检 四级角色。子管理员按医生维度隔离数据，多团队并行管理。</p>
+    </div>
+  </div>
+</section>
+
+<!-- Workflow -->
+<section class="flow-section">
+  <div class="section">
+    <h2 class="section-title">患者服务流程</h2>
+    <p class="section-sub">从入群到康复的完整旅程</p>
+    <div class="flow-steps">
+      <div class="flow-step" data-step="1">
+        <h4>入群建档</h4>
+        <p>患者扫码加入医生健康群 → 收到欢迎语+医生介绍 → 提交医患联络表完成建档</p>
+      </div>
+      <div class="flow-step" data-step="2">
+        <h4>智能咨询</h4>
+        <p>发送编号获取精准服务（门诊/加号/住院/科普）；自然语言描述病情 → AI 分诊分级 → 引导就医</p>
+      </div>
+      <div class="flow-step" data-step="3">
+        <h4>预约就诊</h4>
+        <p>线上加号申请 / 住院预约 → 医助跟进确认 → 就诊提醒</p>
+      </div>
+      <div class="flow-step" data-step="4">
+        <h4>术后随访</h4>
+        <p>选择随访方案自动入组 → 按 SOP 时间轴推送宣教/复查提醒 → 节点完成标记</p>
+      </div>
+      <div class="flow-step" data-step="5">
+        <h4>口碑沉淀</h4>
+        <p>患者评价医生 / 写感谢信 → 认证口碑墙展示 → 海报分享拉新</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Architecture -->
+<section class="arch-section">
+  <div class="section">
+    <h2 class="section-title">系统架构</h2>
+    <p class="section-sub">纯 Node.js 零依赖，轻量高性能</p>
+    <div class="arch-diagram">
+      <div class="arch-row">
+        <div class="arch-box arch-patient">👤 患者 H5</div>
+        <div class="arch-box arch-channel">💬 企微群</div>
+        <div class="arch-box arch-channel">📱 企微单聊</div>
+        <div class="arch-box arch-admin">🖥️ 医助后台</div>
+      </div>
+      <div class="arch-arrow">▼</div>
+      <div class="arch-row">
+        <div class="arch-box arch-backend">🔀 消息路由 · 关键词引擎</div>
+        <div class="arch-box arch-ai">🧠 AI 分诊引擎 (MiMo/DeepSeek)</div>
+      </div>
+      <div class="arch-arrow">▼</div>
+      <div class="arch-row">
+        <div class="arch-box arch-backend">📊 SQLite 30 表</div>
+        <div class="arch-box arch-backend">🔒 风控三层闸</div>
+        <div class="arch-box arch-backend">📋 出站队列 (pending)</div>
+      </div>
+      <div class="arch-arrow">▼</div>
+      <div class="arch-row">
+        <div class="arch-box arch-channel">QiWe 第三方</div>
+        <div class="arch-box arch-channel">企微自建应用</div>
+        <div class="arch-box arch-patient">春雨医生小程序</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Safety -->
+<section class="safety-section">
+  <div class="section">
+    <h2 class="section-title">医疗级安全设计</h2>
+    <p class="section-sub">五条不可违反的系统铁律</p>
+    <div class="safety-grid">
+      <div class="safety-item">
+        <div class="safety-icon">🚫</div>
+        <div><h4>AI 绝不自动发高/中风险消息</h4><p>高风险恒走安全模板，中风险必须人工审核确认后才发送</p></div>
+      </div>
+      <div class="safety-item">
+        <div class="safety-icon">✋</div>
+        <div><h4>企微出站零自动发</h4><p>所有回复入 pending 队列，医助确认后才真正发送到群/患者</p></div>
+      </div>
+      <div class="safety-item">
+        <div class="safety-icon">⬆️</div>
+        <div><h4>风险只升不降</h4><p>LLM 只能上抬风险等级，绝不能降级。本地规则是底线</p></div>
+      </div>
+      <div class="safety-item">
+        <div class="safety-icon">🔐</div>
+        <div><h4>回调鉴权 Fail-Closed</h4><p>未配置密钥时一律拒绝所有外部回调，绝不裸奔</p></div>
+      </div>
+      <div class="safety-item">
+        <div class="safety-icon">🛡️</div>
+        <div><h4>PII 双向脱敏</h4><p>患者信息 LLM 前脱敏 + 输出脱敏 + 公开展示脱敏，三层防护</p></div>
+      </div>
+      <div class="safety-item">
+        <div class="safety-icon">📜</div>
+        <div><h4>PIPL 合规</h4><p>敏感信息单独同意 + 即时同意 + 最小字段收集 + 可申请删除</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Roles -->
+<section class="roles-section">
+  <div class="section">
+    <h2 class="section-title">多角色协作</h2>
+    <p class="section-sub">每个角色只看到该看的，只能做该做的</p>
+    <table class="roles-table">
+      <thead>
+        <tr><th>角色</th><th>入口</th><th>核心权限</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>患者</strong></td><td>H5 页面 / 企微群</td><td>咨询、建档、加号、住院、随访、评价</td></tr>
+        <tr><td><strong>医助</strong></td><td>/admin 后台</td><td>分诊审核、提交管理、随访推送、社群消息确认</td></tr>
+        <tr><td><strong>运营主管</strong></td><td>/admin 后台</td><td>规则配置、运营策略、知识库、全量数据</td></tr>
+        <tr><td><strong>超级管理员</strong></td><td>/admin 后台</td><td>医生管理、凭证配置、子管理员、系统维护</td></tr>
+        <tr><td><strong>医生</strong></td><td>企微群（被动展示）</td><td>接收「转医生」标记，通过医助代回复</td></tr>
+        <tr><td><strong>AI</strong></td><td>后台引擎</td><td>仅做草稿，高/中风险绝不自动发</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Tech Highlights -->
+<section class="section">
+  <h2 class="section-title">技术亮点</h2>
+  <p class="section-sub">轻量、安全、零依赖</p>
+  <div class="features">
+    <div class="feature-card">
+      <div class="feature-icon fi-green">⚡</div>
+      <h3>纯 Node.js 零依赖</h3>
+      <p>node:sqlite 内置数据库，无 npm 运行时依赖。部署即 `node server.js`，秒级启动。</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon fi-blue">🔌</div>
+      <h3>AI 可插拔</h3>
+      <p>支持 MiMo / DeepSeek / 千问多模型切换。AI 宕机自动降级本地模板，服务不中断。</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon fi-orange">📦</div>
+      <h3>一键克隆扩医生</h3>
+      <p>新增医生只需填写基本信息，一键克隆底座（规则+FAQ+内容配置），分钟级上线。</p>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <h2>让每一个患者群都有 AI 医助</h2>
+  <p>从单个医生到整个科室，从一个群到百个群，医患通都能轻松承接</p>
+  <a href="mailto:sheilaliu.ai@gmail.com" class="cta-btn">联系我们 →</a>
+</section>
+
+<!-- Footer -->
+<footer class="footer">
+  <p>© 2026 医患通 · 春雨医生技术合作伙伴 | 纯 Node.js · 零依赖 · 医疗级安全</p>
+</footer>
+
+</body>
+</html>

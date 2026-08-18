@@ -1,0 +1,58 @@
+<view class="page detail-page">
+  <view wx:if="{{loading}}" class="empty">正在加载…</view>
+  <view wx:elif="{{error}}" class="empty pressable" bindtap="load">{{error}}，点击重试</view>
+
+  <block wx:elif="{{product}}">
+    <view class="card">
+      <text class="card-title">{{product.title}}</text>
+      <text wx:if="{{product.doctorName}}" class="detail-doctor">
+        {{product.doctorName}}医生{{product.doctorHospital ? ' · ' + product.doctorHospital : ''}}{{product.doctorDept ? ' · ' + product.doctorDept : ''}}
+      </text>
+      <view class="price-row">
+        <text class="amount price">¥{{product.totalAmountLabel}}</text>
+        <text class="price-sub">服务 ¥{{product.serviceAmountLabel}}{{product.goodsAmount ? ' + 实物 ¥' + product.goodsAmountLabel : ''}}</text>
+      </view>
+      <view class="tag-row">
+        <text class="tag">服务期 {{product.serviceDays}} 天</text>
+        <text wx:if="{{product.reviewBeforeActivate}}" class="tag">审核后开通</text>
+      </view>
+    </view>
+
+    <view class="card" wx:if="{{product.contents && product.contents.length}}">
+      <text class="section-title">服务内容</text>
+      <view wx:for="{{product.contents}}" wx:key="*this" class="li">
+        <text class="li-dot">·</text><text class="li-text">{{item}}</text>
+      </view>
+    </view>
+
+    <view class="card" wx:if="{{product.assessments && product.assessments.length}}">
+      <text class="section-title">评估节点</text>
+      <view wx:for="{{product.assessments}}" wx:key="*this" class="li">
+        <text class="li-dot">·</text><text class="li-text">{{item}}</text>
+      </view>
+    </view>
+
+    <view class="card" wx:if="{{product.goods && product.goods.length}}">
+      <text class="section-title">实物清单</text>
+      <view wx:for="{{product.goods}}" wx:key="*this" class="li">
+        <text class="li-dot">·</text><text class="li-text">{{item}}</text>
+      </view>
+    </view>
+
+    <view class="card" wx:if="{{product.eligible && product.eligible.length}}">
+      <text class="section-title">适用人群</text>
+      <view wx:for="{{product.eligible}}" wx:key="*this" class="li">
+        <text class="li-dot">·</text><text class="li-text">{{item}}</text>
+      </view>
+    </view>
+
+    <view class="card" wx:if="{{product.refundPolicy}}">
+      <text class="section-title">退款说明</text>
+      <text class="policy">{{product.refundPolicy}}</text>
+    </view>
+
+    <view class="footer">
+      <button class="btn-primary" bindtap="onBuy">立即购买 ¥{{product.totalAmountLabel}}</button>
+    </view>
+  </block>
+</view>

@@ -1,0 +1,91 @@
+STAMP=20260803-095722
+BACKUP=/root/chunyu-mp-compat-backup-20260803-095722
+STOP=0
+[PM2] Applying action stopProcessId on app [chunyu-doctor](ids: [ 0 ])
+[PM2] [chunyu-doctor](0) ✓
+┌────┬──────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name             │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼──────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ chunyu-doctor    │ default     │ 2.0.0   │ fork    │ 0        │ 0      │ 70   │ stopped   │ 0%       │ 0b       │ root     │ disabled │
+└────┴──────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+host metrics | cpu: 0.6% | ram usage: 38.8% | disk: ⇓ 0mb/s ⇑ 0.036mb/s |
+
+
+BACKUP=0
+BACKUP_OK
+
+
+PRIVATE_OK
+
+
+ENV=0
+ENV_OK
+
+
+PUT mp_auth.js c6ece1cd284570bf0e0a6efd4c26c5fb331e431d5073eb4f2dbdcac5025d51bb
+PUT mp_runtime_config.js c461ff36a0a969084422529367a44b297e8a616bcff21810ee75f41e270ddcc4
+PUT routes/mp-auth.js b77255c961f71426d5a8fcdcc7051c0b8e006d17ae452c80a78de2e9aeb9b117
+PUT routes/mp-ai.js 4913acd51cb1acc1e94947547aa24399d1fb6f77595ec1dd12198f021dd0701e
+PUT routes/patient-public.js 704c74203149c563fdf5297668e2bc76b880137d7204331dd7e15f015c576c00
+PUT db.js 0d4b9eb1810ea7e8b98452f2ba2fb57a4e8be6f214ed46459ab98b0b8ac70dd9
+PUT rate_limit.js d080220d18e2bc8751e3ab7c21a1b4a90ebccdc4d0236607701722a679675960
+PUT sms_provider.js f28642552f9328635c9eae1fd27371a67685914587c2db89ca8d1fa5348dd193
+PUT sms_code_verifier.js fa70d527b09a788c382ce51a39a8cc76d479512f2837770ad2382d010c976791
+PUT wechat_mp.js 8cac9cf119106a5a129eeaf2e7e476db6fbfa2c66d6f9600cbab1caa7f377232
+PUT server_lifecycle.js 379abc0cb6c0793212cc4ab7c03ecd14168bf61f8c1dbdf9d5e46109d0ec6afa
+PUT server.js 10f29e13944ca6c9fad03a17a9f7ce273f7e76d6762cec05cbd52cc1869b9446
+ORPHAN_MOVED
+
+
+START=0
+[PM2] Applying action restartProcessId on app [chunyu-doctor](ids: [ 0 ])
+[PM2] [chunyu-doctor](0) ✓
+[PM2] Process successfully started
+┌────┬──────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name             │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼──────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ chunyu-doctor    │ default     │ 2.0.0   │ fork    │ 3280311  │ 0s     │ 70   │ online    │ 0%       │ 12.5mb   │ root     │ disabled │
+└────┴──────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+host metrics | cpu: 0.6% | ram usage: 38.8% | disk: ⇓ 0mb/s ⇑ 0.036mb/s |
+
+
+SMOKE=1
+--- pm2 ---
+┌────┬──────────────────┬─────────────┬─────────┬─────────┬──────────┬────────┬──────┬───────────┬──────────┬──────────┬──────────┬──────────┐
+│ id │ name             │ namespace   │ version │ mode    │ pid      │ uptime │ ↺    │ status    │ cpu      │ mem      │ user     │ watching │
+├────┼──────────────────┼─────────────┼─────────┼─────────┼──────────┼────────┼──────┼───────────┼──────────┼──────────┼──────────┼──────────┤
+│ 0  │ chunyu-doctor    │ default     │ 2.0.0   │ fork    │ 3280311  │ 3s     │ 70   │ online    │ 0%       │ 70.8mb   │ root     │ disabled │
+└────┴──────────────────┴─────────────┴─────────┴─────────┴──────────┴────────┴──────┴───────────┴──────────┴──────────┴──────────┴──────────┘
+host metrics | cpu: 0.6% | ram usage: 38.8% | disk: ⇓ 0mb/s ⇑ 0.036mb/s |
+--- env in process ---
+PID=3280311
+MP_SESSION_COMPAT=1
+NODE_ENV=production
+DB_FREEZE_EXISTING_DATA=1
+PRIVATE_UPLOAD_DIR=/var/lib/chunyu-doctor/private-uploads
+--- http ---
+bootstrap:200
+health:200
+health_ok True uploads {'ok': True, 'errors': []} config_errors []
+data_req:401
+--- schema ---
+
+[eval]:1
+const {DatabaseSync}=require("node:sqlite"); const db=new DatabaseSync("/var/lib/chunyu-doctor/data.db",{readOnly:true}); console.log(db.prepare("SELECT name FROM sqlite_master WHERE type=\"table\" AND name LIKE \"mp_%\" ORDER BY 1").all().map(r=>r.name).join(",")); const cols=db.prepare("PRAGMA table_info(mp_sessions)").all().map(r=>r.name); console.log("cols", cols.join(",")); console.log("sessions", db.prepare("SELECT COUNT(*) n FROM mp_sessions").get().n); console.log("revoked", db.prepare("SELECT COUNT(*) n FROM mp_sessions WHERE revoked_at IS NOT NULL").get().n); console.log("integrity", JSON.stringify(db.prepare("PRAGMA integrity_check").all())); db.close();
+                                                                                                                                         ^
+
+Error: no such column: "table" - should this be a string literal in single-quotes?
+    at [eval]:1:138
+    at runScriptInThisContext (node:internal/vm:219:10)
+    at node:internal/process/execution:451:12
+    at [eval]-wrapper:6:24
+    at runScriptInContext (node:internal/process/execution:449:60)
+    at evalFunction (node:internal/process/execution:283:30)
+    at evalTypeScript (node:internal/process/execution:295:3)
+    at node:internal/main/eval_string:71:3 {
+  code: 'ERR_SQLITE_ERROR',
+  errcode: 1,
+  errstr: 'SQL logic error'
+}
+
+Node.js v24.18.0

@@ -1,0 +1,55 @@
+﻿filename,size_kb,sha256,duplicate_group,replacement_action
+add.png,0.31,2a69511d2f4dd7b8e892dffd8d5e9fc34b37b9d371af4091f0a5fee73df23595,unique,替换为 action-add；仅表达新增动作。
+archive.png,0.28,8440c9d694ac20e3d4ea7acc68e0e3308ad9515d20aa5e573bf22b390f4f8a03,unique,替换为 health-record。
+asset-data.png,18.17,e06662031fe9c1c0f892f098cd208825dd9a7f9650aa772823107b8b5732ddaa,unique,按动作拆分为 data-export 或 data-delete，禁止继续复用。
+asset-elder.png,18.66,ec38d832a3625d5fcfa5f8fb58c0f8ff69ff4f2d46b728b6b6f726b23fa305e6,DG-01,替换为 elder-mode。
+asset-family.png,27.89,4309ff68ba574d63145ecdc170f12d44720d06a335a57638f84085efdead1198,DG-02,替换为 member-record；添加成员使用 member-add。
+asset-health-log.png,29.72,5bf29e5685be1e09739d0ccee15692d715703b12f1f290c4fc9aebd28045ccb9,DG-03,替换为 health-log。
+asset-orders.png,15.14,42876aeba3912fe5f579b4784d5979106de6555634914b89d9fd6a9bc0ea93d2,unique,替换为 order。
+asset-plans.png,31.42,0eaad6b66e3441b12188fcd57b84ae146c4b96a9e1c854578c1b9f83cb366848,DG-04,替换为 health-plan。
+asset-privacy.png,11.74,0141c12aa64939b2ae3f9c64470571814f9f75ecd59becb3d2eddb0f8705c1e3,DG-05,替换为 privacy。
+asset-records.png,25.81,6a263f5a2394485b62eb8e88d5b539af2d5a70bef92a1887691085877ee094d1,DG-06,替换为 health-record。
+asset-reminders.png,15.59,9ea21c81accb81593cd83a99f9caaf07447d4dcf57747ac8e0f1edd40060785f,DG-07,提醒使用 reminder；助手共享必须改用 group-service。
+asset-rights.png,18.61,0ff0482eba2d6e3a15b6db09373ba9913460258f87bf4466c9921227c08cb56b,unique,替换为 service-rights。
+asset-security.png,11.74,0141c12aa64939b2ae3f9c64470571814f9f75ecd59becb3d2eddb0f8705c1e3,DG-05,账号安全使用 account-security；退出与解绑分别使用 account-logout、wechat-unbind。
+asset-services.png,19.67,cdfd53efae68aa62725dd44754a2b113dc5b5ddfa0d0481e1eb102258930524c,DG-08,服务中心使用 service-center；服务包使用 service-package。
+asset-settings.png,11.74,0141c12aa64939b2ae3f9c64470571814f9f75ecd59becb3d2eddb0f8705c1e3,DG-05,替换为 settings。
+az.png,18.66,ec38d832a3625d5fcfa5f8fb58c0f8ff69ff4f2d46b728b6b6f726b23fa305e6,DG-01,替换为 elder-mode。
+back.png,0.25,693d6d0fa6203990864f6040d18209f44b50e6e288a3a0bf7a9ee1c1ab297cb6,unique,替换为 nav-back。
+bed.png,0.37,47cd969f6dc76eda06f897f2242f16917b27a9f91bce2faed1d67c4a1d844888,unique,替换为 inpatient-service。
+calendar.png,2.86,247465bb2efe61ddbc5b233bc693faa125952d3ce6188288abc28b563a0329e3,unique,替换为 follow-up。
+camera.png,0.71,6682075dc3c31444873940e8d14920579a3922f90f27a6583f4978646dfc782b,unique,保留语义，重绘为 camera。
+chat.png,1.04,d421283f09beda89cd1bcb4a19f8dda8fdc83397815e01da515cd1346f27379a,unique,按动作改为 consult-doctor 或 plan-consult。
+check.png,1.14,a0a7943cf9116b6887b3f89931fb56447bddec2df2aac5b1312ae0e076c70792,unique,结果状态使用 status-success；确认动作使用 action-confirm。
+chevron-muted.png,7.31,8c20f8ae28c43d3b48280296e481ff53a96a0cf91fdbb0e1052025908a898ec9,DG-09,合并为 nav-chevron-right-muted，删除重复位图。
+chevron.png,7.31,8c20f8ae28c43d3b48280296e481ff53a96a0cf91fdbb0e1052025908a898ec9,DG-09,替换为 nav-chevron-right。
+clock.png,15.59,9ea21c81accb81593cd83a99f9caaf07447d4dcf57747ac8e0f1edd40060785f,DG-07,替换为 reminder。
+file.png,25.81,6a263f5a2394485b62eb8e88d5b539af2d5a70bef92a1887691085877ee094d1,DG-06,替换为 health-record；附件场景使用 attachment。
+food.png,0.59,54e6c305b6c91472cae738e9c4c046e0ae45b380e2a9ec0b8ed04ef0dd42194b,unique,替换为 nutrition。
+form.png,31.42,0eaad6b66e3441b12188fcd57b84ae146c4b96a9e1c854578c1b9f83cb366848,DG-04,替换为 record-edit；查看记录使用 health-record。
+health.png,2.33,8d50e9da243126fc343a73ffa7570115d1df2453e6b17c4864fc4f9a24ea582a,unique,用药场景替换为 medication。
+heart.png,29.72,5bf29e5685be1e09739d0ccee15692d715703b12f1f290c4fc9aebd28045ccb9,DG-03,健康记录使用 health-log；健康计划使用 health-plan。
+help-danger.png,1.27,dd6c995b3a53b7f5d33098333e01ae298b04502d86f9a9e39b1918b9b065ae76,unique,替换为基础语义 status-error（tone：danger），不再作为通用危险提示。
+help.png,1.30,7a29559af01d46b65e8e63ce24bce9e825fff12d8ea58b8fbe98afca22ac1c1d,unique,帮助入口使用 help-center；错误、重试、警告分别使用 status-error、action-refresh、status-warning。
+home.png,0.59,aecf8930cdccec0903bd5129c205ca2055ac2c49d7d0829d3d7ebe3be3420b97,unique,替换为 nav-home。
+hospital-secondary.png,0.34,e77c8f49be5b4a60fa73a5dc332538471afd2b37092273a1f5ea3b20240579fc,unique,替换为 doctor-profile；次要色由 tone 控制。
+hospital.png,0.32,88e74686c6849d86e9adf4c57b0d962e389182353e07019d2a35e27a07913fc9,unique,替换为 doctor-profile。
+image.png,0.65,b4682a021770fc372aa0f679d810917f9731f49055318eac82df4943ce5a8e5e,unique,替换为 attachment。
+lock-secondary.png,0.67,51d8c18ec459ef74754f9e95ea08202a6d79e231cfb24cbfa08b5665b26e59ff,unique,替换为 account-security；次要色由 tone 控制。
+lock.png,11.74,0141c12aa64939b2ae3f9c64470571814f9f75ecd59becb3d2eddb0f8705c1e3,DG-05,替换为 account-security；隐私场景使用 privacy。
+phone.png,1.07,37a4d1e53539c0f656632c10721ed512564c730da4b45a46fee41bdbb88997ac,unique,替换为 phone-bind。
+plus.png,0.23,050854c4e854e15410759957693ef6bf99ac33d43749ac4acf0dbff4409e65b2,unique,替换为 action-add。
+quick-followup.png,26.59,55878bb11f0215a3369a4d7d99240b62b39da8dc96c6b75a9518be48ddd992c1,unique,替换为 follow-up，删除位置型命名。
+quick-med.png,19.40,54ba9ef20e5da95a91bbbe902be58f6874cb36ff6515b901d60a0f7938897c3e,unique,替换为 medication；直接咨询不得继续复用。
+quick-metric.png,13.85,e196b89323b38ceca38e42aa186c1001ffb75b95e1e716e3055fed65a09026e5,unique,替换为 metric-record。
+quick-service.png,31.01,73a6f1e0274f489c86f6535b2023b5cccea59e13b55c895f3b86ad7fc69075e8,unique,替换为 service-package。
+quick-upload.png,28.38,3d87d1db32f5b01947cca1b30c5a8643602bb417dec1b6ce4e3e818dc032262b,unique,替换为 upload-record。
+replies.png,5.58,07dbc6d167876062f304902cab165ad75914bbff1a883185dd58e52352fb0889,unique,替换为 reply-record。
+search.png,0.84,80617f0840129de18fd8ba79d02dd7b9561e96f381c956f384ceb8c84fd36b7c,unique,保留语义，重绘为 search。
+send.png,1.00,4f07c0458546251030f436f13c8432e0c25b059f9d37df51261f6c588debbbdb,unique,替换为 action-send。
+shield.png,19.67,cdfd53efae68aa62725dd44754a2b113dc5b5ddfa0d0481e1eb102258930524c,DG-08,服务包使用 service-package；助手使用 health-assistant；服务中心使用 service-center。
+surgery.png,0.42,cb16b46167307048efc9f8c8465f737e3aea4ebfaf677ce1d4aaf7d71a4e7192,unique,替换为 postop-assessment。
+team.png,27.89,4309ff68ba574d63145ecdc170f12d44720d06a335a57638f84085efdead1198,DG-02,家庭成员使用 member-record；医生群使用 doctor-group。
+upload.png,2.98,b877a9f4fe9c154a2ab1933ee2e049119524d8f1f9d3f6d1915e3cd956b8cce5,unique,替换为 upload-record。
+user.png,0.95,88e739fa8a1c156fd2958fb9cd9087e8a6964aec789bd0ab65404374c6dc02a1,unique,底部导航使用 nav-profile；编辑资料使用 profile-edit。
+view-archive-btn.png,69.46,debfa8e15c11079699a55447fef89d92e2c71f1c8108f9bc1d16edf95d348c10,unique,删除文字栅格按钮；改为 AppButton 文本“查看档案”+ health-record 图标。

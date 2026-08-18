@@ -1,0 +1,67 @@
+# 密钥与本地配置
+.env
+.env.*
+**/_secrets/
+**/apiclient_key.pem
+**/wechat_pub_key.pem
+**/private-uploads/
+
+# 数据库与运行时
+*.db
+*.db-wal
+*.db-shm
+.logs/
+_shots/
+
+# 依赖
+node_modules/
+**/package-lock.json
+
+# 构建产物
+dist/
+dist-ssr/
+**/dist/build/
+
+# 临时部署/探测脚本（常含服务器密码）
+**/_run_*.py
+**/_probe_*.py
+**/_dbg_*.py
+**/_restore_*.py
+**/_set_*_env.py
+**/_fetch_*.py
+**/_restart_*.py
+**/_test_paramiko.py
+**/_check_server_path.py
+**/_run_*.js
+!**/_service_package_test.js
+!**/_mall_product_test.js
+!**/_wang_fracture_package_test.js
+
+# 备份与 handoff 大包
+patient-uniapp_backup_before_revert/
+patient-uniapp_cursor_wrong_server_backup_20260810/
+patient-uniapp_recovery_attempt1_20260810/
+*.zip
+
+# IDE / 工具缓存
+.cursor/
+.playwright-cli/
+.superpowers/
+.impeccable/
+**/__pycache__/
+.DS_Store
+Thumbs.db
+*.local
+*.pyc
+
+# SSH/探测输出
+**/_ssh_out/
+**/docs/superpowers/plans/_prod_env_*
+
+# 小程序构建临时日志
+**/_ac_*.txt
+
+# admin-ui 自动生成
+admin-ui/src/types/import/auto-imports.d.ts
+admin-ui/src/types/import/components.d.ts
+admin-ui/.auto-import.json

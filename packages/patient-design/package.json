@@ -1,0 +1,13 @@
+{
+  "name": "@chunyu/patient-design",
+  "version": "0.1.0",
+  "private": true,
+  "description": "春雨医生患者端共享设计令牌、图标与类型",
+  "main": "types/index.ts",
+  "exports": {
+    "./tokens.css": "./tokens.css",
+    "./tokens.json": "./tokens.json",
+    "./types": "./types/index.ts",
+    "./icons/*": "./icons/*"
+  }
+}

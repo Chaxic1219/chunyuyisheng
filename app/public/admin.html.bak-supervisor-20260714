@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>春雨医生社群 · 医助后台</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f0f2f5;color:#1a1a1a;font-size:14px;overflow:hidden}
+a{color:#07c160}
+.hidden{display:none!important}
+/* 登录 */
+.login{min-height:100vh;display:flex;align-items:center;justify-content:center}
+.login .box{background:#fff;padding:36px 34px;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.12);width:340px}
+.login h1{font-size:20px;margin-bottom:6px}
+.login p{color:#888;font-size:12.5px;margin-bottom:20px}
+.login input{width:100%;border:1px solid #e3e3e3;border-radius:8px;padding:11px 12px;font-size:14px;margin-bottom:12px;outline:none}
+.login button{width:100%;background:#07c160;color:#fff;border:none;border-radius:8px;padding:12px;font-size:15px;cursor:pointer}
+.login .err{color:#fa5151;font-size:12.5px;margin-top:8px;min-height:16px}
+/* 布局 */
+#appView{height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+.top{flex:0 0 54px;height:54px;background:#fff;border-bottom:1px solid #e8e8e8;display:flex;align-items:center;padding:0 20px;gap:16px;position:sticky;top:0;z-index:10}
+.top .brand{font-weight:700}
+.top .brand span{color:#07c160}
+.top .sp{flex:1}
+.top select{border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px}
+.top .who{color:#888;font-size:13px}
+.top .logout{border:1px solid #ddd;background:#fff;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px}
+.wrap{flex:1 1 auto;min-height:0;display:flex;max-width:1860px;width:100%;margin:0 auto;overflow:hidden} /* 放宽主体上限，与满宽顶栏协调，避免宽屏左右大片留白（窄屏行为不变，≤980 走响应式） */
+.nav{flex:0 0 190px;width:190px;align-self:stretch;padding:18px 12px;overflow-y:auto;overscroll-behavior:contain;background:#f0f2f5;border-right:1px solid #e7eaee;scrollbar-gutter:stable}
+.nav::-webkit-scrollbar{width:6px}
+.nav::-webkit-scrollbar-thumb{background:#d5dbe1;border-radius:999px}
+.nav::-webkit-scrollbar-track{background:transparent}
+.nav button{display:block;width:100%;text-align:left;border:none;background:none;padding:11px 14px;border-radius:8px;cursor:pointer;font-size:14px;color:#555;margin-bottom:3px}
+.nav button.on{background:#e7f7ee;color:#07c160;font-weight:600}
+.main{flex:1 1 auto;min-width:0;min-height:0;padding:18px 22px;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.main::-webkit-scrollbar{width:8px}
+.main::-webkit-scrollbar-thumb{background:#cfd6dd;border-radius:999px}
+.main::-webkit-scrollbar-track{background:transparent}
+.card{background:#fff;border-radius:12px;padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.card h2{font-size:16px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.card h2 .sub{font-weight:400;font-size:12.5px;color:#999}
+.stats{display:flex;gap:14px;flex-wrap:wrap}
+.stat{flex:1;min-width:120px;background:linear-gradient(135deg,#07c160,#0a9d6f);color:#fff;border-radius:12px;padding:16px 18px}
+.stat .n{font-size:28px;font-weight:700}
+.stat .l{font-size:12.5px;opacity:.9;margin-top:4px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #f0f0f0;vertical-align:top}
+th{color:#888;font-weight:500;font-size:12px}
+.tag{display:inline-block;white-space:nowrap;background:#eef;color:#557;padding:1px 8px;border-radius:10px;font-size:11.5px}
+.tag.green{background:#e7f7ee;color:#07a050}
+.tag.warn{background:#fff7e6;color:#b8860b}
+.tag.red{background:#fff0f0;color:#e03131}
+.tag.blue{background:#eaf4ff;color:#1769c0}
+.btn{border:none;border-radius:7px;padding:6px 12px;cursor:pointer;font-size:12.5px;white-space:nowrap}
+.btn.p{background:#07c160;color:#fff}
+.btn.g{background:#f0f2f5;color:#444}
+.btn.d{background:#fff0f0;color:#fa5151}
+.btn.s{padding:4px 9px;font-size:12px}
+.toolbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.toolbar select,.toolbar input{border:1px solid #ddd;border-radius:8px;padding:7px 10px;font-size:13px}
+.pill{border:1px solid #ddd;background:#fff;border-radius:16px;padding:5px 13px;font-size:12.5px;cursor:pointer}
+.pill.on{background:#07c160;border-color:#07c160;color:#fff}
+.empty{color:#aaa;text-align:center;padding:30px;font-size:13px}
+/* 主动提醒：导航角标 + 提醒列表 + 跳转高亮 */
+.nav-badge{display:inline-block;min-width:17px;height:17px;line-height:17px;text-align:center;background:#fa5151;color:#fff;border-radius:9px;font-size:11px;font-weight:700;padding:0 5px;margin-left:6px;vertical-align:middle}
+.rem-list{display:flex;flex-direction:column;gap:8px}
+.rem-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:1px solid #edf0f2;background:#fbfcfd;border-radius:10px;padding:9px 12px;cursor:pointer;font-size:13px}
+.rem-item:hover{border-color:#07c160;background:#effbf4}
+.rem-item .rem-sum{flex:1;color:#3f4650;line-height:1.5;white-space:normal;word-break:break-word}
+.rem-item .rem-time{color:#8b95a1;font-size:11.5px;white-space:nowrap}
+.row-flash td{animation:rowFlash 1.8s ease-out}
+@keyframes rowFlash{0%{background:#fff3cd}60%{background:#fff7e6}100%{background:transparent}}
+/* 弹层表单 */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal .m{background:#fff;border-radius:12px;width:560px;max-width:92vw;max-height:88vh;overflow:auto;padding:22px}
+.modal h3{font-size:16px;margin-bottom:14px}
+.fld{margin-bottom:12px}
+.fld label{display:block;font-size:12.5px;color:#666;margin-bottom:5px}
+.fld input,.fld select,.fld textarea{width:100%;border:1px solid #ddd;border-radius:8px;padding:9px 11px;font-size:13px;outline:none;font-family:inherit}
+.fld textarea{min-height:120px;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5}
+.fld .hint{font-size:11.5px;color:#aaa;margin-top:4px}
+.m-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:8px}
+.kv{font-size:13px;line-height:1.9}
+.kv b{color:#555;display:inline-block;min-width:84px}
+/* 运营策略台 */
+.ops-hero h2{margin-bottom:6px}.ops-hero p{color:#666;font-size:13px;line-height:1.7;max-width:980px}
+.ops-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
+.ops-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:12px 0 16px}
+.ops-kpi{border:1px solid #edf0f2;background:#fbfcfd;border-radius:10px;padding:12px 13px;min-width:0}
+.ops-kpi span{display:block;color:#888;font-size:12px;margin-bottom:5px}
+.ops-kpi b{display:block;font-size:22px;line-height:1.2;color:#17202a;word-break:break-word}
+.ops-kpi small{display:block;color:#8b95a1;font-size:11.5px;margin-top:6px;line-height:1.45}
+.ops-policy{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.ops-policy-item{border:1px solid #edf0f2;background:#fff;border-radius:10px;padding:11px 12px;min-width:0}
+.ops-policy-item span{display:block;color:#07a050;font-size:12px;font-weight:700;margin-bottom:6px}
+.ops-policy-item p{color:#3f4650;font-size:12.5px;line-height:1.65;word-break:break-word}
+.ops-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(360px,.9fr);gap:16px;align-items:start}
+.ops-section{min-width:0}.ops-section h2{flex-wrap:wrap}
+.ops-muted{color:#8b95a1;font-size:12px;line-height:1.55;margin-top:4px;max-width:620px;white-space:normal;word-break:break-word}
+.ops-mode{display:inline-flex;align-items:center;white-space:nowrap;border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:700}
+.ops-mode.pre{background:#e7f7ee;color:#07944b}.ops-mode.semi{background:#eef2ff;color:#4f46e5}.ops-mode.live{background:#fff5e6;color:#d97706}
+.cfg-explain{border:1px solid #dff3e8;background:#f6fffa;border-radius:12px;padding:12px 14px;margin-bottom:14px;color:#40504a;font-size:13px;line-height:1.7}
+.cfg-explain b{display:block;color:#078942;font-size:14px;margin-bottom:2px}.cfg-explain span{display:block;color:#5d6a64}
+.cfg-explain.danger{border-color:#ffd7d7;background:#fff8f8}.cfg-explain.danger b{color:#d93025}
+.cfg-workflow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0 0 12px}
+.cfg-step{border:1px solid #edf0f2;background:#fbfcfd;border-radius:12px;padding:11px 12px;color:#59636e;font-size:12.5px;line-height:1.55}
+.cfg-step b{display:block;color:#16202a;font-size:13.5px;margin-bottom:4px}.cfg-step.on{border-color:#b9ebd0;background:#f4fff8}
+.cfg-actionbar{position:sticky;bottom:12px;z-index:6;display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid #dff3e8;background:rgba(246,255,250,.97);backdrop-filter:blur(8px);border-radius:12px;padding:10px 12px;margin:14px 0 0;box-shadow:0 -6px 22px rgba(18,32,46,.08)}
+.cfg-action-copy{min-width:0}.cfg-action-copy b{display:block;color:#078942;font-size:14px;margin-bottom:3px}.cfg-action-copy b.dirty{color:#c26a00}.cfg-action-copy b.saved{color:#078942}.cfg-action-copy span{display:block;color:#52606d;font-size:12.5px;line-height:1.55;word-break:break-word}
+.cfg-action-buttons{flex:0 0 auto;margin:0}.cfg-action-buttons .btn{white-space:nowrap}
+.cfg-msg{margin-bottom:12px}
+.cfg-cards{display:grid;grid-template-columns:1fr;gap:12px}
+.cfg-card{border:1px solid #e8edf0;background:#fff;border-radius:12px;padding:13px 14px;box-shadow:0 1px 2px rgba(18,32,46,.03)}
+.cfg-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:10px}
+.cfg-card-head b{font-size:15px;color:#16202a}.cfg-card-head p{font-size:12.5px;color:#6f7b86;line-height:1.55;margin-top:3px}
+.cfg-status{flex:0 0 auto;border-radius:999px;background:#eef2f5;color:#52606d;padding:3px 9px;font-size:11.5px;font-weight:700}
+.cfg-status.ok{background:#e7f7ee;color:#07944b}.cfg-status.safe{background:#edf7ff;color:#1976d2}.cfg-status.semi{background:#fff5e6;color:#d97706}.cfg-status.danger{background:#fff0f0;color:#d93025}
+.cfg-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.cfg-meta span{border:1px solid #edf0f2;background:#fbfcfd;border-radius:9px;padding:8px 9px;color:#52606d;font-size:12px;line-height:1.5;min-width:0}
+.cfg-meta b{display:block;color:#07a050;font-size:11.5px;margin-bottom:3px}
+.cfg-vars{margin:0 0 10px;color:#7b8794;font-size:12px}
+.cfg-vars summary{display:inline-flex;align-items:center;cursor:pointer;color:#52606d;background:#f7f9fa;border:1px solid #edf0f2;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:700}
+.cfg-vars:not([open]) .cfg-var-body{display:none}
+.cfg-var-body{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.cfg-var-body span{display:inline-flex;align-items:center;gap:5px;background:#f7fbf8;border:1px solid #dcefe5;color:#52606d;border-radius:999px;padding:3px 8px}
+.cfg-var-body b{font-size:11.5px;color:#078942}
+.cfg-vars code{font-family:ui-monospace,Consolas,monospace;color:#078942}
+.cfg-field{width:100%;min-height:112px;border:1px solid #dfe5e8;border-radius:10px;padding:10px 11px;font-size:13px;line-height:1.65;font-family:inherit;resize:vertical;outline:none;background:#fff}
+.cfg-field:focus{border-color:#07c160;box-shadow:0 0 0 3px rgba(7,193,96,.10)}
+.cfg-field[readonly]{background:#f7f9fa;color:#7b8794}
+.cfg-readonly-cards{gap:10px}
+.cfg-read-card{background:#fbfcfd}
+.cfg-read-value{white-space:pre-wrap;word-break:break-word;background:#fff;border:1px solid #edf0f2;border-radius:10px;padding:10px 11px;color:#27323c;font-size:13px;line-height:1.7;max-height:170px;overflow:auto}
+.cfg-empty-value{display:block;color:#697684}.cfg-empty-value b{display:inline-block;color:#c26a00;margin-right:6px}
+.cfg-published-note{border:1px solid #dff3e8;background:#f6fffa;border-radius:12px;padding:11px 13px;margin-bottom:12px;font-size:13px;line-height:1.65;color:#40504a}
+.cfg-published-note b{display:block;color:#078942;margin-bottom:2px}.cfg-published-note.warn{border-color:#ffe5bd;background:#fffaf0}.cfg-published-note.warn b{color:#c26a00}
+.cfg-json-view{white-space:pre-wrap;word-break:break-word;background:#f7f9fa;border:1px solid #edf0f2;border-radius:10px;padding:12px;max-height:300px;overflow:auto;font-size:12px;font-family:ui-monospace,Consolas,monospace}
+.cfg-advanced{margin:14px 0;border:1px dashed #dfe5e8;border-radius:12px;padding:10px 12px;background:#fbfcfd}
+.cfg-advanced summary{cursor:pointer;color:#52606d;font-size:13px;font-weight:700}
+.cfg-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}
+/* ===== 医助后台 UI refresh：产品化外壳 + 运营工作台 ===== */
+:root{
+  --cy-green:#08bf6f;
+  --cy-green-strong:#05a85d;
+  --cy-green-soft:#eafaf2;
+  --cy-ink:#102033;
+  --cy-muted:#667789;
+  --cy-line:#e7edf3;
+  --cy-bg:#f5f7fa;
+  --cy-card:#fff;
+  --cy-shadow:0 10px 30px rgba(15,38,66,.06);
+}
+body{background:var(--cy-bg);color:var(--cy-ink);font-size:14px}
+a{color:var(--cy-green-strong)}
+.login{background:radial-gradient(circle at 48% 28%,#fff 0,#f5f8fb 42%,#edf2f6 100%)}
+.login .box{border:1px solid var(--cy-line);box-shadow:0 22px 70px rgba(16,32,51,.12)}
+.login h1{font-size:22px;color:var(--cy-ink)}.login h1::after{content:"";display:block;width:48px;height:4px;background:var(--cy-green);border-radius:4px;margin-top:10px}
+.login button{background:var(--cy-green)}
+.top{height:66px;flex-basis:66px;border-bottom:1px solid var(--cy-line);box-shadow:0 1px 0 rgba(16,32,51,.02);padding:0 26px;background:rgba(255,255,255,.96);gap:18px}
+.top .brand{display:flex;align-items:center;gap:10px;min-width:180px;font-weight:700;color:var(--cy-ink)}
+.top .brand b{display:block;font-size:18px;letter-spacing:.2px}.top .brand small{display:block;color:#7a8897;font-size:11.5px;font-weight:500;margin-top:1px}
+.brand-mark{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#0fcf7a,#06a85f);color:#fff!important;font-weight:800;box-shadow:0 8px 18px rgba(8,191,111,.22)}
+.top select{height:38px;min-width:230px;border-color:#dfe7ef;border-radius:10px;color:#1b2a3a;background:#fff;padding:0 38px 0 12px}
+.top .btn.g{height:34px;border:1px solid #e4ebf1;background:#f7fafc;border-radius:10px;color:#405065}
+.env-pill{display:inline-flex;align-items:center;gap:8px;height:32px;border:1px solid #e3f4eb;background:#f7fffb;color:#466054;border-radius:10px;padding:0 13px;font-size:12.5px;white-space:nowrap}
+.env-pill span,.env-pill i{display:inline-block;width:7px;height:7px;background:var(--cy-green);border-radius:50%;box-shadow:0 0 0 3px rgba(8,191,111,.12)}.env-pill i{box-shadow:none;width:5px;height:5px}
+.top .help{color:#5f6d7a;font-size:13px;white-space:nowrap}.top .who{color:#415166;font-size:14px}.top .logout{height:34px;border-color:#dfe7ef;border-radius:10px;color:#1f2d3d}
+.wrap{max-width:none;background:var(--cy-bg)}
+.nav{flex:0 0 208px;width:208px;background:#f8fafc;border-right:1px solid var(--cy-line);padding:18px 12px 16px}
+.nav-section{margin-bottom:18px}.nav-section:last-child{margin-bottom:0}
+.nav-title{font-size:12px;color:#92a0af;line-height:1;margin:0 10px 8px}
+.nav button{display:flex;align-items:center;gap:10px;height:40px;margin:0 0 4px;border-radius:10px;padding:0 12px;color:#465568;font-size:14px;transition:background .15s ease,color .15s ease,box-shadow .15s ease}
+.nav button:hover{background:#eef6f1;color:#12864f}.nav button.on{background:var(--cy-green-soft);color:var(--cy-green-strong);box-shadow:inset 3px 0 0 var(--cy-green);font-weight:700}
+.nav-ico{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:#eef3f8;color:#60758a;font-size:11px;font-weight:800;letter-spacing:0}.nav button.on .nav-ico{background:#d8f5e6;color:var(--cy-green-strong)}
+.nav-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nav-badge{margin-left:auto;background:#ff5f5f}
+.main{padding:20px 22px;background:var(--cy-bg)}
+.card{border:1px solid var(--cy-line);border-radius:14px;box-shadow:var(--cy-shadow);padding:18px 20px}
+.card h2{color:var(--cy-ink);font-size:17px}.card h2 .sub{color:#8190a0}
+.btn{border-radius:9px;padding:7px 13px;font-weight:600}.btn.p{background:var(--cy-green);color:#fff}.btn.p:hover{background:var(--cy-green-strong)}.btn.g{background:#f4f7fa;border:1px solid #e2eaf1}.btn.d{background:#fff4f2;color:#e34d3d;border:1px solid #ffd9d3}
+.pill,.config-tabs button{transition:all .15s ease}
+.config-page{display:block;min-width:0}
+.config-tabs{display:flex;gap:28px;align-items:center;background:#fff;border:1px solid var(--cy-line);border-radius:14px 14px 0 0;padding:0 18px;height:52px;box-shadow:0 8px 24px rgba(16,32,51,.04);overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.config-tabs::-webkit-scrollbar{height:0}
+.config-tabs button{height:52px;border:none;background:transparent;color:#516174;font-size:14px;cursor:pointer;border-bottom:2px solid transparent;padding:0 3px;position:relative;white-space:nowrap;flex:0 0 auto}
+.config-tabs button.on{color:var(--cy-green-strong);font-weight:800;border-bottom-color:var(--cy-green)}.config-tabs button span{margin-left:6px;background:#fff5e6;color:#c26a00;border-radius:999px;padding:1px 7px;font-size:11px}
+.cfg-actionbar{position:static;z-index:auto;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(220px,.36fr);align-items:center;gap:18px;border:1px solid var(--cy-line);border-top:none;background:#fff;border-radius:0 0 14px 14px;margin:0 0 12px;padding:14px 18px;box-shadow:var(--cy-shadow)}
+.cfg-action-title{font-size:18px;font-weight:800;color:var(--cy-ink)}.cfg-action-title span{font-size:13px;color:#7b8794;font-weight:400;margin-left:8px}
+.cfg-state-line{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.cfg-state-line span{display:inline-flex;align-items:center;background:#f5f9fc;border:1px solid #e6edf4;border-radius:999px;color:#607080;font-size:12px;padding:3px 9px}
+.cfg-action-copy{padding-left:16px;border-left:1px solid #eef2f5}.cfg-action-copy b{font-size:13.5px}.cfg-action-copy span{font-size:12px;color:#7b8794}
+.cfg-action-buttons{margin:0;justify-content:flex-end;flex-wrap:nowrap}.cfg-action-buttons .btn{height:36px}
+.cfg-msg{border-color:#e6edf4;background:#fbfcfd;margin-bottom:14px;color:#536273}
+.config-workbench{grid-template-columns:minmax(540px,1.08fr) minmax(430px,.92fr);gap:18px;align-items:start}
+.config-editor,.config-live-panel{margin-bottom:16px}.config-live-panel{position:sticky;top:18px;max-height:calc(100vh - 116px);overflow:auto}
+.config-live-panel::-webkit-scrollbar{width:6px}.config-live-panel::-webkit-scrollbar-thumb{background:#d7e0e8;border-radius:999px}
+.cfg-workflow{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.cfg-step{border-color:#e8eef4;background:#f9fbfd}.cfg-step.on{border-color:#c8f0d9;background:#f4fff8}
+.cfg-explain{border-color:#dff4e8;background:#f8fffb}
+.cfg-card{border-color:#e6edf4;border-radius:13px;padding:14px 16px;box-shadow:0 4px 16px rgba(16,32,51,.035)}
+.cfg-card-head b{font-size:15.5px}.cfg-status{background:#edf3f7}.cfg-status.ok{background:#def8ea}.cfg-status.semi{background:#fff2de}
+.cfg-meta{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.cfg-meta span{background:#fbfdff;border-color:#e8eef4;padding:9px 10px}.cfg-meta b{color:var(--cy-green-strong)}
+.cfg-field{border-color:#dfe8ef;border-radius:10px;line-height:1.7;font-size:13.5px;min-height:104px}.cfg-field:focus{border-color:var(--cy-green);box-shadow:0 0 0 3px rgba(8,191,111,.10)}
+.cfg-vars summary{background:#f7fafc;color:#607080;border-color:#e8eef4}.cfg-var-body span{background:#f6fbf8}
+.cfg-read-value{max-height:150px;border-color:#e8eef4}.cfg-published-note{border-color:#dff4e8;background:#f7fffb}.cfg-published-note.warn{border-color:#ffe0b0;background:#fffaf0}
+.cfg-advanced{border-color:#dfe8ef;background:#fbfdff}.cfg-json-view{background:#f8fafc;border-color:#e8eef4}
+.config-queue{margin-top:2px}.config-queue-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.config-queue-head h2{margin:0}
+.config-queue table td:nth-child(2){max-width:420px;white-space:normal;line-height:1.55}
+/* 运营配置：按医疗 SaaS 工作台重排，避免把技术字段暴露给运营 */
+.cfg-contextbar{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;background:#fff;border:1px solid var(--cy-line);border-top:none;border-bottom:none;padding:15px 18px 11px;box-shadow:0 8px 24px rgba(16,32,51,.035)}
+.cfg-context-help{color:#738294;font-size:12.5px;line-height:1.6;max-width:360px;text-align:right}
+.cfg-actionbar{position:sticky;top:0;z-index:8;grid-template-columns:auto minmax(240px,1fr) minmax(220px,.34fr);border-top:1px solid var(--cy-line);border-radius:0 0 14px 14px;background:rgba(255,255,255,.98);backdrop-filter:blur(10px);box-shadow:0 12px 28px rgba(16,32,51,.08)}
+.cfg-action-buttons{order:1;justify-content:flex-start}
+.cfg-action-copy{order:2;border-left:none;padding-left:0;display:flex;align-items:center;gap:10px;min-width:0}
+.cfg-action-copy b{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;background:#eafaf2;color:var(--cy-green-strong);border-radius:999px;padding:4px 10px;font-size:12.5px}
+.cfg-action-copy b::before{content:"";width:7px;height:7px;border-radius:999px;background:currentColor;display:inline-block}
+.cfg-action-copy b.dirty{background:#fff5e6;color:#c26a00}
+.cfg-action-copy b.saved{background:#eafaf2;color:var(--cy-green-strong)}
+.cfg-action-copy span{min-width:0;color:#687789;font-size:12.5px;line-height:1.5}
+.cfg-live-mini{order:3;border-left:1px solid #eef2f5;padding-left:16px;color:#687789;font-size:12px;line-height:1.45}
+.cfg-live-mini b{display:block;color:#1f2d3d;font-size:13px;margin-bottom:2px}
+.cfg-msg{border-left:3px solid #cfeedd;background:#fbfffd;color:#657386;padding:8px 11px;margin:0 0 14px;border-radius:9px;font-size:12.5px;line-height:1.6}
+.config-editor,.config-live-panel,.config-queue{border-radius:14px}
+.config-editor>h2,.config-live-panel>h2{padding-bottom:11px;border-bottom:1px solid #eef2f5;margin-bottom:14px}
+.cfg-workflow{display:none}
+.cfg-explain{display:flex;align-items:center;justify-content:space-between;gap:12px;border-radius:10px;padding:10px 12px;margin-bottom:12px}
+.cfg-explain b{display:inline;margin:0;font-size:13.5px}.cfg-explain span{font-size:12.5px}
+.cfg-card{box-shadow:none;border-radius:10px;padding:13px 14px}
+.cfg-card+.cfg-card{margin-top:0}
+.cfg-card-head{align-items:center;margin-bottom:8px}.cfg-card-head p{max-width:560px}
+.cfg-meta{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:8px}
+.cfg-meta span{padding:8px 10px;background:#fbfcfd}
+.cfg-vars{margin:-2px 0 9px}
+.cfg-vars summary{border-radius:8px;background:#f3f7f6;color:#236a4a;padding:5px 9px}
+.cfg-var-body{gap:7px;margin-top:8px}
+.cfg-var-body button{border:1px solid #d8eee3;background:#f7fffb;color:#167a4b;border-radius:8px;padding:5px 9px;font-size:12px;font-weight:700;cursor:pointer}
+.cfg-var-body button:hover{background:#eafaf2;border-color:#bdebd4}
+.cfg-field{min-height:92px}
+.cfg-read-card{background:#fff}.cfg-read-value{max-height:135px}
+.config-live-panel .cfg-card{padding:12px 13px}
+.config-live-panel .cfg-meta{grid-template-columns:repeat(3,minmax(0,1fr))}
+.config-live-panel .cfg-card-head p{display:none}
+.config-queue{border-top:3px solid #eafaf2}
+.config-queue table{background:#fff;border:1px solid #eef2f5;border-radius:10px;overflow:hidden}
+.config-queue th{background:#f8fafc;color:#657386}
+/* 社群工作台 */
+.community-hero h2{margin-bottom:6px}.community-hero p{color:#666;font-size:13px;line-height:1.7;max-width:980px}
+.community-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
+.community-note{background:#f7f9fa;border:1px solid #edf0f2;border-radius:10px;padding:10px 12px;color:#59636e;font-size:12.5px;line-height:1.7}
+.community-note code{background:#eef2f5;border-radius:5px;padding:1px 5px;color:#223}
+.community-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(360px,.8fr);gap:16px;align-items:start}
+.community-section{min-width:0}.community-section h2{flex-wrap:wrap}
+.community-group{border:1px solid #edf0f2;background:#fbfcfd;border-radius:10px;padding:12px 13px;margin-bottom:10px}
+.community-group:last-child{margin-bottom:0}
+.cg-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.cg-top b{font-size:15px}.cg-top span{display:block;color:#8b95a1;font-size:12px;margin-top:3px}
+.cg-meta{display:flex;gap:8px;flex-wrap:wrap;margin:9px 0}
+.cg-meta span{background:#fff;border:1px solid #edf0f2;border-radius:999px;padding:3px 9px;color:#607080;font-size:11.5px}
+.community-group p{color:#3f4650;font-size:12.5px;line-height:1.65}
+.community-sim .triage-btns{margin-top:2px}
+.community-section table td{white-space:normal}
+.community-section .risk{font-size:11.5px;padding:2px 8px}
+/* AI 分诊台 */
+.triage-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}
+.triage-head h2{font-size:20px;margin-bottom:6px}
+.triage-head h2 span{font-size:12.5px;color:#07a050;font-weight:500;margin-left:8px}
+.triage-head p{color:#777;font-size:13px;line-height:1.7}
+.triage-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.triage-mobile-tabs{display:none}
+.triage-shell{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:14px;align-items:start} /* min 0 防窄桌面横向溢出；桌面端在下方媒体查询里限定视口高度 */
+.triage-chat{padding:0;overflow:hidden}
+.triage-session-strip{display:flex;gap:8px;overflow-x:auto;padding:12px;border-bottom:1px solid #edf0f2;background:#fbfcfd}
+.triage-session-strip::-webkit-scrollbar{height:0}
+.session-chip{border:1px solid #e5e9ed;background:#fff;border-radius:10px;padding:8px 10px;min-width:150px;text-align:left;cursor:pointer;display:grid;grid-template-columns:auto 1fr;gap:4px 7px;align-items:center}
+.session-chip.on{border-color:#07c160;background:#effbf4;box-shadow:0 0 0 2px rgba(7,193,96,.08)}
+.session-chip b{font-size:13px;color:#222}
+.session-chip small{grid-column:2;color:#888;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:#07c160}
+.dot.medium{background:#ff9f43}.dot.high{background:#fa5151}
+.triage-chat-top{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid #edf0f2}
+.triage-chat-top b{font-size:16px}.triage-chat-top span:not(.risk){font-size:12px;color:#888;margin-left:8px}
+.risk{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:700;background:#e8f8ef;color:#07944b;white-space:nowrap}
+.risk.medium{background:#fff5e6;color:#d97706}.risk.high{background:#fff0f0;color:#e03131}
+.triage-thread{height:430px;overflow:auto;background:linear-gradient(#f7f8fa,#eef1f4);padding:16px}
+.triage-thread::-webkit-scrollbar{width:0}
+.tri-msg{max-width:78%;width:fit-content;margin-bottom:13px} /* fit-content：气泡收缩到内容宽度，短消息（如「你好」）不再撑满整行贴左 */
+.tri-msg .who{font-size:11.5px;color:#8a8f98;margin-bottom:4px}
+.tri-msg .txt{display:inline-block;max-width:100%;border-radius:10px;padding:10px 12px;font-size:14px;line-height:1.65;box-shadow:0 1px 2px rgba(0,0,0,.04);white-space:pre-wrap}
+.tri-msg .send-state{font-size:11px;color:#a0a4aa;margin-top:4px}
+.tri-msg.pat{margin-left:auto;text-align:right}.tri-msg.pat .who,.tri-msg.pat .send-state{text-align:right}
+.tri-msg.pat .txt{background:#95ec69;color:#111}
+.tri-msg.ai .txt{background:#fff;color:#222;border:1px solid #eef0f2}
+.tri-msg.ai.draft .txt{background:#fffdf3;color:#7a5b00;border:1px dashed #e3c65b} /* 待审科普草稿：虚线+琥珀底，区别于已发给患者的安全话 */
+.tri-msg.ai.draft .who{color:#b07a00}.tri-msg.ai.draft .send-state{color:#b07a00}
+.tri-msg.human .txt{background:#eaf4ff;color:#154b83;border:1px solid #cfe6ff}
+.tri-msg.sys{margin-left:auto;margin-right:auto;text-align:center;max-width:88%}
+.tri-msg.sys .txt{background:rgba(0,0,0,.06);color:#666;font-size:12.5px}
+.tri-attachments{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px;justify-content:flex-start}
+.tri-msg.pat .tri-attachments{justify-content:flex-end}
+.tri-img{display:block;width:92px;color:inherit;text-decoration:none}
+.tri-img img{width:92px;height:92px;border-radius:10px;object-fit:cover;background:#fff;border:1px solid rgba(0,0,0,.08);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.tri-img span{display:block;margin-top:3px;font-size:11px;color:#7b8188;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.triage-composer{border-top:1px solid #edf0f2;padding:14px 16px calc(16px + env(safe-area-inset-bottom,0px));background:#fff;box-sizing:border-box}
+.triage-composer label{display:block;font-size:12px;color:#666;margin-bottom:6px}
+.triage-composer textarea{width:100%;min-height:92px;border:1px solid #dde3e8;border-radius:10px;padding:10px 12px;resize:vertical;font-family:inherit;font-size:13.5px;line-height:1.6;outline:none}
+.triage-composer textarea:focus{border-color:#07c160;box-shadow:0 0 0 3px rgba(7,193,96,.09)}
+.triage-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.triage-side{display:grid;gap:14px}
+.triage-panel{margin-bottom:0}
+.triage-panel h2{justify-content:space-between}
+.judge-grid,.profile-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.judge-grid div,.profile-grid div{background:#f7f9fa;border:1px solid #edf0f2;border-radius:10px;padding:9px 10px;min-width:0}
+.judge-grid span,.profile-grid span{display:block;color:#888;font-size:11.5px;margin-bottom:4px}
+.judge-grid b,.profile-grid b{font-size:13px;color:#222;line-height:1.45;word-break:break-word}
+.chips{display:flex;gap:6px;align-items:center}
+.urg{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:700;white-space:nowrap;background:#e8f8ef;color:#07944b}
+.urg.soon{background:#fff5e6;color:#d97706}.urg.urgent{background:#fff0f0;color:#e03131}.urg.emergency{background:#fa5151;color:#fff}
+/* 结构化病历卡 */
+.intake-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.intake-row{background:#f7f9fa;border:1px solid #edf0f2;border-radius:10px;padding:8px 10px;min-width:0}
+.intake-row span{display:block;color:#888;font-size:11.5px;margin-bottom:3px}
+.intake-row b{font-size:13px;color:#222;line-height:1.45;font-weight:600;word-break:break-word}
+.intake-flags{margin-top:10px;font-size:12.5px;color:#e03131;background:#fff0f0;border-radius:8px;padding:7px 10px;line-height:1.6}
+.intake-acts{margin-top:8px;font-size:12.5px;color:#666;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.intake-acts .iact{background:#eef6ff;color:#1769c0;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600}
+.intake-src{margin-top:8px;font-size:11.5px;color:#aaa}
+.judge-reason{font-size:13px;color:#444;line-height:1.75;background:#fff9ed;border-left:3px solid #ffb020;padding:9px 10px;margin-top:12px;border-radius:0 8px 8px 0}
+.judge-basis{font-size:12px;color:#888;line-height:1.65;margin-top:8px}
+.mini-kv{max-height:78px;overflow:auto;margin-top:10px;background:#fbfbfc;border-radius:8px;padding:8px;font-size:12px;line-height:1.8;color:#666}
+.hist{display:flex;gap:10px;border-bottom:1px solid #f0f0f0;padding:8px 0;align-items:flex-start}
+.hist:last-child{border-bottom:none}
+.hist b{font-size:12px;color:#07a050;min-width:66px}
+.hist span{font-size:12px;color:#666;line-height:1.55}
+.triage-empty p{color:#777;line-height:1.8}
+/* 候补名单 */
+.wl-slot{border:1px solid #edf0f2;border-radius:10px;padding:12px 14px;margin-bottom:12px;background:#fbfcfd}
+.wl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:10px;flex-wrap:wrap}
+.wl-head b{font-size:15px}
+.wl-cnt{font-size:12.5px;color:#888;margin-left:6px}
+/* 随访队列 */
+.card h2 .btn{font-weight:600}
+.fq-wrap{display:grid;grid-template-columns:minmax(240px,.8fr) minmax(360px,1.2fr);gap:14px;align-items:start}
+.fq-list{display:flex;flex-direction:column;gap:8px;max-height:560px;overflow:auto}
+.fq-item{border:1px solid #e5e9ed;background:#fff;border-radius:10px;padding:10px 12px;text-align:left;cursor:pointer}
+.fq-item.on{border-color:#07c160;background:#effbf4;box-shadow:0 0 0 2px rgba(7,193,96,.08)}
+.fq-item .fq-top{display:flex;justify-content:space-between;align-items:center}
+.fq-item .fq-top b{font-size:14px}
+.fq-item .fq-tail{font-size:11.5px;color:#999}
+.fq-item .fq-plan{font-size:12.5px;color:#555;margin:3px 0}
+.fq-item .fq-next{font-size:12px;color:#888}
+.fq-item .fq-next.due{color:#d97706;font-weight:600}
+.fq-detail{border:1px solid #edf0f2;border-radius:10px;padding:14px;min-height:200px;background:#fbfcfd}
+.fq-dh b{font-size:15px}
+.fq-dsub{font-size:12px;color:#888;margin-top:3px}
+.fq-nodes{margin-top:12px;display:flex;flex-direction:column;gap:10px}
+.fq-node{border-left:3px solid #e5e9ed;padding:2px 0 2px 12px}
+.fq-node.due{border-left-color:#ff9f43}.fq-node.done,.fq-node.pushed{border-left-color:#07c160}
+.fq-n-t{font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.fq-n-date{font-size:12px;color:#999;font-weight:400}
+.fq-n-edu{font-size:12.5px;color:#444;line-height:1.6;margin-top:4px}
+.fq-n-rem{font-size:12.5px;color:#777;line-height:1.6;margin-top:3px}
+.fq-n-acts{display:flex;gap:8px;margin-top:7px}
+.tag.due{background:#fff5e6;color:#d97706}.tag.done,.tag.pushed{background:#e7f7ee;color:#07a050}.tag.upcoming{background:#eef;color:#778}
+/* 窄屏（含 iPad 横屏 1024 与手机）：内容区数据表横向滚动而非逐字挤压折行，列边界清晰 */
+@media (max-width:1180px){
+  .ops-grid,.community-grid{display:block}.ops-policy{grid-template-columns:1fr 1fr}.ops-kpis{grid-template-columns:1fr 1fr}
+  .config-workbench{display:block}.config-live-panel{position:static;max-height:none;overflow:visible}
+  .cfg-meta,.cfg-summary-grid{grid-template-columns:1fr}
+  .cfg-workflow{grid-template-columns:1fr}
+  .cfg-actionbar{display:block}.cfg-action-copy{border-left:none;padding-left:0;margin-top:10px}.cfg-action-buttons{margin-top:10px;justify-content:flex-start;flex-wrap:wrap}
+  .community-head{display:block}.community-head .btn{margin-top:10px}
+  .main table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}
+  .main table::-webkit-scrollbar{height:6px}
+  .main table::-webkit-scrollbar-thumb{background:#dde2e6;border-radius:3px}
+}
+@media (max-width:980px){ .fq-wrap{display:block}.fq-list{flex-direction:row;overflow-x:auto;max-height:none;margin-bottom:12px}.fq-item{min-width:200px;flex:0 0 auto} }
+@media (max-width: 980px){
+  /* 平板/手机：整页 100dvh 弹性链——顶栏+导航固定，内容区 .main 内部滚动（无 body 滚动、无魔法数字，自适应任意机型顶栏高度） */
+  html,body{height:100%;overflow-x:hidden}
+  #appView{display:flex;flex-direction:column;height:100dvh}
+  .top{flex:0 0 auto;position:static;height:auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;padding:8px 10px;gap:8px}.top .brand{grid-column:1/-1;width:auto}.top .sp,.top .who,.top .help,.env-pill{display:none}.top select{width:100%;min-width:0;max-width:none}.top .logout{padding:6px 10px}
+  .wrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;max-width:100%;overflow:hidden}
+  .nav{flex:0 0 auto;width:auto;display:flex;flex-wrap:nowrap;gap:8px;padding:8px 10px;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;border-right:none;border-bottom:1px solid #e8e8e8;scrollbar-gutter:auto}.nav-section{display:flex;flex:0 0 auto;gap:6px;margin:0}.nav-title{display:none}.nav button{white-space:nowrap;width:auto;flex:0 0 auto;margin-bottom:0;padding:8px 11px;height:36px}.nav-ico{display:none} /* 单行横向滑动，给小屏分诊区留出垂直空间 */
+  .nav::-webkit-scrollbar{height:4px;width:0}.nav::-webkit-scrollbar-thumb{background:#d5dbe1;border-radius:999px}
+  .card h2{flex-wrap:wrap} /* 窄屏标题与右侧按钮可换行，不被逐字挤断 */
+  .main{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px}
+  .triage-head{display:block}.triage-head p{display:none}.triage-actions{justify-content:flex-start;margin-top:10px}
+  .triage-mobile-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:0 0 10px}
+  .triage-mobile-tabs button{border:1px solid #e5e9ed;background:#fff;border-radius:10px;padding:8px 0;font-size:13px;color:#555}
+  .triage-mobile-tabs button.on{background:#07c160;border-color:#07c160;color:#fff;font-weight:700}
+  .triage-shell{display:block;min-width:0}.triage-side{display:block}.triage-chat,.triage-panel{display:none}
+  .triage-shell.active-chat .triage-pane-chat,.triage-shell.active-judgement .triage-pane-judgement,.triage-shell.active-profile .triage-pane-profile,.triage-shell.active-history .triage-pane-history{display:block}
+  .triage-shell.active-chat .triage-pane-chat{display:flex;flex-direction:column;height:clamp(500px,calc(100dvh - 284px),700px);min-height:0;overflow:hidden}
+  .triage-session-strip,.triage-chat-top,.triage-composer{flex:0 0 auto}
+  .triage-thread{flex:1 1 auto;height:auto;min-height:120px;max-height:none}.tri-msg{max-width:92%}.card{max-width:100%}.triage-panel{margin-bottom:0}
+  .triage-composer{padding:10px 12px calc(14px + env(safe-area-inset-bottom,0px))}
+  .triage-composer textarea{min-height:64px;max-height:108px}
+  .triage-btns{margin-top:8px;padding-bottom:2px}
+  .triage-shell.active-chat .triage-composer{position:static;z-index:auto;background:#fff;box-shadow:none} /* 发送框作为聊天卡底部区域参与 flex，不再覆盖消息 */
+}
+/* ===== 四端适配 ===== */
+/* 桌面/笔记本（≥981）：分诊台限定在一屏内，对话区填满+内部滚动、发送框钉底，右侧整列内部滚动 */
+@media (min-width:981px){
+  .triage-shell{height:calc(100vh - 176px);align-items:stretch}
+  .triage-chat{display:flex;flex-direction:column;min-height:0;margin-bottom:0}
+  .triage-session-strip,.triage-chat-top,.triage-composer{flex:0 0 auto}
+  .triage-thread{flex:1 1 auto;height:auto;min-height:120px}
+  .triage-side{overflow-y:auto;min-height:0;align-content:start;padding-right:6px}
+  .triage-side::-webkit-scrollbar{width:6px}
+  .triage-side::-webkit-scrollbar-thumb{background:#dde2e6;border-radius:3px}
+}
+/* 大屏（≥1500）：对话区文字气泡不要被拉太宽 */
+@media (min-width:1500px){ .tri-msg{max-width:68%} }
+/* 手机（≤560）：更紧凑、卡片单列、对话区按视口比例、统计卡单列 */
+@media (max-width:560px){
+  .top{padding:8px 12px;gap:10px}.top .brand{font-size:15px}
+  #activateBtn{display:none}
+  .main{padding:10px}.card{padding:14px}
+  .triage-head h2{font-size:18px}
+  .triage-actions{display:none}
+  .triage-mobile-tabs{gap:6px}
+  .triage-shell.active-chat .triage-pane-chat{height:clamp(500px,calc(100dvh - 230px),640px)}
+  .triage-session-strip{padding:8px}.session-chip{min-width:126px;padding:7px 9px}
+  .triage-chat-top{padding:10px 14px}
+  .triage-composer{padding:10px 12px calc(14px + env(safe-area-inset-bottom,0px))}
+  .triage-composer label{display:none}
+  .triage-composer textarea{height:52px;min-height:52px;max-height:52px;resize:none}
+  .triage-btns{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+  .triage-btns .btn{width:100%;padding:6px 8px;font-size:12px}
+  .judge-grid,.profile-grid,.intake-grid{grid-template-columns:1fr}
+  .ops-head{display:block}.ops-head .btn{margin-top:10px}.ops-policy,.ops-kpis{grid-template-columns:1fr}
+  .cfg-card{padding:12px}.cfg-card-head{display:block}.cfg-status{display:inline-flex;margin-top:8px}.cfg-field{min-height:96px}
+  .cfg-action-buttons .btn{flex:1 1 calc(50% - 8px)}
+  .stat{min-width:100%}
+  .modal .m{padding:16px}
+  .row3{flex-direction:column;gap:8px} /* 弹层内「机器人/匹配/启用」「slug/姓名」等多列行手机端竖排，不再被压成超窄列 */
+}
+/* === v2.1 一页闭环分诊台 === */
+.triage-v21-toolbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.triage-v21-shell{display:grid;grid-template-columns:340px 1fr;gap:16px;align-items:start;min-height:calc(100vh - 220px)}
+.triage-v21-left{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.04);overflow-y:auto;max-height:calc(100vh - 220px)}
+.triage-v21-right{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.04);padding:18px 20px;overflow-y:auto;max-height:calc(100vh - 220px)}
+.triage-msg-item{padding:12px 14px;border-bottom:1px solid #f5f5f5;cursor:pointer;transition:background .15s}
+.triage-msg-item:hover{background:#f7faf9}
+.triage-msg-item.triage-msg-active{background:#effbf4;border-left:3px solid #07c160}
+.triage-msg-top{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.triage-msg-level{font-size:14px}
+.triage-msg-name{font-weight:600;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.triage-name-link{color:#07a050;cursor:pointer;text-decoration:underline dotted}
+.triage-name-link:hover{color:#059669}
+.triage-msg-time{color:#aaa;font-size:11.5px;white-space:nowrap}
+.triage-msg-text{color:#666;font-size:12.5px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.triage-profile-card{background:#f8fafb;border:1px solid #edf0f2;border-radius:10px;padding:12px 14px;margin-bottom:12px}
+.triage-profile-card strong{font-size:14px}
+.triage-profile-card .sub{display:block;color:#999;font-size:12px;margin-top:4px}
+.triage-multi-hint{background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px}
+.triage-detail-card{background:#f8fafb;border:1px solid #edf0f2;border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.triage-detail-meta{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.triage-detail-text{font-size:15px;line-height:1.7;color:#1a1a1a}
+.triage-reply-section{margin-bottom:16px}
+.triage-reply-section label{display:block;font-size:12.5px;color:#666;margin-bottom:6px}
+.triage-reply-input{width:100%;min-height:100px;border:1px solid #dde3e8;border-radius:10px;padding:12px;font-family:inherit;font-size:13.5px;line-height:1.6;resize:vertical;outline:none}
+.triage-reply-input:focus{border-color:#07c160;box-shadow:0 0 0 3px rgba(7,193,96,.09)}
+.triage-reply-actions{display:flex;gap:8px;margin-top:10px}
+.triage-history-section{border-top:1px solid #f0f0f0;padding-top:14px}
+.triage-history-section h3{font-size:14px;margin-bottom:10px}
+.triage-history-list{display:flex;flex-direction:column;gap:6px}
+.triage-history-item{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:6px 0;border-bottom:1px solid #fafafa}
+.triage-history-item .sub{color:#aaa;min-width:80px}
+.triage-history-item .triage-msg-text{flex:1;color:#555}
+.btn-sm{padding:4px 10px;font-size:12px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle;margin-right:2px}
+.dot-red{background:#fa5151}
+.dot-orange{background:#f97316}
+.dot-yellow{background:#eab308}
+.dot-green{background:#07c160}
+.dot-gray{background:#ccc}
+@media(max-width:768px){
+  .triage-v21-shell{grid-template-columns:1fr;gap:10px}
+  .triage-v21-left{max-height:40vh}
+  .triage-v21-right{max-height:none}
+}
+</style>
+</head>
+<body>
+  <!-- 登录 -->
+  <div class="login" id="loginView">
+    <div class="box">
+      <h1>春雨医患通</h1>
+      <p>医助运营工作台 · AI 分诊与社群服务闭环</p>
+      <input id="lu" placeholder="用户名" value="admin" />
+      <input id="lp" type="password" placeholder="密码" />
+      <button id="loginBtn">登录</button>
+      <div class="err" id="loginErr"></div>
+    </div>
+  </div>
+
+  <!-- 主体 -->
+  <div id="appView" class="hidden">
+    <div class="top">
+      <div class="brand"><span class="brand-mark">春</span><div><b>春雨医患通</b><small>医助运营工作台</small></div></div>
+      <select id="docSel" title="当前操作的医生"></select>
+      <button class="btn g s" id="activateBtn">设为上线医生</button>
+      <div class="env-pill"><span></span>线上环境 <i></i> 服务正常</div>
+      <div class="sp"></div>
+      <span class="help">帮助中心</span>
+      <span class="who" id="who"></span>
+      <button class="logout" id="passwordBtn">改密码</button>
+      <button class="logout" id="logoutBtn">退出</button>
+    </div>
+    <div class="wrap">
+      <div class="nav" id="nav"></div>
+      <div class="main" id="main"></div>
+    </div>
+  </div>
+
+  <div id="modalRoot"></div>
+  <script src="src/admin.js"></script>
+
+<script>
+// 分诊台手动回复功能 [2026-07-13]
+setInterval(function(){
+  if(document.getElementById("triageManualReplyBox")) return;
+  // 找到"标记已处理"按钮
+  var btns = document.querySelectorAll("button");
+  var target = null;
+  btns.forEach(function(b){ if(b.textContent.trim()==="标记已处理") target = b; });
+  if(!target) return;
+  var container = target.parentElement;
+  if(!container) return;
+  var div = document.createElement("div");
+  div.id = "triageManualReplyBox";
+  div.style.cssText = "margin-top:14px;padding-top:14px;border-top:1px solid #e8e8e8";
+  div.innerHTML = "<div style=\"font-size:13px;color:#666;margin-bottom:6px\">✍️ 手动回复患者（发送到群）</div>"
+    + "<textarea id=\"triageManualReply\" placeholder=\"输入回复内容...\" style=\"width:100%;min-height:70px;border:1px solid #ddd;border-radius:8px;padding:10px 12px;font-size:13px;font-family:inherit;resize:vertical\"></textarea>"
+    + "<button onclick=\"sendTriageManualReply()\" style=\"margin-top:8px;background:#07c160;color:#fff;border:none;border-radius:8px;padding:8px 20px;font-size:13px;cursor:pointer\">发送回复到群</button>";
+  container.parentElement.appendChild(div);
+}, 500);
+
+async function sendTriageManualReply(){
+  var ta = document.getElementById("triageManualReply");
+  if(!ta || !ta.value.trim()){ alert("请输入回复内容"); return; }
+  // 从页面 URL hash 或 DOM 获取 session id
+  var cards = document.querySelectorAll("[data-confirm]");
+  var sid = null;
+  if(cards.length) sid = cards[0].getAttribute("data-confirm");
+  if(!sid){
+    // 尝试从当前高亮的会话列表项获取
+    var active = document.querySelector(".on[data-id]");
+    if(active) sid = active.getAttribute("data-id");
+  }
+  if(!sid){ alert("未找到当前分诊会话 ID"); return; }
+  try {
+    var res = await fetch("/api/admin/triage/"+sid+"/manual-reply", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({text: ta.value.trim()})
+    });
+    var r = await res.json();
+    if(r && r.ok){ ta.value=""; alert("✅ 已发送到群"); location.reload(); }
+    else { alert("发送失败："+(r.error||"未知错误")); }
+  } catch(e){ alert("发送异常："+e.message); }
+}
+</script>
+
+</body>
+</html>

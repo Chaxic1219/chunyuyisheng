@@ -1,0 +1,221 @@
+
+> chunyu-patient-uniapp@0.0.0 dev:h5
+> uni --host 0.0.0.0 --port 4173
+
+Please note that in running mode, due to log output, sourcemap, and uncompressed source code, the performance and package size are not as good as release mode.
+Vite is compiled on demand, and clicking on an uncompiled page at runtime will compile first and then load, resulting in a slower display, and there is no such problem after release.
+Compiler version: 4.84（vue3）
+Compiling...
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+Port 4173 is in use, trying another one...
+[36m
+  vite v5.2.8[39m[32m dev server running at:
+[39m
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://198.18.0.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+
+  [36mready in 1086ms.[39m
+
+[2m13:48:27[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/index/index.vue, /src/pages/index/index.vue?vue&type=style&index=0&scoped=83a5a03c&lang.css[22m
+[2m13:50:43[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/index/index.vue[22m
+[2m14:44:47[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/AppIcon.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/index/index.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/index/index.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.vue?vue&type=style&index=0&lang.css[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/AppIcon.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.vue, /src/pages/index/index.vue, /src/components/AppIcon.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.vue, /src/pages/index/index.vue, /src/components/AppIcon.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/index/index.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/index/index.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.vue, /src/pages/index/index.vue, /src/components/AppIcon.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.vue, /src/pages/index/index.vue, /src/components/AppIcon.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/AppIcon.vue[22m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.vue?vue&type=style&index=0&lang.css[22m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m15:05:10[22m [36m[1m[vite][22m[39m server restarted.
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+[2m15:05:10[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+Re-optimizing dependencies because vite config has changed
+[2m15:05:11[22m [36m[1m[vite][22m[39m server restarted.
+[2m15:05:11[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+[2m15:05:11[22m [36m[1m[vite][22m[39m server restarted.
+[2m15:53:42[22m [36m[1m[vite][22m[39m [32mpage reload [39m[2mdesign-assets/iconfont-2026-08-10/font_5221545_6bc9w9cqgmp/demo_index.html[22m
+[2m16:02:24[22m [36m[1m[vite][22m[39m [32mpage reload [39m[2msrc/static/consult-ui/zip/font_5221545_6bc9w9cqgmp/demo_index.html[22m
+[2m16:10:12[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m16:10:13[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+[2m16:10:13[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m16:10:13[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m16:10:13[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+[2m16:10:13[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m16:10:13[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:10:13[22m [36m[1m[vite][22m[39m server restarted.
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://198.18.0.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://198.18.0.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://198.18.0.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://198.18.0.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://198.18.0.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://198.18.0.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://198.18.0.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+[2m16:10:13[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+[2m16:10:14[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:13:14[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m16:13:14[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:13:14[22m [36m[1m[vite][22m[39m server restarted.
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.223.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.32.1:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://192.168.0.100:[1m4174[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.25.48.1:[1m4174[22m/[39m
+[2m16:13:14[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m16:13:14[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+[2m16:13:15[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:13:15[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:13:45[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m16:13:45[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m16:13:45[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+[2m16:13:45[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m16:13:45[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:13:45[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:13:46[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:13:46[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:14:32[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m16:14:32[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:14:32[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:14:32[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+[2m16:14:32[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m16:14:32[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m16:14:33[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:14:33[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:17:24[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m16:17:24[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:17:24[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:17:24[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m16:17:24[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:17:24[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:17:25[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+[2m16:17:25[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:20:05[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:20:05[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:20:05[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:20:05[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:20:06[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+[2m16:20:06[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:21:52[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+[2m16:21:52[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-wxss-plugin.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:21:53[22m [36m[1m[vite][22m[39m server restarted.
+[2m16:21:53[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m16:21:53[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+[2m16:21:53[22m [36m[1m[vite][22m[39m [32mscripts\sanitize-mp-css.mjs changed, restarting server...[39m
+
+uni-app 有新版本发布，请执行 `npx @dcloudio/uvm@latest` 更新，更新日志详见：https://download1.dcloud.net.cn/hbuilderx/changelog/5.23.2026080626.html
+
+欢迎将web站点部署到uniCloud前端网页托管平台，高速、免费、安全、省心，详见：https://uniapp.dcloud.io/uniCloud/hosting
+[2m16:21:53[22m [36m[1m[vite][22m[39m server restarted.

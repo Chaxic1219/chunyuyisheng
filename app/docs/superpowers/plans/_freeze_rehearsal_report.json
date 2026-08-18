@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "diffs": [],
+  "afterMp": [
+    "mp_ai_audit",
+    "mp_data_requests",
+    "mp_private_files",
+    "mp_sessions",
+    "mp_storage_scopes"
+  ],
+  "revokedNonNull": 0,
+  "integrity": [
+    {
+      "integrity_check": "ok"
+    }
+  ],
+  "childStatus": 0,
+  "stdoutTail": "[db-freeze] skip community_group_doctors primary backfill\n[db-freeze] skip applySeedPatches\n[db-freeze] skip applyOpsDefaults\n[db-freeze] skip applyHealthChatDemoKnowledge\n[db-freeze] skip applyCommunityDefaults\n[db-freeze] skip applyHospitalDefaults\n[db-freeze] skip applyPatientBackfill\n[db-freeze] skip reconcileQiweIdentityPersons-boot\n[db-freeze] skip afterDoctorProvisioned-boot\n[db-freeze] skip mergeDuplicateQiweGroups\n[db-freeze] skip zhou-weapp-sync-deferred\n"
+}

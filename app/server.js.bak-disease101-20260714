@@ -1,0 +1,2906 @@
+/* 春雨医生社群 · 本地全栈服务（纯 Node，零依赖）
+   运行：node server.js  →  http://localhost:3000 （患者端）/ /admin （医助后台） */
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const { db, hashPw, resolvePatient } = require("./db.js");
+const triage = require("./triage.js");
+const followup = require("./followup.js");
+const community = require("./community.js");
+const wecom = require("./wecom.js");
+const qiwe = require("./qiwe.js");
+const qiweBridge = require("./qiwe_bridge.js");
+const patientReply = require("./patient_reply.js");
+const authz = require("./authz.js");
+const { maskPII, maskPIIStrict, submitWhitelistForType, maskPayloadExceptWhitelist } = require("./pii.js");   // PII 掩码单一模块（生产DB架构 v1.0 §3-4，2026-07-04）：本地副本已删，与 triage.js 共用同一实现防漂移
+
+const PORT = process.env.PORT || 3000;
+const SMS_DEMO = process.argv.includes("--demo") || process.env.SMS_DEMO === "1"; // 演示态：/api/sms/send 明文返回验证码便于本地体验；默认关，生产不泄露（架空本人验证门控）
+// 仅当显式传入 --demo 才注入（不随 SMS_DEMO 环境变量），便于本地/集成测试；生产/非 --demo 必须显式配置 COMMUNITY_WEBHOOK_TOKEN，否则 fail-closed 必拒。
+const COMMUNITY_DEMO_TOKEN = process.argv.includes("--demo") ? "demo-community-token" : "";
+// QiWe 回调密钥的演示态兜底：仅 --demo 注入；生产/非 --demo 必须显式配置 callbackSecret，否则 qiweSecretOk fail-closed 必拒。
+const QIWE_DEMO_SECRET = process.argv.includes("--demo") ? "demo-qiwe-secret" : "";
+const PUB = path.join(__dirname, "public");
+const sessions = new Map();            // token -> {adminId, username, createdAt, lastSeenAt, expiresAt}
+const smsCodes = new Map();            // phone -> {code, expiresAt}
+const smsThrottle = new Map();          // phone -> lastSentAt（与验证码生命周期解耦的发送节流，防绕过）
+const loginFailures = new Map();        // key(username+ip) -> {count, firstAt, lockedUntil}
+const wechatTokenCache = { value:"", expiresAt:0 };
+const wechatTicketCache = { value:"", expiresAt:0 };
+const now = () => new Date().toISOString();
+function envMs(name, fallback, min){
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= (min || 0) ? n : fallback;
+}
+const ADMIN_SESSION_TTL_MS = envMs("ADMIN_SESSION_TTL_MS", 12 * 60 * 60 * 1000, 5 * 60 * 1000);
+const ADMIN_SESSION_COOKIE_MAX_AGE = Math.max(60, Math.floor(ADMIN_SESSION_TTL_MS / 1000));
+const ADMIN_LOGIN_FAIL_WINDOW_MS = envMs("ADMIN_LOGIN_FAIL_WINDOW_MS", 10 * 60 * 1000, 60 * 1000);
+const ADMIN_LOGIN_LOCK_MS = envMs("ADMIN_LOGIN_LOCK_MS", 10 * 60 * 1000, 60 * 1000);
+const ADMIN_LOGIN_MAX_FAILURES = Math.max(3, Number(process.env.ADMIN_LOGIN_MAX_FAILURES || 5) || 5);
+const AUDIT_SECRET_KEY_RE = /(secret|token|password|passwd|authorization|bearer|api[_-]?key|callbackSecret|callback_secret|encodingAESKey|aesKey|robot[_-]?key|webhook|guid|salt|hash)/i; // robotKey/webhook：企微群机器人发送密钥（2026-07-09 洞修——此前 wecom/config 审计 before/after 明文落 robotKey）
+
+/* ---------- 工具 ---------- */
+const MIME = { ".html":"text/html; charset=utf-8", ".css":"text/css; charset=utf-8", ".js":"application/javascript; charset=utf-8", ".json":"application/json; charset=utf-8", ".svg":"image/svg+xml", ".png":"image/png", ".jpg":"image/jpeg", ".jpeg":"image/jpeg", ".webp":"image/webp", ".ico":"image/x-icon" };
+function send(res, code, body, type){ res.writeHead(code, { "Content-Type": type||"application/json; charset=utf-8" }); res.end(body); }
+function json(res, code, obj){ send(res, code, JSON.stringify(obj)); }
+const MAX_BODY = 1 * 1024 * 1024; // 1MB：医疗表单/消息通常 <1MB，超限停止累积（内存封顶，防 OOM）
+const MESSAGE_MAX_BODY = 6 * 1024 * 1024; // 在线咨询允许最多 3 张压缩图片/报告，其他接口仍保持 1MB。
+function parseBody(req, maxBytes){ return new Promise(r=>{ let chunks=[],len=0,over=false; const limit=maxBytes || MAX_BODY;
+  req.on("data",c=>{ len+=c.length; if(len>limit){ over=true; return; } chunks.push(c); });
+  req.on("end",()=>{ if(over) return r({ __oversize:true }); const d=Buffer.concat(chunks).toString("utf8"); try{ r(d?JSON.parse(d):{}); }catch(e){ r({}); } });
+  req.on("error",()=>r({})); }); }
+function readRaw(req, maxBytes){ return new Promise(r=>{ let chunks=[],len=0,over=false; const limit=maxBytes || MAX_BODY;
+  req.on("data",c=>{ len+=c.length; if(len>limit){ over=true; return; } chunks.push(c); });
+  req.on("end",()=>r(over?"":Buffer.concat(chunks).toString("utf8")));
+  req.on("error",()=>r("")); }); } // 企微回调是 XML（非 JSON），按原文读取后交 wecom 验签解密
+/* 大整数 ID 保真（真实抓包实锤 2026-07-03·甲方真机）：真实 qiweapi 推送的 senderId/receiverId/fromRoomId 是数字非字符串，
+   且测试群 roomId 10730375163571533（17 位）超 JS 安全整数（Number.isSafeInteger=false）——JSON.parse 后丢精度变 …532，
+   String 化后与 qiwe_configs.test_to_id 白名单 "10730375163571533" 失配 → 真实群消息被 idAllowed→outside_test_scope 误挡。
+   修：在 JSON.parse **之前**把 JSON **值位置**上 15 位及以上的纯数字加引号串化（保精度）。15 位阈值远超时间戳秒级 10 位、覆盖
+   qiweapi userId/roomId/corpId 16 位；seq 等被串化无碍——下游 normalizeEvent 的 id()/clean() 本就 String 化。
+   ⚠ codex 反例A（2026-07-03）：纯正则不知自己在不在字符串里——患者文本如 "身份证:110101199003074321,请查"（18 位身份证在医疗消息极常见）
+   会被误命中 → 替换后 JSON 非法 → parseBodyBigIntSafe 兜底 {} → 真实消息丢失。故改为【字符串感知单遍扫描】（零依赖）：
+   维护 inString（遇未转义 " 翻转；\ 转义跳下一字符），仅在 inString=false 时，对「值起始位（前一非空白字符是 : [ ,）的纯数字串、长度≥15、
+   后随(跳空白) , } ]」包引号。字符串内部的任何数字（身份证/手机号/正文）绝不触碰。 */
+function preserveBigIntIds(rawText){
+  const s = String(rawText == null ? "" : rawText);
+  let out = "", inString = false;
+  for(let i = 0; i < s.length; i++){
+    const ch = s[i];
+    if(inString){
+      out += ch;
+      if(ch === "\\"){ if(i + 1 < s.length){ out += s[i + 1]; i++; } }   // 转义：原样带走下一字符（含 \" \\ 等），不进出串判定
+      else if(ch === '"') inString = false;                             // 未转义引号 → 出串
+      continue;
+    }
+    if(ch === '"'){ out += ch; inString = true; continue; }             // 入串
+    // 值起始判定：仅当前一个非空白字符是 : [ ,（JSON 里紧跟值的位置）才把数字视为「值」，避免误伤 key 或普通位置
+    if(ch >= "0" && ch <= "9"){
+      let k = out.length - 1;
+      while(k >= 0 && (out[k] === " " || out[k] === "\t" || out[k] === "\n" || out[k] === "\r")) k--;
+      const prev = k >= 0 ? out[k] : "";
+      if(prev === ":" || prev === "[" || prev === ","){
+        let j = i;
+        while(j < s.length && s[j] >= "0" && s[j] <= "9") j++;           // 吃完整段数字
+        const digits = s.slice(i, j);
+        // 后随（跳空白）必须是 , } ] 之一才是完整的 JSON 数字值（排除 12345.6 小数、12345e3 科学计数、12345abc 等非纯整数值）
+        let t = j;
+        while(t < s.length && (s[t] === " " || s[t] === "\t" || s[t] === "\n" || s[t] === "\r")) t++;
+        const after = t < s.length ? s[t] : "";
+        if(digits.length >= 15 && (after === "," || after === "}" || after === "]")){
+          out += '"' + digits + '"';
+          i = j - 1;                                                     // 跳过已消费的数字段（for 的 i++ 会落到 j）
+          continue;
+        }
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+/* 与 parseBody 同款读流 + oversize 语义（照抄 parseBody 写法，parseBody 本身零改动），仅在 JSON.parse 前加大整数保真。专用于 qiwe 回调路由。 */
+function parseBodyBigIntSafe(req, maxBytes){ return new Promise(r=>{ let chunks=[],len=0,over=false; const limit=maxBytes || MAX_BODY;
+  req.on("data",c=>{ len+=c.length; if(len>limit){ over=true; return; } chunks.push(c); });
+  req.on("end",()=>{ if(over) return r({ __oversize:true }); const d=Buffer.concat(chunks).toString("utf8"); try{ r(d?JSON.parse(preserveBigIntIds(d)):{}); }catch(e){ r({}); } });
+  req.on("error",()=>r({})); }); }
+function cookies(req){ const o={}; (req.headers.cookie||"").split(";").forEach(p=>{ const i=p.indexOf("="); if(i>0) o[p.slice(0,i).trim()]=decodeURIComponent(p.slice(i+1).trim()); }); return o; }
+function adminRow(id){
+  return db.prepare("SELECT id,username,role,active,display_name,note,created_at,updated_at,last_login_at,password_changed_at,disabled_at,disabled_by FROM admins WHERE id=?").get(+id);
+}
+function validAdminRole(role){
+  return authz.validAdminRole(role);
+}
+function activeAdminRow(a){
+  return !!(a && a.active !== 0 && validAdminRole(a.role));
+}
+function isSuperAdminRow(a){
+  return activeAdminRow(a) && authz.isSuperRole(a.role);
+}
+function buildSession(a){
+  const ts = Date.now();
+  return { adminId:a.id, username:a.username, role:a.role || "super", createdAt:ts, lastSeenAt:ts, expiresAt:ts + ADMIN_SESSION_TTL_MS };
+}
+function sessionCookie(req, token, maxAge){
+  const parts = [`sid=${encodeURIComponent(token)}`, "HttpOnly", "Path=/", "SameSite=Lax", `Max-Age=${maxAge}`];
+  const publicOrigin = String(process.env.PUBLIC_ORIGIN || "");
+  const xfProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  if(process.env.ADMIN_COOKIE_SECURE === "1" || xfProto === "https" || publicOrigin.startsWith("https://")) parts.push("Secure");
+  return parts.join("; ");
+}
+function authed(req){
+  const t = cookies(req).sid;
+  if(!t) return null;
+  const s = sessions.get(t);
+  if(!s) return null;
+  const ts = Date.now();
+  if(!s.expiresAt || s.expiresAt <= ts){ sessions.delete(t); return null; }
+  const a = adminRow(s.adminId);
+  if(!activeAdminRow(a)){ sessions.delete(t); return null; }
+  s.username = a.username;
+  s.role = a.role || "super";
+  s.lastSeenAt = ts;
+  s.expiresAt = ts + ADMIN_SESSION_TTL_MS;
+  return s;
+}
+function isPhone(phone){ return /^1[3-9]\d{9}$/.test(phone||""); }
+const SUBMIT_TYPES = new Set(["联络表","加号","住院预约","story"]); // /api/submit 允许的患者提交类型白名单（排除 口碑/分诊备注 等受门控或系统内部类型，防伪造）
+const SUBMIT_FORM_KEYS = { "联络表":"contactForm", "加号":"addNumber", "住院预约":"admission" }; // type → 医生 content 表单配置块（④存储侧脱敏按其 textarea 字段分类自由文本，见 pii.freeTextLabels）
+function contentForDoctor(doctorId){
+  const row = db.prepare("SELECT content FROM doctors WHERE id=?").get(doctorId);
+  if(!row) return null;
+  try{ return JSON.parse(row.content||"{}"); }catch(e){ return {}; }
+}
+function hasContactFormForPhone(doctorId, phone){
+  const p = String(phone || "").trim();
+  if(!isPhone(p)) return false;
+  const rows = db.prepare("SELECT payload FROM submissions WHERE doctor_id=? AND type='联络表' AND payload LIKE ? ORDER BY id DESC LIMIT 50").all(doctorId, `%${p}%`);
+  return rows.some(row=>{
+    try{
+      const payload = JSON.parse(row.payload || "{}");
+      return String(payload["手机号"] || payload.phone || "").trim() === p;
+    }catch(e){
+      return false;
+    }
+  });
+}
+function verifySms(phone, code){
+  const rec = smsCodes.get(phone);
+  if(!rec) return "请先获取短信验证码";
+  if(rec.expiresAt < Date.now()){ smsCodes.delete(phone); return "验证码已过期，请重新获取"; }
+  if(rec.code !== String(code||"").trim()){
+    rec.attempts = (rec.attempts || 0) + 1;
+    if(rec.attempts >= 5){ smsCodes.delete(phone); return "验证码错误次数过多，请重新获取"; }
+    return "短信验证码错误";
+  }
+  smsCodes.delete(phone);
+  smsThrottle.delete(phone); // 成功消费后清节流：允许同号为下一步合法动作立即再取码；锁定/过期不清节流，仍挡暴力放大重发
+  return "";
+}
+function clientIp(req){
+  // 安全洞修（2026-07-09 跨厂对抗复核实锤）：安全用途（登录限流键 + 审计 IP）只信直连对端——本机在 nginx(127.0.0.1) 之后、
+  // 其上游是不受控的春雨边缘反代，X-Forwarded-For 最左段客户端可自报伪造（换头即换限流桶=暴力破解绕锁 / 伪造受害者 IP 污染审计），
+  // 绝不用于限流/审计。生产该值恒 127.0.0.1（限流退化为按用户名维度锁定·可接受）。
+  return (req.socket && req.socket.remoteAddress) || "local";
+}
+function loginFailureKey(req, username){
+  return String(username || "").trim().toLowerCase() + "|" + clientIp(req);
+}
+function loginLimitStatus(req, username){
+  const key = loginFailureKey(req, username);
+  const rec = loginFailures.get(key);
+  const ts = Date.now();
+  if(!rec) return null;
+  if(rec.lockedUntil && rec.lockedUntil > ts) return { retryAfter:Math.ceil((rec.lockedUntil - ts) / 1000) };
+  if(rec.firstAt && ts - rec.firstAt > ADMIN_LOGIN_FAIL_WINDOW_MS) loginFailures.delete(key);
+  return null;
+}
+function recordLoginFailure(req, username){
+  const key = loginFailureKey(req, username);
+  const ts = Date.now();
+  // 无界增长加固（2026-07-09）：Map 原本只在命中同键时清过期项，攻击者狂换用户名可无限堆积——
+  // 超阈值时写入前先扫一遍，删「窗口已过期且未在锁定中」的记录（O(n) 仅超阈值触发；限流语义不变）。
+  if(loginFailures.size >= 5000){
+    for(const [k, v] of loginFailures){
+      if(v.firstAt + ADMIN_LOGIN_FAIL_WINDOW_MS < ts && (!v.lockedUntil || v.lockedUntil < ts)) loginFailures.delete(k);
+    }
+    // 硬封顶（codex 反例·2026-07-09）：窗口内海量新用户名洪泛时记录都未过期、上面一条都删不掉 → 封顶形同虚设。
+    //   过期清理后仍超阈值，则按 Map 插入顺序（最旧在前）逐出「非锁定中」记录到低水位 4000，保证 Map 有界；
+    //   仍在锁定中的键保留（避免洪泛把真实锁定冲掉）。逐出的是最旧非锁定项（洪泛新用户名 count=1 皆非锁定，天然可逐出）。O(逐出数)。
+    if(loginFailures.size >= 5000){
+      let toEvict = loginFailures.size - 4000;
+      for(const [k, v] of loginFailures){
+        if(toEvict <= 0) break;
+        if(v.lockedUntil && v.lockedUntil > ts) continue;
+        loginFailures.delete(k); toEvict--;
+      }
+    }
+  }
+  const old = loginFailures.get(key);
+  const rec = old && ts - old.firstAt <= ADMIN_LOGIN_FAIL_WINDOW_MS ? old : { count:0, firstAt:ts, lockedUntil:0 };
+  rec.count += 1;
+  if(rec.count >= ADMIN_LOGIN_MAX_FAILURES) rec.lockedUntil = ts + ADMIN_LOGIN_LOCK_MS;
+  loginFailures.set(key, rec);
+}
+function clearLoginFailure(req, username){
+  loginFailures.delete(loginFailureKey(req, username));
+}
+function normalizeOrigin(value){
+  try{ return new URL(String(value || "")).origin.toLowerCase(); }catch(e){ return ""; }
+}
+function requestAllowedOrigins(req){
+  const host = String(req.headers.host || "").trim().toLowerCase();
+  const origins = new Set();
+  if(host){
+    origins.add("http://" + host);
+    origins.add("https://" + host);
+  }
+  const publicOrigin = normalizeOrigin(process.env.PUBLIC_ORIGIN);
+  if(publicOrigin) origins.add(publicOrigin);
+  return origins;
+}
+function adminWriteOriginAllowed(req){
+  const allowed = requestAllowedOrigins(req);
+  if(req.headers.origin != null && String(req.headers.origin).trim() !== ""){
+    const origin = normalizeOrigin(req.headers.origin);
+    return !!origin && allowed.has(origin);
+  }
+  if(req.headers.referer != null && String(req.headers.referer).trim() !== ""){
+    const referer = normalizeOrigin(req.headers.referer);
+    return !!referer && allowed.has(referer);
+  }
+  return true; // 本地 curl / 测试脚本 / 同源无 Origin 的兼容路径
+}
+
+async function wechatJson(url){
+  const r = await fetch(url);
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error("微信接口 HTTP "+r.status);
+  if(j.errcode && j.errcode !== 0) throw new Error(j.errmsg || ("微信接口错误 "+j.errcode));
+  return j;
+}
+async function getWechatAccessToken(appId, secret){
+  if(wechatTokenCache.value && wechatTokenCache.expiresAt > Date.now()) return wechatTokenCache.value;
+  const u = "https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid="+encodeURIComponent(appId)+"&secret="+encodeURIComponent(secret);
+  const j = await wechatJson(u);
+  if(!j.access_token) throw new Error("微信未返回 access_token");
+  wechatTokenCache.value = j.access_token;
+  wechatTokenCache.expiresAt = Date.now() + Math.max(300, (j.expires_in || 7200) - 300) * 1000;
+  return wechatTokenCache.value;
+}
+async function getWechatJsTicket(appId, secret){
+  if(wechatTicketCache.value && wechatTicketCache.expiresAt > Date.now()) return wechatTicketCache.value;
+  const token = await getWechatAccessToken(appId, secret);
+  const j = await wechatJson("https://api.weixin.qq.com/cgi-bin/ticket/getticket?type=jsapi&access_token="+encodeURIComponent(token));
+  if(!j.ticket) throw new Error("微信未返回 jsapi_ticket");
+  wechatTicketCache.value = j.ticket;
+  wechatTicketCache.expiresAt = Date.now() + Math.max(300, (j.expires_in || 7200) - 300) * 1000;
+  return wechatTicketCache.value;
+}
+function wechatEnv(){
+  return {
+    appId:process.env.WECHAT_OA_APP_ID || process.env.WECHAT_JS_APP_ID || "",
+    secret:process.env.WECHAT_OA_APP_SECRET || process.env.WECHAT_JS_APP_SECRET || ""
+  };
+}
+async function buildWechatJsConfig(url){
+  const env = wechatEnv();
+  if(!env.appId || !env.secret) throw new Error("缺少 WECHAT_OA_APP_ID / WECHAT_OA_APP_SECRET（公众号 JS-SDK 签名参数）");
+  const ticket = await getWechatJsTicket(env.appId, env.secret);
+  const nonceStr = crypto.randomBytes(8).toString("hex");
+  const timestamp = Math.floor(Date.now()/1000);
+  const raw = `jsapi_ticket=${ticket}&noncestr=${nonceStr}&timestamp=${timestamp}&url=${url}`;
+  const signature = crypto.createHash("sha1").update(raw).digest("hex");
+  return { configured:true, appId:env.appId, timestamp, nonceStr, signature };
+}
+
+const IMAGE_MIMES = new Set(["image/png","image/jpeg","image/webp"]);
+function cleanAttachments(input){
+  const arr = Array.isArray(input) ? input : [];
+  if(arr.length > 3) throw new Error("最多上传 3 张图片/报告");
+  return arr.map((a,i)=>{
+    const rawUrl = String((a && (a.dataUrl || a.url || a.data)) || "");
+    const m = rawUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/i);
+    const mime = String((a && a.mime) || (m && m[1]) || "").toLowerCase();
+    if(!m || !IMAGE_MIMES.has(mime)) throw new Error("仅支持 PNG/JPG/WebP 图片");
+    const b64 = m[2];
+    const size = Math.floor(b64.length * 3 / 4);
+    if(size > 1.5 * 1024 * 1024) throw new Error("单张图片需小于 1.5MB，请先截图或压缩后上传");
+    const name = String((a && a.name) || `图片${i+1}`).replace(/[^\w.\-\u4e00-\u9fa5]/g,"").slice(0,60) || `图片${i+1}`;
+    return { type:"image", name, mime, size, dataUrl:`data:${mime};base64,${b64}` };
+  });
+}
+
+function doctorOut(row){
+  return { id:row.id, slug:row.slug, name:row.name, title:row.title, hospital:row.hospital, dept:row.dept,
+    specialty:row.specialty, groupName:row.group_name, memberCount:row.member_count, scopeNote:row.scope_note,
+    hospitalPhone:row.hospital_phone, bots:JSON.parse(row.bots||"[]"), clinic:JSON.parse(row.clinic||"{}"),
+    accounts:JSON.parse(row.accounts||"[]"), active:row.active };
+}
+function faqGrouped(doctorId){
+  const rows = db.prepare("SELECT * FROM faq WHERE doctor_id=? ORDER BY sort,id").all(doctorId);
+  const groups=[]; const idx={};
+  rows.forEach(r=>{ if(!(r.grp in idx)){ idx[r.grp]=groups.length; groups.push({title:r.grp,items:[]}); } groups[idx[r.grp]].items.push({q:r.q,a:r.a,link:r.link}); });
+  return groups;
+}
+
+/* ---------- 路由 ---------- */
+const routes = [];
+function route(method, re, fn){ routes.push({ method, re, fn }); }
+
+/* 患者端 bootstrap */
+route("GET", /^\/api\/bootstrap$/, (req,res,m,q)=>{
+  let doc = q.doctor ? db.prepare("SELECT * FROM doctors WHERE slug=?").get(q.doctor)
+                     : db.prepare("SELECT * FROM doctors WHERE active=1 ORDER BY id LIMIT 1").get();
+  if(!doc) doc = db.prepare("SELECT * FROM doctors ORDER BY id LIMIT 1").get();
+  if(!doc) return json(res,404,{error:"无医生数据"});
+  const content = JSON.parse(doc.content||"{}");
+  const intro = JSON.parse(doc.intro||"{}");
+  const allDoctors = db.prepare("SELECT slug,name,dept,active FROM doctors ORDER BY id").all();
+  json(res,200,{ doctor:doctorOut(doc), content, intro, faq:faqGrouped(doc.id),
+    menu:content.menu, quickKeywords:content.quickKeywords||[], doctors:allDoctors });
+});
+
+/* 微信开放标签 wx-open-launch-weapp：生产需公众号 JS 安全域名 + WECHAT_OA_APP_ID/SECRET */
+route("GET", /^\/api\/wechat\/js-config$/, async (req,res,m,q)=>{
+  const target = String(q.url || "").slice(0, 2048);
+  if(!/^https?:\/\/[^#]+/i.test(target)) return json(res,400,{configured:false,error:"缺少合法 url"});
+  if(!wechatEnv().appId || !wechatEnv().secret){
+    return json(res,501,{configured:false,error:"缺少 WECHAT_OA_APP_ID / WECHAT_OA_APP_SECRET，不能生成微信 JS-SDK 签名"});
+  }
+  try{ json(res,200, await buildWechatJsConfig(target)); }
+  catch(e){ json(res,502,{configured:false,error:e.message || "微信 JS-SDK 签名失败"}); }
+});
+
+/* 患者发消息 → 服务端引擎 */
+route("POST", /^\/api\/message$/, async (req,res)=>{
+  const b = await parseBody(req, MESSAGE_MAX_BODY);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 6MB）"});
+  let attachments = [];
+  try{ attachments = cleanAttachments(b.attachments); }
+  catch(e){ return json(res,400,{error:e.message}); }
+  try{
+    json(res,200, await patientReply.buildPatientReply({
+      doctorId:b.doctorId,
+      text:b.text,
+      attachments,
+      patientName:b.patientName,
+      patientKey:b.patientKey
+    }));
+  }catch(e){
+    json(res,e.status || 500,{error:e.message || "消息处理失败"});
+  }
+});
+
+/* 演示短信验证码：真实生产应接短信供应商，这里返回 code 便于本地体验 */
+route("POST", /^\/api\/sms\/send$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const phone = String(b.phone||"").trim();
+  if(!isPhone(phone)) return json(res,400,{error:"请输入正确手机号"});
+  const lastAt = smsThrottle.get(phone);
+  if(lastAt && Date.now()-lastAt < 30*1000) return json(res,429,{error:"发送过于频繁，请 30 秒后再试"});
+  const code = String(100000 + crypto.randomInt(900000));
+  smsCodes.set(phone, { code, expiresAt:Date.now()+5*60*1000, attempts:0, sentAt:Date.now() });
+  smsThrottle.set(phone, Date.now());   // 节流独立记录：verifySms 在锁定/消费时会删 smsCodes，但不影响这里的 30s 限流
+  // 生产：在此处调用真实短信通道发送 code。仅演示态(--demo / SMS_DEMO=1)才在响应里明文返回 code，便于本地体验。
+  json(res,200, SMS_DEMO ? { ok:true, code, expiresIn:300, demo:true } : { ok:true, expiresIn:300 });
+});
+
+/* 患者提交表单（联络表/加号/住院/感谢信） */
+route("POST", /^\/api\/submit$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  if(!b.doctorId||!b.type) return json(res,400,{error:"缺少参数"});
+  if(!SUBMIT_TYPES.has(b.type)) return json(res,400,{error:"不支持的提交类型"}); // 防止经 /api/submit 伪造口碑等受门控/系统内部类型
+  const content = contentForDoctor(b.doctorId);
+  if(!content) return json(res,404,{error:"医生不存在"});
+  const payload = b.payload || {};
+
+  // 服务端自写标志键（codex 第八轮 §2）：这些键的权威值由服务端生成，客户端传值无意义且不可信。
+  // 先在验证链路里收集权威值，掩码之后覆写到存储副本上——客户端传的同名键值先被掩（防伪造系统键夹带 PII），再被服务端权威值覆盖。
+  const serverAuthoredKeys = {};
+  if(b.type === "联络表"){
+    const phone = String(b.phone || payload["手机号"] || "").trim();
+    if(!isPhone(phone)) return json(res,400,{error:"请输入正确手机号"});
+    if(b.consent !== true) return json(res,400,{error:"请先单独同意敏感个人信息处理告知"});
+    const smsError = verifySms(phone, b.code);   // 放在同意校验之后：同意没过不消费验证码
+    if(smsError) return json(res,400,{error:smsError});
+    serverAuthoredKeys["手机号验证"] = "已验证";
+    serverAuthoredKeys["敏感信息单独同意"] = now();
+  }
+
+  if(b.type === "加号"){
+    const slot = String(b.date || payload["期望就诊日"] || "").trim();
+    const addPhone = String(payload["手机号"] || payload.phone || "").trim();
+    const an = content.addNumber || {};
+    // 白名单收紧：仅允许医生 addNumber.date 字段配置的合法出诊档；直连接口绕过 UI select 传任意串/空串 → 400（等价补上 date required 强制）。
+    // 向后兼容：未配置 date options 的医生（白名单为空）跳过校验，回落原行为，不误伤简化医生。
+    const validSlots = ((an.fields||[]).find(f=>f && f.key==="date")||{}).options || [];
+    if(validSlots.length && !validSlots.includes(slot)){   // 不加 slot && 守卫：空串/全空白(trim 后"")也不在 options → 被拦
+      return json(res,400,{error:"请选择有效的就诊时段"});
+    }
+    const blocked = (an.unavailableSlots)||[];
+    if(slot && blocked.includes(slot)){   // 黑名单 409 保留 slot && 守卫：空 slot 本就不该走候补
+      return json(res,409,{error:"该门诊时段本周停诊/已约满，请选择其他就诊日", waitlistable:true, slot});
+    }
+    if(!isPhone(addPhone)) return json(res,400,{error:"请填写正确手机号"});
+    if(!hasContactFormForPhone(b.doctorId, addPhone)){
+      return json(res,400,{error:"请先提交医患联络表，完成基础信息建档后再申请加号", needsContactForm:true, nextPage:"contact-form"});
+    }
+  }
+  // 建档延后到价值动作时刻：加号/住院在采集姓名手机的同时即时取得「单独同意」（PIPL）
+  if(b.type === "加号" || b.type === "住院预约"){
+    if(b.consent !== true) return json(res,400,{error:"请先阅读并同意信息处理告知"});
+    serverAuthoredKeys["单独同意"] = now();
+  }
+  // PII 存储侧脱敏（生产DB架构 v1.0 §3-2，2026-07-04；codex FAIL 修 fail-closed 反转，第八轮按 type 收紧 + 自写键覆写）：
+  // /api/submit 公开、payload 键名客户端任意 → 白名单外一切字符串/数字 PII 形态一律掩。白名单按 type 精确组装（submitWhitelistForType）：
+  // 该 type 表单非 textarea 字段 label + 家庭代办四键（三 type 通用块）；不再全局拼系统键、story 只放行 name（不串味其它 type）。
+  // 服务端自写标志键（手机号验证/敏感信息单独同意/单独同意）不进白名单——客户端传的同名键值先被掩（防伪造夹带 PII），
+  // 再由服务端在掩码副本上覆写权威值。掩码只作用于存储副本，不改内存 payload（下方联络表建档/随访入组还读内存结构字段）。
+  const submitWhitelist = submitWhitelistForType(b.type, (content[SUBMIT_FORM_KEYS[b.type]] || {}).fields);
+  const storedPayload = maskPayloadExceptWhitelist(payload, submitWhitelist);
+  Object.keys(serverAuthoredKeys).forEach(k=>{ storedPayload[k] = serverAuthoredKeys[k]; });   // 服务端权威值覆写掩码副本（客户端伪造的同名键值已在上一步被掩）
+  const r = db.prepare("INSERT INTO submissions(doctor_id,type,payload,created_at) VALUES(?,?,?,?)")
+    .run(b.doctorId, b.type, JSON.stringify(storedPayload), now());
+  // F1：联络表通过本人短信验证（上方 verifySms 已过）→ 实时收敛到统一 patient_id 并置 phone_verified=1，
+  // 与 db.js applyPatientBackfill(:765-768) 同口径，只是搬到实时不必等重启。best-effort 不阻断提交。
+  if(b.type === "联络表"){
+    try{
+      const cfPhone = String(b.phone || payload["手机号"] || "").trim();
+      const cfName = String(payload["姓名"] || "").trim();
+      const pid = resolvePatient({ doctorId:b.doctorId, channel:"sms", externalId:"phone:"+cfPhone, phone:cfPhone, displayName:cfName, phoneVerified:true });
+      if(pid){
+        db.prepare("UPDATE submissions SET patient_id=? WHERE id=?").run(pid, r.lastInsertRowid);
+        if(cfName) db.prepare("UPDATE patients SET real_name=COALESCE(NULLIF(real_name,''),?), updated_at=? WHERE id=?").run(cfName, now(), pid);
+      }
+    }catch(e){}
+  }
+  // 建档即入组：选了随访方案则自动加入对应 SOP（随访起算 = 手术/治疗日期，缺省为建档日）
+  let enrolledPlan = null;
+  if(b.type === "联络表"){
+    const planName = payload["随访方案"];
+    if(planName && planName !== "暂不需要" && followup.findPlan(b.doctorId, planName)){
+      // 随访起算日期字段标签按医生 seed 而异（黄安华="手术/治疗日期"、吕富靖="检查/治疗日期"）；
+      // payload 以字段 label 为键（patient.js 用 f.label），故两种 label 都兼容读取，避免改名后日期捕获不到。
+      const fu = followup.enroll(b.doctorId, { name:payload["姓名"], phone:String(b.phone||payload["手机号"]||"").trim(), planKey:planName, enrolledAt:payload["手术/治疗日期"] || payload["检查/治疗日期"] });
+      if(fu) enrolledPlan = planName;
+    }
+  }
+  json(res,200,{ ok:true, id:r.lastInsertRowid, enrolledPlan });
+});
+
+/* 智能候补名单：加号撞停诊/满号时可加入候补；名额释放→批量自动通知 */
+route("POST", /^\/api\/waitlist$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = b.doctorId, slot = String(b.slot||"").trim();
+  const name = String(b.name||"").trim(), phone = String(b.phone||"").trim();
+  if(!did || !db.prepare("SELECT 1 FROM doctors WHERE id=?").get(did)) return json(res,404,{error:"医生不存在"});
+  if(!slot) return json(res,400,{error:"缺少就诊时段"});
+  if(!isPhone(phone)) return json(res,400,{error:"请输入正确手机号"});
+  if(b.consent !== true) return json(res,400,{error:"请先阅读并同意信息处理告知"});
+  const dup = db.prepare("SELECT id FROM waitlist WHERE doctor_id=? AND slot=? AND patient_phone=? AND status='waiting'").get(did, slot, phone);
+  if(dup) return json(res,200,{ ok:true, id:dup.id, already:true });
+  const r = db.prepare("INSERT INTO waitlist(doctor_id,slot,patient_name,patient_phone,status,created_at) VALUES(?,?,?,?,?,?)")
+    .run(did, slot, name||"候补患者", phone, "waiting", now());
+  json(res,200,{ ok:true, id:r.lastInsertRowid });
+});
+route("GET", /^\/api\/admin\/waitlist$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  json(res,200, db.prepare("SELECT * FROM waitlist WHERE doctor_id=? ORDER BY slot, id").all(+q.doctorId)
+    .map(w=>({ id:w.id, slot:w.slot, name:w.patient_name, tail:String(w.patient_phone||"").slice(-4), status:w.status, at:w.created_at, notifiedAt:w.notified_at }))); });
+route("POST", /^\/api\/admin\/waitlist\/release$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(!b.doctorId || !b.slot) return json(res,400,{error:"缺少 doctorId 或 slot"});
+  const s=gate(req,res,+b.doctorId); if(!s)return;
+  if(!requireAdminAction(req,res,s,"waitlist.manage",{doctorId:+b.doctorId},"无候补名单处理权限")) return;
+  const r = db.prepare("UPDATE waitlist SET status='notified', notified_at=? WHERE doctor_id=? AND slot=? AND status='waiting'").run(now(), b.doctorId, String(b.slot));
+  json(res,200,{ ok:true, notified:r.changes }); });
+route("POST", /^\/api\/admin\/waitlist\/(\d+)\/notify$/, async (req,res,m)=>{ const s=gate(req,res, rowDoctorId("waitlist",+m[1])); if(!s)return;
+  const did = rowDoctorId("waitlist",+m[1]);
+  if(!requireAdminAction(req,res,s,"waitlist.manage",{doctorId:did},"无候补名单处理权限")) return;
+  db.prepare("UPDATE waitlist SET status='notified', notified_at=? WHERE id=?").run(now(), +m[1]);
+  json(res,200,{ ok:true }); });
+
+/* 随访：患者查看自己的随访（手机 + 短信验证） */
+route("POST", /^\/api\/followup\/mine$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = b.doctorId, phone = String(b.phone||"").trim();
+  if(!did || !db.prepare("SELECT 1 FROM doctors WHERE id=?").get(did)) return json(res,404,{error:"医生不存在"});
+  if(!isPhone(phone)) return json(res,400,{error:"请输入正确手机号"});
+  const smsError = verifySms(phone, b.code);
+  if(smsError) return json(res,400,{error:smsError});
+  json(res,200,{ ok:true, followups:followup.mine(did, phone) });
+});
+
+/* 患者查看自己的提交/回复状态：手机号 + 短信验证后，仅返回本手机号相关记录 */
+route("POST", /^\/api\/replies\/mine$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = b.doctorId, phone = String(b.phone||"").trim();
+  if(!did || !db.prepare("SELECT 1 FROM doctors WHERE id=?").get(did)) return json(res,404,{error:"医生不存在"});
+  if(!isPhone(phone)) return json(res,400,{error:"请输入正确手机号"});
+  const smsError = verifySms(phone, b.code);
+  if(smsError) return json(res,400,{error:smsError});
+  const rows = db.prepare("SELECT id,type,payload,status,created_at FROM submissions WHERE doctor_id=? ORDER BY id DESC LIMIT 500").all(did);
+  const mine = rows.map(r=>{
+    let p={}; try{ p=JSON.parse(r.payload||"{}"); }catch(e){}
+    const phones = [p["手机号"], p["患者手机号"], p["代办人手机"], p["联系电话"], p["手机"]].filter(Boolean).map(String);
+    return { r, p, hit:phones.includes(phone) };
+  }).filter(x=>x.hit).slice(0,50).map(x=>({
+    id:x.r.id,
+    type:x.r.type,
+    status:x.r.status,
+    at:x.r.created_at,
+    summary:Object.entries(x.p).filter(([k])=>!/(手机号|手机|身份证|验证|同意)/.test(k)).slice(0,6).map(([k,v])=>`${k}：${String(v).slice(0,60)}`)
+  }));
+  json(res,200,{ ok:true, replies:mine, followups:followup.mine(did, phone) });
+});
+
+/* 感谢医生：患者手机号验证后进入后台待审核，不直接公开 */
+route("POST", /^\/api\/thanks$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = b.doctorId, phone = String(b.phone||"").trim();
+  // 掩码先于截断（生产DB架构 v1.0 §3-1，2026-07-04；与 7-03 注入侧修复同型不变量）：先对全文 maskPIIStrict（含分隔号增强）
+  // 再 slice——旧序「先截断后掩码」会把跨 1000 位的号码切半、残段不再命中正则而明文入库。
+  const text = maskPIIStrict(String(b.text||"").trim()).slice(0,1000);
+  if(!did || !db.prepare("SELECT 1 FROM doctors WHERE id=?").get(did)) return json(res,404,{error:"医生不存在"});
+  if(!isPhone(phone)) return json(res,400,{error:"请输入正确手机号"});
+  if(b.consent !== true) return json(res,400,{error:"请先阅读并同意信息处理告知"});
+  if(text.length < 5) return json(res,400,{error:"感谢内容至少 5 个字"});
+  const smsError = verifySms(phone, b.code);
+  if(smsError) return json(res,400,{error:smsError});
+  const payload = { 手机号:phone, 内容:text, 来源:"患者感谢医生", 手机尾号:phone.slice(-4) };
+  const r = db.prepare("INSERT INTO submissions(doctor_id,type,payload,status,created_at) VALUES(?,?,?,?,?)")
+    .run(did, "感谢医生", JSON.stringify(payload), "待审核", now());
+  json(res,200,{ ok:true, id:r.lastInsertRowid });
+});
+
+/* 随访：医助后台队列 + 手动入组 + 节点状态流转 */
+route("GET", /^\/api\/admin\/followups$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  json(res,200, followup.listQueue(+q.doctorId)); });
+route("GET", /^\/api\/admin\/followups\/(\d+)$/, (req,res,m)=>{ const s=gate(req,res, rowDoctorId("followups",+m[1])); if(!s)return;
+  const d = followup.detail(+m[1]); d ? json(res,200,d) : json(res,404,{error:"随访不存在"}); });
+route("GET", /^\/api\/admin\/followup-plans$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  json(res,200, followup.plansFor(+q.doctorId)); });
+route("POST", /^\/api\/admin\/followups$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  if(!b.doctorId || !b.planKey) return json(res,400,{error:"缺少 doctorId 或 planKey"});
+  const s=gate(req,res,+b.doctorId); if(!s)return;
+  if(!requireAdminAction(req,res,s,"followup.manage",{doctorId:+b.doctorId},"无随访处理权限")) return;
+  const fu = followup.enroll(b.doctorId, { name:b.name, phone:String(b.phone||"").trim(), planKey:b.planKey, enrolledAt:b.enrolledAt });
+  fu ? json(res,200,{ ok:true, id:fu.id }) : json(res,400,{error:"方案不存在"});
+});
+route("POST", /^\/api\/admin\/followups\/(\d+)\/node$/, async (req,res,m)=>{
+  const did = rowDoctorId("followups",+m[1]);
+  const s = gate(req,res, did); if(!s) return;
+  if(!requireAdminAction(req,res,s,"followup.manage",{doctorId:did},"无随访处理权限")) return;
+  const b = await parseBody(req);
+  const d = followup.markNode(+m[1], +b.idx, b.status, s.username);
+  d ? json(res,200,d) : json(res,404,{error:"随访不存在"});
+});
+
+/* 感谢信（929）公开读取最近感谢信（正文输出前做 PII 脱敏，不改存储） */
+route("GET", /^\/api\/stories$/, (req,res,m,q)=>{
+  const rows = db.prepare("SELECT payload,created_at FROM submissions WHERE doctor_id=? AND type='story' ORDER BY id DESC LIMIT 20").all(q.doctorId);
+  json(res,200, rows.map(r=>{ const p=JSON.parse(r.payload); return { ...p, text:maskPII(p.text), at:r.created_at }; }));
+});
+
+/* 建档患者认证口碑墙：仅「联络表已建档」+「本人手机短信验证」双重门控可发，杜绝刷评 */
+function isRegistered(doctorId, phone){
+  const rows = db.prepare("SELECT payload FROM submissions WHERE doctor_id=? AND type='联络表'").all(doctorId);
+  return rows.some(r=>{ try{ return JSON.parse(r.payload||"{}")["手机号"] === phone; }catch(e){ return false; } });
+}
+function registeredName(doctorId, phone){
+  const reg = db.prepare("SELECT payload FROM submissions WHERE doctor_id=? AND type='联络表' ORDER BY id DESC").all(doctorId)
+    .map(r=>{ try{ return JSON.parse(r.payload||"{}"); }catch(e){ return {}; } })
+    .find(p=>p["手机号"]===phone);
+  return (reg && reg["姓名"]) ? String(reg["姓名"]).trim() : "建档患者";
+}
+function maskName(name){ const s=String(name||"").trim(); return s.length<=1 ? (s+"**") : (s[0]+"*".repeat(Math.max(1,s.length-1))); }
+/* maskPII 本地副本已合并至 pii.js 单一模块（生产DB架构 v1.0 §3-4，2026-07-04）：正则原样搬家、行为不变，见顶部 require */
+route("GET", /^\/api\/testimonials$/, (req,res,m,q)=>{
+  const rows = db.prepare("SELECT payload,created_at FROM submissions WHERE doctor_id=? AND type='口碑' AND status!='已隐藏' ORDER BY id DESC LIMIT 30").all(q.doctorId);
+  json(res,200, rows.map(r=>{ const p=JSON.parse(r.payload||"{}"); return { name:p["姓名"]||"建档患者", text:p["内容"]||"", tail:p["手机尾号"]||"", verified:true, at:r.created_at }; }));
+});
+route("POST", /^\/api\/testimonial$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = b.doctorId;
+  const phone = String(b.phone||"").trim();
+  const text = String(b.text||"").trim().slice(0,1000);
+  if(!did || !db.prepare("SELECT 1 FROM doctors WHERE id=?").get(did)) return json(res,404,{error:"医生不存在"});
+  if(!isPhone(phone)) return json(res,400,{error:"请输入正确手机号"});
+  if(text.length < 10) return json(res,400,{error:"认证评价至少 10 个字，请多写一点您的真实就医体验"});
+  const smsError = verifySms(phone, b.code);          // 本人手机验证（消费验证码）
+  if(smsError) return json(res,400,{error:smsError});
+  if(!isRegistered(did, phone)) return json(res,403,{error:"仅建档患者可写认证评价，请先在「医患联络表」完成建档"});
+  // 署名强制用「建档姓名」脱敏（不接受自填署名，保证认证墙署名=本人建档身份）；正文做 PII 脱敏
+  const masked = maskName(registeredName(did, phone));
+  const payload = { 姓名:masked, 内容:maskPII(text), 已认证:"是", 手机尾号:phone.slice(-4) };
+  const r = db.prepare("INSERT INTO submissions(doctor_id,type,payload,status,created_at) VALUES(?,?,?,?,?)")
+    .run(did, "口碑", JSON.stringify(payload), "已认证", now());
+  json(res,200,{ ok:true, id:r.lastInsertRowid, name:masked });
+});
+
+/* ---------- 后台鉴权 ---------- */
+route("POST", /^\/api\/admin\/login$/, async (req,res)=>{
+  const b = await parseBody(req);
+  const username = String(b.username || "").trim();
+  const limited = loginLimitStatus(req, username);
+  if(limited) return json(res,429,{error:"登录失败次数过多，请稍后再试", retryAfter:limited.retryAfter});
+  const a = db.prepare("SELECT * FROM admins WHERE username=?").get(username);
+  if(!activeAdminRow(a) || hashPw(b.password||"", a.salt)!==a.hash){
+    recordLoginFailure(req, username);
+    return json(res,401,{error:"用户名或密码错误"});
+  }
+  clearLoginFailure(req, username);
+  db.prepare("UPDATE admins SET last_login_at=?, updated_at=? WHERE id=?").run(now(), now(), a.id);
+  const token = crypto.randomBytes(16).toString("hex");
+  sessions.set(token, buildSession(a));
+  res.writeHead(200,{ "Content-Type":"application/json; charset=utf-8", "Set-Cookie":sessionCookie(req, token, ADMIN_SESSION_COOKIE_MAX_AGE) });
+  res.end(JSON.stringify({ ok:true, username:a.username, role:a.role || "super" }));
+});
+route("POST", /^\/api\/admin\/logout$/, (req,res)=>{
+  const t=cookies(req).sid;
+  if(t) sessions.delete(t);
+  res.writeHead(200,{ "Content-Type":"application/json; charset=utf-8", "Set-Cookie":sessionCookie(req, "", 0) });
+  res.end(JSON.stringify({ok:true}));
+});
+route("GET", /^\/api\/admin\/me$/, (req,res)=>{
+  const s=authed(req);
+  if(!s) return json(res,401,{error:"未登录"});
+  const a = adminRow(s.adminId);
+  json(res,200,adminOut(a));
+});
+route("GET", /^\/api\/admin\/me\/capabilities$/, (req,res,m,q)=>{
+  const s=authed(req);
+  if(!s) return json(res,401,{error:"未登录"});
+  const a = adminRow(s.adminId);
+  if(!activeAdminRow(a)) return json(res,401,{error:"未登录"});
+  const didRaw = q.doctorId == null || q.doctorId === "" ? "" : String(q.doctorId);
+  const did = didRaw ? Number(didRaw) : null;
+  if(didRaw && (!Number.isInteger(did) || did <= 0)) return json(res,400,{error:"doctorId 非法"});
+  if(did && !allowDoctor(s, did)) return json(res,403,{error:"无该医生数据的访问权限"});
+  json(res,200,{
+    ok:true,
+    admin:adminOut(a),
+    role:a.role || "super",
+    effectiveRole:authz.effectiveAdminRole(a.role),
+    roleLabel:authz.roleLabel(a.role || "super"),
+    scopeText:adminScopeTextFor(a),
+    doctorId:did,
+    tabs:tabCapabilitiesFor(s, did),
+    actions:actionCapabilitiesFor(s, did)
+  });
+});
+
+/* 需要鉴权的后台接口统一在 handler 里校验 */
+function needAuth(req,res){ if(!authed(req)){ json(res,401,{error:"未登录"}); return false; } return true; }
+
+/* ---------- 多租户：医生归属权限 ---------- */
+// admins.role='super'（默认）可访问全部医生；其它角色仅可访问 admin_doctors 关联的医生
+function adminScope(s){
+  if(!s) return new Set();
+  const a = adminRow(s.adminId);
+  if(!activeAdminRow(a)) return new Set();              // fail-closed：缺失/禁用/异常角色都不得继承 super
+  if(isSuperAdminRow(a)) return null;                   // null = 不受限（全部医生）
+  if(!authz.effectiveAdminRole(a.role)) return new Set();
+  return new Set(db.prepare("SELECT doctor_id FROM admin_doctors WHERE admin_id=?").all(s.adminId).map(r=>+r.doctor_id));
+}
+function allowDoctor(s, doctorId){ const sc = adminScope(s); return sc === null || sc.has(+doctorId); }
+function isSuperSession(s){ return adminScope(s) === null; }
+function normalizeAdminRole(role){
+  return authz.normalizeAdminRole(role, "scoped");
+}
+function adminDoctorIds(adminId){
+  return db.prepare("SELECT doctor_id FROM admin_doctors WHERE admin_id=? ORDER BY doctor_id").all(+adminId).map(r=>+r.doctor_id);
+}
+function adminOut(a){
+  return {
+    id:a.id,
+    username:a.username,
+    displayName:a.display_name || "",
+    role:a.role || "super",
+    active:a.active !== 0,
+    doctorIds:adminDoctorIds(a.id),
+    note:a.note || "",
+    createdAt:a.created_at || null,
+    updatedAt:a.updated_at || null,
+    lastLoginAt:a.last_login_at || null,
+    passwordChangedAt:a.password_changed_at || null,
+    disabledAt:a.disabled_at || null,
+    disabledBy:a.disabled_by || null
+  };
+}
+function normalizeDoctorIds(input){
+  const ids = [...new Set((Array.isArray(input) ? input : []).map(x=>+x).filter(x=>Number.isInteger(x) && x > 0))];
+  if(!ids.length) return [];
+  const exists = new Set(db.prepare(`SELECT id FROM doctors WHERE id IN (${ids.map(()=>"?").join(",")})`).all(...ids).map(r=>+r.id));
+  return ids.filter(id=>exists.has(id));
+}
+function replaceAdminDoctors(adminId, doctorIds){
+  db.prepare("DELETE FROM admin_doctors WHERE admin_id=?").run(+adminId);
+  doctorIds.forEach(did=>db.prepare("INSERT OR IGNORE INTO admin_doctors(admin_id,doctor_id) VALUES(?,?)").run(+adminId,+did));
+}
+function clearSessionsForAdmin(adminId){
+  let dropped = 0;
+  for(const [token,s] of sessions.entries()){
+    if(+s.adminId === +adminId){ sessions.delete(token); dropped++; }
+  }
+  return dropped;
+}
+function activeSuperCountExcept(adminId){
+  return db.prepare("SELECT COUNT(*) c FROM admins WHERE active!=0 AND (role IS NULL OR role='' OR role='super') AND id!=?").get(+adminId).c;
+}
+function lastSuperViolation(current, nextRole, nextActive){
+  const wasActiveSuper = isSuperAdminRow(current);
+  const willBeActiveSuper = nextActive !== 0 && (nextRole === "super" || nextRole == null || nextRole === "");
+  if(wasActiveSuper && !willBeActiveSuper && activeSuperCountExcept(current.id) < 1) return "至少保留一个启用中的超级管理员";
+  return "";
+}
+function generatedPassword(){
+  return crypto.randomBytes(12).toString("base64").replace(/[+/=]/g,"").slice(0,12) + "8";
+}
+function rowDoctorId(table, id){ const r = db.prepare(`SELECT doctor_id AS d FROM ${table} WHERE id=?`).get(+id); return r ? r.d : null; }
+function decisionDoctorId(id){ const r = db.prepare("SELECT s.doctor_id AS d FROM triage_decisions x JOIN triage_sessions s ON s.id=x.session_id WHERE x.id=?").get(+id); return r ? r.d : null; }
+// 鉴权 +（可选）按医生归属校验。doctorId: number=校验；undefined=仅登录；null=资源不存在交由后续逻辑 404
+function gate(req, res, doctorId){
+  const s = authed(req);
+  if(!s){ json(res,401,{error:"未登录"}); return null; }
+  if(typeof doctorId === "number"){
+    if(Number.isNaN(doctorId)){ json(res,400,{error:"缺少有效医生（doctorId）"}); return null; }
+    if(!allowDoctor(s, doctorId)){ json(res,403,{error:"无该医生数据的访问权限"}); return null; }
+  }
+  return s;
+}
+function gateMessageLog(req, res, msgId){
+  const did = rowDoctorId("message_log", +msgId);
+  if(did == null){ json(res,404,{error:"消息不存在"}); return null; }
+  return gate(req, res, did);
+}
+function gateTriageSession(req, res, sessionId){
+  const did = rowDoctorId("triage_sessions", +sessionId);
+  if(did == null){ json(res,404,{error:"分诊会话不存在"}); return null; }
+  return gate(req, res, did);
+}
+/** 从分诊 session.patient_key 或关联 message_log 解析 QiWe 发送目标 */
+function triageSessionDeliveryTarget(sess){
+  if(!sess) return null;
+  const key = String(sess.patient_key || "");
+  if(key.startsWith("qiwe:")){
+    const toId = key.slice(5).trim();
+    return toId ? { channel:"qiwe", toId, isGroup:false, atUserId:null } : null;
+  }
+  const mk = /^community:(\d+):(.+)$/.exec(key);
+  if(mk){
+    const group = db.prepare("SELECT id, external_group_id FROM community_groups WHERE id=?").get(+mk[1]);
+    const toId = group && group.external_group_id ? String(group.external_group_id) : null;
+    return toId ? { channel:"community", toId, isGroup:true, atUserId: mk[2], groupId: group.id } : null;
+  }
+  const ml = db.prepare("SELECT group_id,sender_id,channel FROM message_log WHERE triage_session_id=? ORDER BY id DESC LIMIT 1").get(sess.id);
+  if(!ml) return null;
+  const toId = ml.group_id || ml.sender_id;
+  return toId ? { channel:ml.channel||"qiwe", toId, isGroup:!!ml.group_id, atUserId: ml.sender_id||null, groupId:null } : null;
+}
+/** 直发/手动回复写入 outbound_queue（与 community.enqueue 列口径一致） */
+function insertDirectOutbound({ doctorId, targetId, text, source, channelType, isGroup, atUserId, groupId }){
+  const payload = JSON.stringify({ qiwe:{ toId:targetId, ...(atUserId ? { atUserId } : {}) }, source:source||"direct" });
+  return db.prepare(`INSERT INTO outbound_queue(
+    doctor_id,group_id,message_id,target_type,target_name,channel_type,text,payload,status,source,priority,created_at,sent_at,sent_by
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    doctorId, groupId || null, null, isGroup ? "qiwe_room" : "qiwe_dm", String(targetId || ""),
+    channelType || "qiwe", text, payload, "pending", source || "direct", "normal", new Date().toISOString(), null, null
+  ).lastInsertRowid;
+}
+
+const CAPABILITY_ACTIONS = [
+  "admin.manage",
+  "audit.read_full",
+  "audit.read_scoped",
+  "credential.manage",
+  "doctor.create",
+  "doctor.clone",
+  "doctor.activate",
+  "doctor.profile.update",
+  "rules.manage",
+  "config.draft",
+  "config.publish",
+  "community.group.manage",
+  "community.inbound.simulate",
+  "community.campaign.create",
+  "community.outbox.send",
+  "community.outbox.edit",
+  "triage.confirm_send",
+  "triage.note_status",
+  "followup.manage",
+  "waitlist.manage",
+  "submissions.manage",
+  "knowledge.manage",
+  "ops.strategy.manage",
+  "outcome.manage",
+  "ops.candidate_generate",
+  "assistant_draft.generate",
+  "qiwe.preview_send"
+];
+const TAB_CAPABILITIES = {
+  triage:{ actions:["triage.confirm_send","triage.note_status"], roles:["super","ops_manager","assistant","viewer"] },
+  community:{ actions:["community.outbox.send","community.outbox.edit"], roles:["super","ops_manager","assistant","viewer"] },
+  followup:{ actions:["followup.manage"], roles:["super","ops_manager","assistant","viewer"] },
+  waitlist:{ actions:["waitlist.manage"], roles:["super","ops_manager","assistant","viewer"] },
+  dash:{ actions:[], roles:["super","ops_manager","assistant","viewer"] },
+  ops:{ actions:["ops.strategy.manage","knowledge.manage","outcome.manage"], roles:["super","ops_manager","viewer"] },
+  config:{ actions:["config.draft","config.publish"], roles:["super","ops_manager","viewer"] },
+  subs:{ actions:["submissions.manage"], roles:["super","ops_manager","assistant","viewer"] },
+  archive:{ actions:[], roles:["super","ops_manager","assistant","viewer"] },
+  audit:{ actions:["audit.read_full","audit.read_scoped"], roles:["super","ops_manager","viewer"] },
+  rules:{ actions:["rules.manage"], roles:["super","ops_manager","viewer"] },
+  faq:{ actions:["rules.manage"], roles:["super","ops_manager","viewer"] },
+  doctors:{ actions:["doctor.create","doctor.clone","doctor.activate","doctor.profile.update"], roles:["super","ops_manager","viewer"] },
+  accounts:{ actions:["admin.manage"], roles:["super"] },
+  qiwe:{ actions:["credential.manage","qiwe.preview_send"], roles:["super"] }
+};
+function canAdmin(s, action, context){
+  return adminActionCapability(s, action, context).allowed;
+}
+function adminActionCapability(s, action, context){
+  const canonical = authz.canonicalAdminAction(action);
+  const denied = reason => ({ allowed:false, action:canonical, reason });
+  if(!s || !canonical) return denied("未登录");
+  const a = adminRow(s.adminId);
+  if(!activeAdminRow(a)) return denied("账号已停用或角色无效");
+  if(isSuperAdminRow(a)) return { allowed:true, action:canonical, reason:"" };
+  if(!authz.roleAllowsAdminAction(a.role, canonical)) return denied("当前角色无该操作权限");
+  const did = context && context.doctorId != null ? Number(context.doctorId) : NaN;
+  if(!Number.isInteger(did) || did <= 0) return denied("缺少医生范围上下文");
+  if(!allowDoctor(s, did)) return denied("无该医生数据的访问权限");
+  return { allowed:true, action:canonical, reason:"" };
+}
+function requireAdminAction(req, res, s, action, context, message){
+  const cap = adminActionCapability(s, action, context);
+  if(cap.allowed) return true;
+  json(res,403,{error:message || cap.reason || "无该操作权限"});
+  return false;
+}
+
+function adminScopeTextFor(a){
+  if(isSuperAdminRow(a)) return "全部医生";
+  const ids = adminDoctorIds(a.id);
+  if(!ids.length) return "未分配医生";
+  const names = db.prepare(`SELECT name FROM doctors WHERE id IN (${ids.map(()=>"?").join(",")}) ORDER BY id`).all(...ids).map(r=>r.name);
+  return names.length ? names.join(" / ") : "未分配医生";
+}
+function tabCapabilitiesFor(s, doctorId){
+  const a = adminRow(s.adminId);
+  const role = authz.effectiveAdminRole(a && a.role);
+  const out = {};
+  Object.keys(TAB_CAPABILITIES).forEach(key=>{
+    const meta = TAB_CAPABILITIES[key];
+    const visibleByRole = meta.roles.includes(role);
+    const actionCaps = (meta.actions || []).map(x=>adminActionCapability(s, x, {doctorId}));
+    const writable = actionCaps.some(x=>x.allowed);
+    out[key] = {
+      visible:visibleByRole,
+      readOnly:visibleByRole && !writable,
+      reason:visibleByRole ? "" : "当前角色不显示该入口"
+    };
+  });
+  return out;
+}
+function actionCapabilitiesFor(s, doctorId){
+  const out = {};
+  CAPABILITY_ACTIONS.forEach(action=>{
+    const cap = adminActionCapability(s, action, {doctorId});
+    out[action] = { allowed:cap.allowed, reason:cap.reason || "" };
+  });
+  // 兼容旧 action 名，避免历史前端或测试脚本复制新矩阵时误判。
+  ["outbox.send","outbox.edit","outbox.cancel","outbox.ignore","outbox.assignee"].forEach(alias=>{
+    const canonical = authz.canonicalAdminAction(alias);
+    out[alias] = out[canonical] || { allowed:false, reason:"未知权限点" };
+  });
+  return out;
+}
+
+function auditText(v, max){
+  const s = maskPII(String(v == null ? "" : v));
+  const n = max || 1000;
+  return s.length > n ? s.slice(0, n) + `...（已截断，原长${s.length}）` : s;
+}
+function auditSanitize(v, key, depth){
+  if(AUDIT_SECRET_KEY_RE.test(String(key || ""))) return "[redacted]";
+  if(v == null) return v;
+  if(typeof v === "string") return auditText(v, 1000);
+  if(typeof v === "number" || typeof v === "boolean") return v;
+  if(Array.isArray(v)){
+    if((depth || 0) >= 6) return "[max-depth]";
+    return v.slice(0, 80).map(x=>auditSanitize(x, key, (depth || 0) + 1));
+  }
+  if(typeof v === "object"){
+    if((depth || 0) >= 6) return "[max-depth]";
+    const out = {};
+    Object.keys(v).slice(0, 120).forEach(k=>{ out[k] = auditSanitize(v[k], k, (depth || 0) + 1); });
+    return out;
+  }
+  return String(v);
+}
+function auditJson(v){
+  return JSON.stringify(auditSanitize(v === undefined ? {} : v, "", 0) || {}, null, 2);
+}
+function auditSessionForUsername(username){
+  const u = String(username || "").trim();
+  if(!u || u === "system") return { adminId:null, username:u || "system", role:"system" };
+  const a = db.prepare("SELECT id,username,role,active FROM admins WHERE username=?").get(u);
+  return a ? { adminId:a.id, username:a.username, role:a.role || "super" } : { adminId:null, username:u, role:"" };
+}
+function adminAudit(req, s, event){
+  const ev = event || {};
+  const actor = s || auditSessionForUsername(ev.actorUsername || "");
+  const requestId = String(ev.requestId || (req && req.headers["x-request-id"]) || "").slice(0, 80);
+  try{
+    return db.prepare(`INSERT INTO admin_audit_log(
+      actor_admin_id,actor_username,actor_role,action,resource_type,resource_id,doctor_id,patient_id,session_id,risk_level,channel,
+      outcome,reason,before_json,after_json,diff_json,meta_json,ip,user_agent,request_id,created_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      actor.adminId || null,
+      actor.username || "system",
+      actor.role || "",
+      String(ev.action || ""),
+      String(ev.resourceType || ""),
+      ev.resourceId == null ? null : String(ev.resourceId),
+      ev.doctorId == null ? 0 : Number(ev.doctorId) || 0,
+      ev.patientId == null ? null : Number(ev.patientId) || null,
+      ev.sessionId == null ? null : Number(ev.sessionId) || null,
+      String(ev.riskLevel || ""),
+      String(ev.channel || "web"),
+      String(ev.outcome || "success"),
+      auditText(ev.reason || "", 500),
+      auditJson(ev.before),
+      auditJson(ev.after),
+      auditJson(ev.diff),
+      auditJson(ev.meta),
+      req ? clientIp(req).slice(0, 80) : "",
+      req ? String(req.headers["user-agent"] || "").slice(0, 300) : "",
+      requestId,
+      now()
+    ).lastInsertRowid;
+  }catch(e){
+    console.error("[audit] write failed:", e && e.message);
+    throw new Error("审计写入失败");
+  }
+}
+function adminAuditBestEffort(req, s, event){
+  try{ return adminAudit(req, s, event); }
+  catch(e){ return null; }
+}
+function auditRequestId(req){
+  const header = String((req && req.headers["x-request-id"]) || "").trim();
+  return header ? header.slice(0, 80) : crypto.randomBytes(8).toString("hex");
+}
+function auditAdminSnapshot(a){
+  if(!a) return null;
+  return {
+    id:a.id,
+    username:a.username,
+    displayName:a.display_name || "",
+    role:a.role || "super",
+    active:a.active !== 0,
+    doctorIds:adminDoctorIds(a.id),
+    note:a.note || "",
+    createdAt:a.created_at || null,
+    updatedAt:a.updated_at || null,
+    lastLoginAt:a.last_login_at || null,
+    passwordChangedAt:a.password_changed_at || null,
+    disabledAt:a.disabled_at || null,
+    disabledBy:a.disabled_by || null
+  };
+}
+function auditOutboxSnapshot(rowOrId){
+  const o = typeof rowOrId === "object" ? rowOrId : db.prepare("SELECT * FROM outbound_queue WHERE id=?").get(+rowOrId);
+  if(!o) return null;
+  return {
+    id:o.id,
+    doctorId:o.doctor_id,
+    groupId:o.group_id || null,
+    messageId:o.message_id || null,
+    channelType:o.channel_type || "",
+    status:o.status || "",
+    source:o.source || "",
+    priority:o.priority || "",
+    assignee:o.assignee || null,
+    sentMode:o.sent_mode || null,
+    sentAt:o.sent_at || null,
+    sentBy:o.sent_by || "",
+    externalMsgId:o.external_msg_id ? "configured" : "",
+    attempts:o.attempts || 0,
+    sendError:o.send_error || "",
+    text:auditText(o.text || "", 240),
+    payload:parseJsonAny(o.payload, {})
+  };
+}
+function auditDecisionSnapshot(id){
+  const d = db.prepare(`SELECT x.*, s.doctor_id AS doctor_id, s.patient_id AS patient_id
+    FROM triage_decisions x JOIN triage_sessions s ON s.id=x.session_id WHERE x.id=?`).get(+id);
+  if(!d) return null;
+  return {
+    id:d.id,
+    doctorId:d.doctor_id,
+    patientId:d.patient_id || null,
+    sessionId:d.session_id,
+    messageId:d.message_id || null,
+    riskLevel:d.risk_level || "",
+    status:d.status || "",
+    canAutoSend:!!d.can_auto_send,
+    needsHuman:!!d.needs_human,
+    decidedBy:d.decided_by || "",
+    finalText:auditText(d.final_text || "", 240)
+  };
+}
+function auditOut(row, includeDetail){
+  const base = {
+    id:row.id,
+    actorAdminId:row.actor_admin_id || null,
+    actorUsername:row.actor_username || "",
+    actorRole:row.actor_role || "",
+    action:row.action,
+    resourceType:row.resource_type,
+    resourceId:row.resource_id,
+    doctorId:row.doctor_id || 0,
+    patientId:row.patient_id || null,
+    sessionId:row.session_id || null,
+    riskLevel:row.risk_level || "",
+    channel:row.channel || "",
+    outcome:row.outcome || "",
+    reason:row.reason || "",
+    meta:parseJsonAny(row.meta_json, {}),
+    requestId:row.request_id || "",
+    createdAt:row.created_at
+  };
+  if(includeDetail){
+    base.before = parseJsonAny(row.before_json, {});
+    base.after = parseJsonAny(row.after_json, {});
+    base.diff = parseJsonAny(row.diff_json, {});
+    base.ip = row.ip || "";
+    base.userAgent = row.user_agent || "";
+  }
+  return base;
+}
+
+/* 管理员账号生命周期：仅超级管理员可管理他人；所有账号可改自己的密码 */
+route("GET", /^\/api\/admin\/admins$/, (req,res)=>{
+  const s=authed(req); if(!s){ json(res,401,{error:"未登录"}); return; }
+  if(!requireAdminAction(req,res,s,"admin.manage",null,"仅超级管理员可查看")) return;
+  json(res,200, db.prepare("SELECT id,username,role,active,display_name,note,created_at,updated_at,last_login_at,password_changed_at,disabled_at,disabled_by FROM admins ORDER BY id").all().map(adminOut));
+});
+route("POST", /^\/api\/admin\/admins$/, async (req,res)=>{
+  const s=authed(req); if(!s){ json(res,401,{error:"未登录"}); return; }
+  if(!requireAdminAction(req,res,s,"admin.manage",null,"仅超级管理员可创建管理员")) return;
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const username=String(b.username||"").trim(), password=String(b.password||"");
+  const role = normalizeAdminRole(b.role || "assistant");
+  const doctorIds = normalizeDoctorIds(b.doctorIds);
+  if(!username || password.length<6) return json(res,400,{error:"用户名必填、密码至少 6 位"});
+  if(!role) return json(res,400,{error:"角色不合法"});
+  if(role!=="super" && doctorIds.length===0) return json(res,400,{error:"非超级管理员至少绑定一位医生"});
+  const salt = crypto.randomBytes(8).toString("hex");
+  const ts = now();
+  try{
+    const r = db.prepare("INSERT INTO admins(username,salt,hash,role,active,display_name,note,created_at,updated_at,password_changed_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+      .run(username, salt, hashPw(password, salt), role, 1, String(b.displayName||"").trim(), String(b.note||"").trim(), ts, ts, ts);
+    const aid = r.lastInsertRowid;
+    if(role !== "super") replaceAdminDoctors(aid, doctorIds);
+    adminAudit(req, s, {
+      action:"account.create", resourceType:"admin", resourceId:aid, doctorId:0,
+      after:auditAdminSnapshot(adminRow(aid)), meta:{ doctorIds, role }
+    });
+    json(res,200,{ ok:true, id:aid, admin:adminOut(adminRow(aid)) });
+  }catch(e){ json(res,400,{error:"创建失败（用户名可能重复）："+e.message}); }
+});
+route("PUT", /^\/api\/admin\/admins\/(\d+)$/, async (req,res,m)=>{
+  const s=authed(req); if(!s){ json(res,401,{error:"未登录"}); return; }
+  if(!requireAdminAction(req,res,s,"admin.manage",null,"仅超级管理员可编辑管理员")) return;
+  const target = adminRow(+m[1]);
+  if(!target) return json(res,404,{error:"管理员不存在"});
+  const before = auditAdminSnapshot(target);
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const nextRole = b.role === undefined ? (target.role || "super") : normalizeAdminRole(b.role);
+  if(!nextRole) return json(res,400,{error:"角色不合法"});
+  const nextActive = b.active === undefined ? (target.active !== 0 ? 1 : 0) : (b.active ? 1 : 0);
+  const nextDoctorIds = b.doctorIds === undefined ? adminDoctorIds(target.id) : normalizeDoctorIds(b.doctorIds);
+  if(nextRole !== "super" && nextDoctorIds.length===0) return json(res,400,{error:"非超级管理员至少绑定一位医生"});
+  const lastSuper = lastSuperViolation(target, nextRole, nextActive);
+  if(lastSuper) return json(res,409,{error:lastSuper});
+  const ts = now();
+  const wasActive = target.active !== 0;
+  const disabling = wasActive && nextActive === 0;
+  const enabling = !wasActive && nextActive !== 0;
+  const displayName = b.displayName === undefined ? (target.display_name || "") : String(b.displayName || "").trim();
+  const note = b.note === undefined ? (target.note || "") : String(b.note || "").trim();
+  const disabledAt = disabling ? ts : (enabling ? null : target.disabled_at);
+  const disabledBy = disabling ? s.adminId : (enabling ? null : target.disabled_by);
+  db.prepare("UPDATE admins SET role=?,active=?,display_name=?,note=?,updated_at=?,disabled_at=?,disabled_by=? WHERE id=?")
+    .run(nextRole,nextActive,displayName,note,ts,disabledAt,disabledBy,target.id);
+  replaceAdminDoctors(target.id, nextRole === "super" ? [] : nextDoctorIds);
+  const sessionsDropped = (target.role !== nextRole || (target.active !== 0 ? 1 : 0) !== nextActive) ? clearSessionsForAdmin(target.id) : 0;
+  const action = disabling ? "account.disable" : enabling ? "account.enable" : "account.update";
+  adminAudit(req, s, {
+    action, resourceType:"admin", resourceId:target.id, doctorId:0,
+    before, after:auditAdminSnapshot(adminRow(target.id)),
+    meta:{ sessionsDropped, doctorIds:nextRole === "super" ? [] : nextDoctorIds }
+  });
+  json(res,200,{ ok:true, admin:adminOut(adminRow(target.id)) });
+});
+route("POST", /^\/api\/admin\/admins\/(\d+)\/reset-password$/, async (req,res,m)=>{
+  const s=authed(req); if(!s){ json(res,401,{error:"未登录"}); return; }
+  if(!requireAdminAction(req,res,s,"admin.manage",null,"仅超级管理员可重置密码")) return;
+  const target = adminRow(+m[1]);
+  if(!target) return json(res,404,{error:"管理员不存在"});
+  const before = auditAdminSnapshot(target);
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const generated = !String(b.password || "").trim();
+  const password = generated ? generatedPassword() : String(b.password || "");
+  if(password.length < 6) return json(res,400,{error:"密码至少 6 位"});
+  const salt = crypto.randomBytes(8).toString("hex");
+  const ts = now();
+  db.prepare("UPDATE admins SET salt=?,hash=?,password_changed_at=?,updated_at=? WHERE id=?")
+    .run(salt, hashPw(password, salt), ts, ts, target.id);
+  const sessionsDropped = clearSessionsForAdmin(target.id);
+  adminAudit(req, s, {
+    action:"account.reset_password", resourceType:"admin", resourceId:target.id, doctorId:0,
+    before, after:{ id:target.id, username:target.username, passwordChangedAt:ts },
+    meta:{ generated, sessionsDropped }
+  });
+  json(res,200, generated ? { ok:true, temporaryPassword:password } : { ok:true });
+});
+route("POST", /^\/api\/admin\/me\/password$/, async (req,res)=>{
+  const s=authed(req); if(!s){ json(res,401,{error:"未登录"}); return; }
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const a = db.prepare("SELECT * FROM admins WHERE id=?").get(s.adminId);
+  if(!activeAdminRow(a)) return json(res,401,{error:"未登录"});
+  if(hashPw(b.oldPassword||"", a.salt)!==a.hash) return json(res,400,{error:"旧密码错误"});
+  const password = String(b.newPassword || "");
+  if(password.length < 6) return json(res,400,{error:"新密码至少 6 位"});
+  const salt = crypto.randomBytes(8).toString("hex");
+  const ts = now();
+  db.prepare("UPDATE admins SET salt=?,hash=?,password_changed_at=?,updated_at=? WHERE id=?")
+    .run(salt, hashPw(password, salt), ts, ts, a.id);
+  const sessionsDropped = clearSessionsForAdmin(a.id);
+  adminAudit(req, s, {
+    action:"account.self_password_change", resourceType:"admin", resourceId:a.id, doctorId:0,
+    before:auditAdminSnapshot(a), after:{ id:a.id, username:a.username, passwordChangedAt:ts },
+    meta:{ sessionsDropped, reLogin:true }
+  });
+  res.writeHead(200,{ "Content-Type":"application/json; charset=utf-8", "Set-Cookie":sessionCookie(req, "", 0) });
+  res.end(JSON.stringify({ok:true, reLogin:true}));
+});
+
+function auditScopedHidden(row){
+  return row && (row.resource_type === "credential_config" || row.action === "credential.update");
+}
+function auditReadScope(req, res, s, q, row){
+  if(canAdmin(s, "audit.read_full", null)) return { full:true, doctorId:null };
+  const a = adminRow(s && s.adminId);
+  if(!a || !authz.roleAllowsAdminAction(a.role, "audit.read_scoped")){
+    json(res,403,{error:"无审计日志权限"});
+    return null;
+  }
+  const raw = row ? row.doctor_id : (q && q.doctorId);
+  const did = Number(raw);
+  if(!Number.isInteger(did) || did <= 0){
+    json(res, row ? 403 : 400, { error:row ? "无该审计详情权限" : "doctorId 非法或缺失" });
+    return null;
+  }
+  if(!canAdmin(s, "audit.read_scoped", {doctorId:did})){
+    json(res,403,{error:"无该医生审计摘要权限"});
+    return null;
+  }
+  if(row && auditScopedHidden(row)){
+    json(res,403,{error:"敏感凭证审计仅超级管理员可查看"});
+    return null;
+  }
+  return { full:false, doctorId:did };
+}
+
+/* 统一后台审计：super 查完整流水；运营主管/质检仅查本医生摘要，且不暴露凭证详情 */
+route("GET", /^\/api\/admin\/audit$/, (req,res,m,q)=>{
+  const s=gate(req,res); if(!s)return;
+  const scope = auditReadScope(req, res, s, q, null);
+  if(!scope) return;
+  const where = [], args = [];
+  if(q.doctorId !== undefined && q.doctorId !== ""){
+    const did = Number(q.doctorId);
+    if(!Number.isInteger(did) || did < 0) return json(res,400,{error:"doctorId 非法"});
+    if(scope.full){ where.push("doctor_id=?"); args.push(did); }
+  }
+  if(!scope.full){
+    where.push("doctor_id=?"); args.push(scope.doctorId);
+    where.push("resource_type<>?");
+    args.push("credential_config");
+    where.push("action<>?");
+    args.push("credential.update");
+  }
+  if(q.action){ where.push("action=?"); args.push(String(q.action)); }
+  if(q.resourceType){ where.push("resource_type=?"); args.push(String(q.resourceType)); }
+  if(q.resourceId){ where.push("resource_id=?"); args.push(String(q.resourceId)); }
+  if(q.outcome){ where.push("outcome=?"); args.push(String(q.outcome)); }
+  if(q.actor){ where.push("actor_username LIKE ?"); args.push(String(q.actor).slice(0,80) + "%"); }
+  if(q.from){ where.push("created_at>=?"); args.push(String(q.from)); }
+  if(q.to){ where.push("created_at<=?"); args.push(String(q.to)); }
+  const limit = Math.min(500, Math.max(1, Number(q.limit) || 100));
+  args.push(limit);
+  const sql = `SELECT * FROM admin_audit_log ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY id DESC LIMIT ?`;
+  json(res,200,{ ok:true, scope:scope.full?"full":"doctor", doctorId:scope.doctorId, rows:db.prepare(sql).all(...args).map(r=>auditOut(r, false)) });
+});
+route("GET", /^\/api\/admin\/audit\/(\d+)$/, (req,res,m)=>{
+  const s=gate(req,res); if(!s)return;
+  const row = db.prepare("SELECT * FROM admin_audit_log WHERE id=?").get(+m[1]);
+  if(!row) return json(res,404,{error:"审计记录不存在"});
+  const scope = auditReadScope(req, res, s, null, row);
+  if(!scope) return;
+  json(res,200,{ ok:true, scope:scope.full?"full":"doctor", audit:auditOut(row, true) });
+});
+
+/* 医生管理 */
+route("GET", /^\/api\/admin\/doctors$/, (req,res)=>{ const s=gate(req,res); if(!s)return;
+  const sc=adminScope(s);
+  let rows = db.prepare("SELECT id,slug,name,title,hospital,dept,group_name,member_count,active FROM doctors ORDER BY id").all();
+  if(sc!==null) rows = rows.filter(d=>sc.has(d.id)); // 子管理员只看归属医生
+  json(res,200, rows); });
+route("POST", /^\/api\/admin\/doctors$/, async (req,res)=>{ const s=gate(req,res); if(!s)return;
+  if(!requireAdminAction(req,res,s,"doctor.create",null,"仅超级管理员可创建医生")) return;
+  const b = await parseBody(req);
+  if(!b.slug||!b.name) return json(res,400,{error:"slug 与 name 必填"});
+  const content = { doctorProfile:{intro:b.intro||(b.name+" 医生简介"),profile:{oneline:"提供规范化诊疗与随访管理。"},columns:[],news:[],thanks:[],cases:[]},
+    disclaimer:"本页面为本地演示，不构成诊断、处方或疗效承诺；紧急情况请立即到院。",
+    consentText:"处理目的：用于本医生健康班的建档、随访与医助联系。\n处理范围：姓名、手机号、疾病描述及您主动上传的病历资料。\n保存期限：本地演示数据库留存；生产环境应按最短必要期限保存。\n您的权利：可申请查阅、更正、删除或撤回授权。",
+    contactForm:{title:"医患联络表",desc:"提交基础信息",fields:[{key:"name",label:"姓名",type:"text",required:true,err:"请填写姓名"},{key:"phone",label:"手机号",type:"tel",required:true,pattern:"^1[3-9]\\d{9}$",err:"请输入正确手机号"},{key:"disease",label:"主要疾病",type:"text",required:true,err:"请填写疾病"}],submitText:"提交",success:{title:"已提交",desc:"医助会联系您。"}},
+    clinicArticle:{title:b.name+" · 出诊时间",source:"医院服务号",body:[{h:"出诊",p:"待配置"}],tip:""},
+    consult:{title:"群内咨询",text:"可在群内描述病情，助理会引导就医。",guide:"发送 101 获取咨询入口。"},
+    story:{title:"给"+b.name+"医生写感谢信",intro:"欢迎在这里写下您想对医生和医助团队说的感谢，内容会转达给医生团队。",prompts:[],samples:[]},
+    menu:{title:"群功能菜单",items:[{code:"101",label:"咨询"},{code:"114",label:"医院电话"},{code:"303",label:"出诊时间"}]},
+    quickKeywords:[{c:"101",l:"咨询"},{c:"303",l:"门诊"},{c:"1",l:"全部功能"}] };
+  const intro = { opensFaq:false, items:[{bot:"小助医助",type:"text",text:"您好，欢迎加入"+b.name+"医生的健康班。发送 1 查看功能。"}] };
+  try{
+    const r = db.prepare(`INSERT INTO doctors(slug,name,title,hospital,dept,specialty,group_name,member_count,scope_note,hospital_phone,bots,clinic,accounts,content,intro,active)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(b.slug,b.name,b.title||"主任医师",b.hospital||"",b.dept||"",b.specialty||"",
+      b.group_name||(b.name+"健康班"),b.member_count||0,"院外公益健康班",b.hospital_phone||"",JSON.stringify(["小助医助"]),
+      JSON.stringify({place:"",times:[]}),JSON.stringify([]),JSON.stringify(content),JSON.stringify(intro));
+    const did = r.lastInsertRowid;
+    // 给新医生几条基础规则
+    const baseRules=[
+      {code:"101",aliases:["咨询"],match:"exact",bot:"小助医助",responses:[{type:"text",text:"@{patient} 请通过下方二维码咨询医生。"},{type:"qr",name:b.name,sub:b.dept||"",caption:"扫一扫保持联系",code:"haodaifu"}]},
+      {code:"114",aliases:["医院电话"],match:"exact",bot:"小助医助",responses:[{type:"text",text:"@{patient} 医院咨询电话👇"},{type:"popup",modal:"hospitalPhone"}]},
+      {code:"303",aliases:["门诊"],match:"exact",bot:"小助医助",responses:[{type:"text",text:"出诊时间如下👇"},{type:"link",title:b.name+" · 出诊时间",source:"医院服务号",thumb:"hospital",page:"article:clinic"}]}
+    ];
+    baseRules.forEach((rl,i)=>db.prepare("INSERT INTO rules(doctor_id,code,aliases,match_type,bot,responses,sort) VALUES(?,?,?,?,?,?,?)").run(did,rl.code,JSON.stringify(rl.aliases),rl.match,rl.bot,JSON.stringify(rl.responses),i));
+    adminAudit(req, s, {
+      action:"doctor.create", resourceType:"doctor", resourceId:did, doctorId:did,
+      after:{ id:did, slug:b.slug, name:b.name, active:false },
+      meta:{ baseRules:baseRules.map(x=>x.code) }
+    });
+    json(res,200,{ ok:true, id:did });
+  }catch(e){ json(res,400,{error:"创建失败（slug 可能重复）："+e.message}); }
+});
+route("POST", /^\/api\/admin\/doctors\/(\d+)\/activate$/, (req,res,m)=>{ const s=gate(req,res,+m[1]); if(!s)return;
+  if(!requireAdminAction(req,res,s,"doctor.activate",{doctorId:+m[1]},"仅超级管理员可切换上线医生")) return;
+  if(!db.prepare("SELECT 1 FROM doctors WHERE id=?").get(+m[1])) return json(res,404,{error:"医生不存在"}); // 不存在则不动 active，保持「恰好一位上线」不变量
+  const before = db.prepare("SELECT id,slug,name,active FROM doctors WHERE active=1 ORDER BY id").all();
+  db.prepare("UPDATE doctors SET active=0").run();
+  db.prepare("UPDATE doctors SET active=1 WHERE id=?").run(+m[1]);
+  adminAudit(req, s, {
+    action:"doctor.activate", resourceType:"doctor", resourceId:+m[1], doctorId:+m[1],
+    before, after:db.prepare("SELECT id,slug,name,active FROM doctors WHERE active=1 ORDER BY id").all()
+  });
+  json(res,200,{ok:true}); });
+
+/* 一键克隆：把源医生整套「底座」（content/intro/clinic/accounts/bots + 全部规则 + FAQ）复制给新医生（对标春雨医生批量复制） */
+route("POST", /^\/api\/admin\/doctors\/(\d+)\/clone$/, async (req,res,m)=>{ const s=gate(req,res,+m[1]); if(!s)return;
+  if(!requireAdminAction(req,res,s,"doctor.clone",{doctorId:+m[1]},"仅超级管理员可克隆医生")) return;
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  if(!b.slug || !b.name) return json(res,400,{error:"slug 与 name 必填"});
+  const src = db.prepare("SELECT * FROM doctors WHERE id=?").get(+m[1]);
+  if(!src) return json(res,404,{error:"源医生不存在"});
+  try{
+    const r = db.prepare(`INSERT INTO doctors(slug,name,title,hospital,dept,specialty,group_name,member_count,scope_note,hospital_phone,bots,clinic,accounts,content,intro,active)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+      b.slug, b.name, src.title, src.hospital, src.dept, src.specialty, b.name+"医生健康班", 0, src.scope_note, src.hospital_phone,
+      src.bots, src.clinic, src.accounts, src.content, src.intro);
+    const did = r.lastInsertRowid;
+    db.prepare("SELECT code,aliases,match_type,bot,responses,enabled,sort FROM rules WHERE doctor_id=? ORDER BY sort,id").all(+m[1])
+      .forEach(x=>db.prepare("INSERT INTO rules(doctor_id,code,aliases,match_type,bot,responses,enabled,sort) VALUES(?,?,?,?,?,?,?,?)")
+        .run(did,x.code,x.aliases,x.match_type,x.bot,x.responses,x.enabled,x.sort));
+    db.prepare("SELECT grp,q,a,link,sort FROM faq WHERE doctor_id=? ORDER BY sort,id").all(+m[1])
+      .forEach(x=>db.prepare("INSERT INTO faq(doctor_id,grp,q,a,link,sort) VALUES(?,?,?,?,?,?)").run(did,x.grp,x.q,x.a,x.link,x.sort));
+    adminAudit(req, s, {
+      action:"doctor.clone", resourceType:"doctor", resourceId:did, doctorId:did,
+      before:{ sourceDoctorId:+m[1], sourceName:src.name },
+      after:{ id:did, slug:b.slug, name:b.name, active:false },
+      meta:{ clonedFrom:+m[1] }
+    });
+    json(res,200,{ ok:true, id:did, clonedFrom:src.name });
+  }catch(e){ json(res,400,{error:"克隆失败（slug 可能重复）："+e.message}); }
+});
+
+/* 规则 CRUD */
+route("GET", /^\/api\/admin\/rules$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  const rows = db.prepare("SELECT * FROM rules WHERE doctor_id=? ORDER BY sort,id").all(q.doctorId);
+  json(res,200, rows.map(r=>({ id:r.id, code:r.code, aliases:JSON.parse(r.aliases||"[]"), match:r.match_type, bot:r.bot, responses:JSON.parse(r.responses), enabled:r.enabled }))); });
+route("POST", /^\/api\/admin\/rules$/, async (req,res)=>{
+  const b = await parseBody(req);
+  const s=gate(req,res,+b.doctorId); if(!s)return;
+  if(!requireAdminAction(req,res,s,"rules.manage",{doctorId:+b.doctorId},"无规则维护权限")) return;
+  const first = db.prepare("SELECT MIN(sort) s FROM rules WHERE doctor_id=?").get(b.doctorId).s;
+  const sort = Number.isFinite(+first) ? (+first - 1) : 0;
+  const r = db.prepare("INSERT INTO rules(doctor_id,code,aliases,match_type,bot,responses,enabled,sort) VALUES(?,?,?,?,?,?,?,?)")
+    .run(b.doctorId,b.code,JSON.stringify(b.aliases||[]),b.match||"exact",b.bot||"小宝医助",JSON.stringify(b.responses||[]),b.enabled==0?0:1,sort);
+  json(res,200,{ok:true,id:r.lastInsertRowid}); });
+route("PUT", /^\/api\/admin\/rules\/(\d+)$/, async (req,res,m)=>{ const s=gate(req,res, rowDoctorId("rules",+m[1])); if(!s)return;
+  if(!requireAdminAction(req,res,s,"rules.manage",{doctorId:rowDoctorId("rules",+m[1])},"无规则维护权限")) return;
+  const b = await parseBody(req);
+  db.prepare("UPDATE rules SET code=?,aliases=?,match_type=?,bot=?,responses=?,enabled=? WHERE id=?")
+    .run(b.code,JSON.stringify(b.aliases||[]),b.match||"exact",b.bot||"小宝医助",JSON.stringify(b.responses||[]),b.enabled==0?0:1,+m[1]);
+  json(res,200,{ok:true}); });
+route("DELETE", /^\/api\/admin\/rules\/(\d+)$/, (req,res,m)=>{ const s=gate(req,res, rowDoctorId("rules",+m[1])); if(!s)return;
+  if(!requireAdminAction(req,res,s,"rules.manage",{doctorId:rowDoctorId("rules",+m[1])},"无规则维护权限")) return;
+  db.prepare("DELETE FROM rules WHERE id=?").run(+m[1]); json(res,200,{ok:true}); });
+
+/* FAQ CRUD */
+route("GET", /^\/api\/admin\/faq$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  json(res,200, db.prepare("SELECT * FROM faq WHERE doctor_id=? ORDER BY sort,id").all(q.doctorId)); });
+route("POST", /^\/api\/admin\/faq$/, async (req,res)=>{
+  const b = await parseBody(req);
+  const s=gate(req,res,+b.doctorId); if(!s)return;
+  if(!requireAdminAction(req,res,s,"rules.manage",{doctorId:+b.doctorId},"无 FAQ 维护权限")) return;
+  const r = db.prepare("INSERT INTO faq(doctor_id,grp,q,a,link,sort) VALUES(?,?,?,?,?,?)").run(b.doctorId,b.grp||"其他",b.q,b.a,b.link||null,b.sort||0);
+  json(res,200,{ok:true,id:r.lastInsertRowid}); });
+route("PUT", /^\/api\/admin\/faq\/(\d+)$/, async (req,res,m)=>{ const s=gate(req,res, rowDoctorId("faq",+m[1])); if(!s)return;
+  if(!requireAdminAction(req,res,s,"rules.manage",{doctorId:rowDoctorId("faq",+m[1])},"无 FAQ 维护权限")) return;
+  const b = await parseBody(req);
+  db.prepare("UPDATE faq SET grp=?,q=?,a=?,link=?,sort=? WHERE id=?").run(b.grp||"其他",b.q,b.a,b.link||null,b.sort||0,+m[1]);
+  json(res,200,{ok:true}); });
+route("DELETE", /^\/api\/admin\/faq\/(\d+)$/, (req,res,m)=>{ const s=gate(req,res, rowDoctorId("faq",+m[1])); if(!s)return;
+  if(!requireAdminAction(req,res,s,"rules.manage",{doctorId:rowDoctorId("faq",+m[1])},"无 FAQ 维护权限")) return;
+  db.prepare("DELETE FROM faq WHERE id=?").run(+m[1]); json(res,200,{ok:true}); });
+
+/* 提交记录 + 患者档案 + 统计 */
+route("GET", /^\/api\/admin\/submissions$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  let sql="SELECT * FROM submissions WHERE doctor_id=?"; const args=[q.doctorId];
+  if(q.type){ sql+=" AND type=?"; args.push(q.type); }
+  sql+=" ORDER BY id DESC LIMIT 500";
+  json(res,200, db.prepare(sql).all(...args).map(r=>({ id:r.id, type:r.type, payload:JSON.parse(r.payload||"{}"), status:r.status, at:r.created_at }))); });
+route("PUT", /^\/api\/admin\/submissions\/(\d+)$/, async (req,res,m)=>{ const did = rowDoctorId("submissions",+m[1]); const s=gate(req,res, did); if(!s)return;
+  if(!requireAdminAction(req,res,s,"submissions.manage",{doctorId:did},"无提交记录处理权限")) return;
+  const b = await parseBody(req); db.prepare("UPDATE submissions SET status=? WHERE id=?").run(b.status||"待跟进",+m[1]); json(res,200,{ok:true}); });
+route("GET", /^\/api\/admin\/stats$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  const byType = db.prepare("SELECT type,COUNT(*) c FROM submissions WHERE doctor_id=? GROUP BY type").all(q.doctorId);
+  const msgs = db.prepare("SELECT COUNT(*) c FROM msg_log WHERE doctor_id=?").get(q.doctorId).c;
+  const rules = db.prepare("SELECT COUNT(*) c FROM rules WHERE doctor_id=?").get(q.doctorId).c;
+  const triageSessions = db.prepare("SELECT COUNT(*) c FROM triage_sessions WHERE doctor_id=?").get(q.doctorId).c;
+  const triagePending = db.prepare("SELECT COUNT(*) c FROM triage_sessions WHERE doctor_id=? AND status='needs_human'").get(q.doctorId).c;
+  const communityGroups = db.prepare("SELECT COUNT(*) c FROM community_groups WHERE doctor_id=?").get(q.doctorId).c;
+  const communityPending = db.prepare("SELECT COUNT(*) c FROM outbound_queue WHERE doctor_id=? AND status='pending'").get(q.doctorId).c;
+  json(res,200,{ byType, msgs, rules, triageSessions, triagePending, communityGroups, communityPending }); });
+
+/* 社群运营接入层：真实企微/微信群可把回调映射到 /api/community/inbound；后台用 admin 接口做配置和人工审核 */
+route("POST", /^\/api\/community\/inbound$/, async (req,res)=>{
+  // fail-closed：未配置 COMMUNITY_WEBHOOK_TOKEN → 一律拒绝（绝不因"没配 token"而对外裸奔）；已配置 → 必须匹配 x-community-token 才放行。
+  if(!authz.communityInboundAuthorized(process.env.COMMUNITY_WEBHOOK_TOKEN, req.headers["x-community-token"], COMMUNITY_DEMO_TOKEN)){
+    return json(res,401,{error:"社群回调 token 不正确或未配置"});
+  }
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  try{ json(res,200, await community.handleInbound({ ...b, dataSource:"simulation" })); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+/* —— 企业微信入站消息处理：复用 community.handleInbound（engine→triage→出站队列）——
+   不变量3 收口：企微入站「真正零自动发」，AI/系统绝不在回调里向企微发任何内容；
+   所有产出（规则命中/编号/AI 草稿）一律入队列 pending，等医助在后台「确认发送」才发。 */
+function wecomDoctorId(cfg){
+  if(cfg && cfg.doctorId && db.prepare("SELECT 1 FROM doctors WHERE id=?").get(+cfg.doctorId)) return +cfg.doctorId;
+  const d = db.prepare("SELECT id FROM doctors WHERE active=1 ORDER BY id LIMIT 1").get() || db.prepare("SELECT id FROM doctors ORDER BY id LIMIT 1").get();
+  return d ? d.id : null;
+}
+async function handleWecomMessage(cfg, xml){
+  const parsed = wecom.parseInboundXml(xml);
+  const doctorId = wecomDoctorId(cfg);
+  if(!doctorId) return;
+  if(parsed.kind === "text"){
+    const inp = parsed.input;
+    // 入站只做 enqueue（全 pending），回调里不向企微发任何内容（含固定回执）——始终人工确认，零自动发。
+    await community.handleInbound({ doctorId, channelType:"wecom",
+      externalGroupId:inp.externalGroupId, externalUserId:inp.externalUserId, senderName:inp.senderName,
+      senderRole:"patient", text:inp.text, externalMsgId:inp.externalMsgId, rawPayload:inp.rawPayload });
+  }else if(parsed.kind === "kf_event"){
+    console.log("[wecom] 微信客服事件，待 sync_msg 拉取正文（联调后实现）:", parsed.openKfid);
+  }else if(parsed.kind === "media"){
+    // TODO 下一步联调：下载素材 → 图片走 mimo-v2.5 多模、语音走 mimo-v2.5-asr 转写 → 进同一管线；
+    // 同样不在回调里自动发回执，统一入队列待医助确认。
+    console.log("[wecom] 收到媒体消息（", parsed.mediaType, "），待联调入管线；不自动回复。");
+  }
+}
+
+/* 企业微信回调（无 cookie，靠 msg_signature + AES 校验）。未配置 Token/AESKey → 501，绝不外呼。 */
+route("GET", /^\/api\/wecom\/callback$/, (req,res,m,q)=>{
+  const cfg = wecom.loadConfig();
+  if(!cfg.callbackToken || !cfg.aesKey) return send(res,501,"企业微信回调未配置（缺 Token/EncodingAESKey）","text/plain; charset=utf-8");
+  try{ send(res,200, wecom.verifyUrl(cfg, q), "text/plain; charset=utf-8"); }
+  catch(e){ send(res,401,"verify failed","text/plain; charset=utf-8"); }
+});
+route("POST", /^\/api\/wecom\/callback$/, async (req,res,m,q)=>{
+  const cfg = wecom.loadConfig();
+  if(!cfg.callbackToken || !cfg.aesKey) return send(res,501,"企业微信回调未配置","text/plain; charset=utf-8");
+  const raw = await readRaw(req);
+  let message = "";
+  // 先验签 + AES 解密（确保来源合法），失败 → 回 200 丢弃（不让企微反复重试）。
+  try{ message = wecom.decryptCallback(cfg, q, wecom.extractEncrypt(raw)).message; }
+  catch(e){ console.error("[wecom] 回调解密失败:", e && e.message); return send(res,200,"","text/plain; charset=utf-8"); }
+  // 防重放（仅对验签通过的回调记录 nonce，避免缓存被伪造请求污染）：timestamp 超 ±5min 或 nonce 在窗口内重复 → 丢弃。
+  if(!wecom.callbackReplayOk(q)){
+    console.error("[wecom] 回调防重放拦截（timestamp 过期或 nonce 重复）:", q && q.timestamp, q && q.nonce);
+    return send(res,200,"","text/plain; charset=utf-8");
+  }
+  send(res,200,"","text/plain; charset=utf-8"); // 5 秒内回 200；回复经 API 异步发，避免企微重试
+  handleWecomMessage(cfg, message).catch(e=>console.error("[wecom] 处理消息出错:", e && e.message));
+});
+route("POST", /^\/api\/admin\/wecom\/config$/, async (req,res)=>{
+  const s=gate(req,res); if(!s)return;
+  if(!requireAdminAction(req,res,s,"credential.manage",null,"仅超级管理员可配置企业微信凭证")) return; // 企业级凭证：非 super（scoped）一律 403
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const before = wecom.loadConfig();
+  try{
+    const saved = wecom.saveConfig(b);
+    adminAudit(req, s, {
+      action:"credential.update", resourceType:"credential_config", resourceId:"wecom",
+      doctorId:b.doctorId ? +b.doctorId : (before.doctorId || 0),
+      before, after:wecom.loadConfig(), meta:{ provider:"wecom" }
+    });
+    json(res,200,{ ok:true, config:saved });
+  }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+
+// fail-closed：未配 callbackSecret 时不再放行（旧 fail-open 红线#4）；判定逻辑收口到 authz.qiweCallbackAuthorized（可单测）。
+// urlToken：从回调 URL 解出的令牌（路径段或 ?t=），令牌即密钥——绝不进任何日志/错误响应（见下方错误边界的 redact）。
+function qiweSecretOk(req, cfg, urlToken){
+  return authz.qiweCallbackAuthorized(cfg.callbackSecret, req.headers["x-qiwe-secret"], req.headers.authorization, QIWE_DEMO_SECRET, urlToken);
+}
+
+/* QiWe 第三方真实账号回调：文本触发患者回复；小程序卡片回调用于采集 sendWeapp 模板。
+   URL 令牌通道（qiweapi 推送不带任何鉴权头的适配）：同时匹配
+     /api/qiwe/callback、/api/qiwe/callback/<token>（路径段 [A-Za-z0-9_-]{16,128}）、以及 ?t=<token>。
+   效果链：qiweapi 控制台保存回调 URL 时先发一次**无鉴权探测 POST**——打到带令牌 URL → 过闸 200 → 控制台能保存
+   带路径的 URL；此后每条真实推送的 URL 天然带 token → 过鉴权。头部两通道保留；fail-closed 语义不变。 */
+route("POST", /^\/api\/qiwe\/callback(?:\/([A-Za-z0-9_-]{16,128}))?$/, async (req,res,m,q)=>{
+  const cfg = qiwe.loadConfig();
+  // 大整数 ID 保真解析（真实抓包实锤 2026-07-03）：数字 roomId/senderId 超安全整数会丢精度→白名单失配。用 parseBodyBigIntSafe 在 JSON.parse 前串化 15+ 位数字值。
+  //   仅此回调路由改用该解析；oversize/大小上限语义与 parseBody 完全一致，parseBody 本身与其它路由零改动。
+  const b = await parseBodyBigIntSafe(req);
+  if(b.__oversize) return json(res,200,{ok:false,error:"payload_oversize"});
+  const urlToken = (m && m[1]) || (q && q.t) || "";   // 路径段优先，其次 ?t=；两者都没有 → 空串（回退头部通道判定）
+  if(!qiweSecretOk(req, cfg, urlToken)) return json(res,403,{error:"QiWe callback secret 不匹配"});
+  // 临时诊断·默认关：仅当 QIWE_CAPTURE_RAW=1 时，记录已过鉴权的回调原始报文(body，不含 header 里的 callback_secret)，
+  // 用于真机抓 qiweapi「入群/群成员变更」事件的未知 cmd/字段格式——qiweapi 无文档、铁规则不准猜参数，只能抓真实报文；记完即关。
+  if(process.env.QIWE_CAPTURE_RAW === "1"){
+    try{ console.error("[QIWE_RAW_CAPTURE]", JSON.stringify(b).slice(0, 4000)); }
+    catch(e){ console.error("[QIWE_RAW_CAPTURE] <unserializable>"); }
+  }
+  const accepted = qiwe.extractEvents(b).length;
+  json(res,200,{ ok:true, accepted });             // 先回 200，避免 QiWe 超 3 秒重试
+  qiweBridge.handleCallbackBody(b, cfg).then(r=>{
+    const sent = (r.results || []).filter(x=>x && x.sent).length;
+    if(sent || (r.results || []).some(x=>x && x.error)) console.log("[qiwe] callback", JSON.stringify({ accepted:r.accepted, sent, results:r.results }));
+  }).catch(e=>console.error("[qiwe] 处理回调出错:", e && e.message));
+});
+
+route("GET", /^\/api\/admin\/qiwe\/config$/, (req,res)=>{
+  const s=gate(req,res); if(!s)return;
+  if(!requireAdminAction(req,res,s,"credential.manage",null,"仅超级管理员可查看 QiWe 凭证配置")) return;
+  json(res,200,{ ok:true, config:qiwe.publicConfig() });
+});
+route("POST", /^\/api\/admin\/qiwe\/config$/, async (req,res)=>{
+  const s=gate(req,res); if(!s)return;
+  if(!requireAdminAction(req,res,s,"credential.manage",null,"仅超级管理员可配置 QiWe 凭证")) return;
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const before = qiwe.loadConfig();
+  try{
+    const saved = qiwe.saveConfig(b);
+    adminAudit(req, s, {
+      action:"credential.update", resourceType:"credential_config", resourceId:"qiwe",
+      doctorId:saved.doctorId || before.doctorId || 0,
+      before, after:qiwe.loadConfig(), meta:{ provider:"qiwe" }
+    });
+    json(res,200,{ ok:true, config:saved });
+  }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("GET", /^\/api\/admin\/qiwe\/cards$/, (req,res,m,q)=>{
+  const cfg = qiwe.loadConfig();
+  const did = Number(q.doctorId || cfg.doctorId || qiweBridge.activeDoctorId(cfg));
+  const s=gate(req,res,did); if(!s)return;
+  try{ json(res,200,{ ok:true, doctorId:did, cards:qiwe.publicWeappTemplates(did) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("POST", /^\/api\/admin\/qiwe\/preview-reply$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const cfg = qiwe.loadConfig();
+  const did = Number(b.doctorId || cfg.doctorId || qiweBridge.activeDoctorId(cfg));
+  const s=gate(req,res,did); if(!s)return;
+  const wantsSend = b.send === true || b.send === 1 || b.send === "1";
+  if(wantsSend && !requireAdminAction(req,res,s,"qiwe.preview_send",{doctorId:did},"仅超级管理员可触发 QiWe 测试发送")) return;
+  let sendRequestId = null;
+  try{
+    const safeTarget = String(cfg.testToId || cfg.selfUserId || "").trim();
+    const reply = await patientReply.buildPatientReply({
+      doctorId:did,
+      text:b.text || "101",
+      patientName:b.patientName || "企微测试患者",
+      patientKey:"qiwe-preview:" + (safeTarget || "local")
+    });
+    const deliveryPlan = qiweBridge.prepareDelivery(did, reply, b.patientName || "企微测试患者");
+    let sendResult = null;
+    if(wantsSend){
+      sendRequestId = auditRequestId(req);
+      adminAudit(req, s, {
+        action:"qiwe.preview_send", resourceType:"qiwe_preview", resourceId:String(did), doctorId:did,
+        channel:"qiwe", outcome:"requested", requestId:sendRequestId,
+        meta:{ target:"configured_test_target", text:auditText(b.text || "101", 120), hasMiniProgram:deliveryPlan.hasMiniProgram }
+      });
+      if(!safeTarget){
+        adminAuditBestEffort(req, s, {
+          action:"qiwe.preview_send", resourceType:"qiwe_preview", resourceId:String(did), doctorId:did,
+          channel:"qiwe", outcome:"failed", reason:"未配置 QiWe 测试发送目标", requestId:sendRequestId,
+          meta:{ target:"missing" }
+        });
+        return json(res,400,{error:"未配置 QiWe 测试发送目标"});
+      }
+      sendResult = await qiweBridge.deliverReplyToQiwe({
+        cfg,
+        doctorId:did,
+        reply,
+        toId:safeTarget,
+        patientName:b.patientName || "企微测试患者"
+      });
+      adminAuditBestEffort(req, s, {
+        action:"qiwe.preview_send", resourceType:"qiwe_preview", resourceId:String(did), doctorId:did,
+        channel:"qiwe", outcome:(sendResult && sendResult.sent) ? "success" : "failed",
+        reason:(sendResult && sendResult.sent) ? "" : "QiWe 测试发送未发出",
+        requestId:sendRequestId, after:{ sent:!!(sendResult && sendResult.sent) },
+        meta:{ hasMiniProgram:deliveryPlan.hasMiniProgram, externalMsgId:sendResult && sendResult.externalMsgId ? "configured" : "" }
+      });
+    }
+    json(res,200,{
+      ok:true,
+      doctorId:did,
+      reply,
+      replyText:deliveryPlan.replyText,
+      weapp:deliveryPlan.weappPublic,
+      hasMiniProgram:deliveryPlan.hasMiniProgram,
+      sent:!!(sendResult && sendResult.sent),
+      sendResult
+    });
+  }catch(e){
+    if(wantsSend && sendRequestId){
+      adminAuditBestEffort(req, s, {
+        action:"qiwe.preview_send", resourceType:"qiwe_preview", resourceId:String(did), doctorId:did,
+        channel:"qiwe", outcome:"failed", reason:e.message || "发送失败", requestId:sendRequestId
+      });
+    }
+    json(res,400,{error:e.message});
+  }
+});
+
+route("GET", /^\/api\/admin\/community$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  try{ json(res,200, community.overview(+q.doctorId)); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("POST", /^\/api\/admin\/community\/qiwe\/sync$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = Number(b.doctorId);
+  const s=gate(req,res,did); if(!s)return;
+  if(!requireAdminAction(req,res,s,"community.group.manage",{doctorId:did},"无社群配置维护权限")) return;
+  try{ json(res,200,await require("./qiwe_sync.js").syncGroups({ doctorId:did })); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("POST", /^\/api\/admin\/community\/groups$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const s=gate(req,res,+b.doctorId); if(!s)return;
+  if(!requireAdminAction(req,res,s,"community.group.manage",{doctorId:+b.doctorId},"无社群配置维护权限")) return;
+  try{ json(res,200,{ ok:true, group:community.createGroup(b) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("PUT", /^\/api\/admin\/community\/groups\/(\d+)$/, async (req,res,m)=>{
+  const did = rowDoctorId("community_groups", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"群配置不存在"});
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  if(!requireAdminAction(req,res,s,"community.group.manage",{doctorId:did},"无社群配置维护权限")) return;
+  try{ json(res,200,{ ok:true, group:community.updateGroup(+m[1], b) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+/* 建群命名建议（只读）：返回按模板生成的建议群名 + 企微自动建群 room_base_name 建议，供后台展示/抄配，不真建群。 */
+route("GET", /^\/api\/admin\/community\/groups\/suggest-name$/, (req,res,m,q)=>{
+  const did = +q.doctorId;
+  const s=gate(req,res,did); if(!s)return;
+  try{ json(res,200,{ ok:true, ...community.suggestGroupName(did) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+/* 主动提醒（站内只读）：待跟进 的 加号/住院预约 提交计数 + 最近列表（summary 经 maskPII 脱敏）；绝不触发任何发送。 */
+route("GET", /^\/api\/admin\/reminders$/, (req,res,m,q)=>{
+  const did = +q.doctorId;
+  const s=gate(req,res,did); if(!s)return;
+  const rem = community.reminders(did);
+  rem.items = (rem.items || []).map(it=>({ ...it, summary: maskPII(it.summary || "") }));
+  json(res,200, rem);
+});
+/* 鉴权洞修（2026-07-09 同类·slug 回落跨租户）：与下方 campaigns 两路由同一漏洞——`+b.doctorId` 省略时得 NaN 旁路 gate 归属校验，
+   handleInbound 内部 resolveDoctorId(b) 回落 doctorSlug 解析到任意医生 → scoped 只带 {doctorSlug} 即可向他人社群注入入站消息/触发出站草稿。
+   修：先服务端 resolveDoctorId 解析 id、按解析后 id gate（fail-closed）；handleInbound 内再解析同一医生无碍。 */
+route("POST", /^\/api\/admin\/community\/inbound$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = community.resolveDoctorId(b);
+  if(!Number.isInteger(did)) return json(res,400,{error:"缺少有效医生（doctorId 或 doctorSlug）"});
+  const s=gate(req,res,did); if(!s)return;
+  if(!requireAdminAction(req,res,s,"community.inbound.simulate",{doctorId:did},"无社群模拟入站权限")) return;
+  try{ json(res,200, await community.handleInbound({ ...b, dataSource:"simulation" })); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+/* 鉴权洞修（2026-07-09 跨厂对抗复核实锤·gate(NaN) 旁路）：旧写法 `+b.doctorId` 在省略 doctorId 时得 NaN，
+   gate 的判据 `typeof doctorId==="number" && !Number.isNaN(doctorId)` 短路 → 归属校验被跳过、任意登录管理员放行；
+   随后 community.createXxx 内部 resolveDoctorId 回落 doctorSlug 解析到任意医生 → scoped 管理员只带 {doctorSlug} 即可
+   跨租户读他人知识库/向他人出站队列写草稿。修：先在服务端用同一 resolveDoctorId 解析出医生 id，再按解析后的 id gate（fail-closed）。 */
+route("POST", /^\/api\/admin\/community\/campaigns\/weekly$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = community.resolveDoctorId(b);
+  if(!Number.isInteger(did)) return json(res,400,{error:"缺少有效医生（doctorId 或 doctorSlug）"});
+  const s=gate(req,res,did); if(!s)return;
+  if(!requireAdminAction(req,res,s,"community.campaign.create",{doctorId:did},"无社群运营草稿生成权限")) return;
+  try{ json(res,200,{ ok:true, outbox:community.createWeeklyCampaign(b) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("POST", /^\/api\/admin\/community\/campaigns\/ops-candidate$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = community.resolveDoctorId(b);
+  if(!Number.isInteger(did)) return json(res,400,{error:"缺少有效医生（doctorId 或 doctorSlug）"});
+  const s=gate(req,res,did); if(!s)return;
+  if(!requireAdminAction(req,res,s,"ops.candidate_generate",{doctorId:did},"无运营候选生成权限")) return;
+  try{ json(res,200,{ ok:true, outbox:community.createOpsContentCandidate({ ...b, username:s.username }) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("POST", /^\/api\/admin\/community\/outbox\/(\d+)\/send$/, async (req,res,m)=>{
+  const did = rowDoctorId("outbound_queue", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"出站消息不存在"});
+  if(!requireAdminAction(req,res,s,"outbox.send",{doctorId:did},"无该出站消息的发送权限")) return;
+  const requestId = auditRequestId(req);
+  const before = auditOutboxSnapshot(+m[1]);
+  adminAudit(req, s, {
+    action:"outbox.send", resourceType:"outbox", resourceId:+m[1], doctorId:did,
+    channel:(before && before.channelType) || "community", outcome:"requested", requestId,
+    before, meta:{ source:before && before.source, priority:before && before.priority }
+  });
+  try{
+    const outbox = await community.setOutboxStatus(+m[1], "sent", s.username);
+    adminAuditBestEffort(req, s, {
+      action:"outbox.send", resourceType:"outbox", resourceId:+m[1], doctorId:did,
+      channel:(before && before.channelType) || "community", outcome:"success", requestId,
+      before, after:auditOutboxSnapshot(+m[1]), meta:{ status:outbox.status, sentBy:outbox.sentBy || "" }
+    });
+    json(res,200,{ ok:true, outbox });
+  }
+  catch(e){
+    adminAuditBestEffort(req, s, {
+      action:"outbox.send", resourceType:"outbox", resourceId:+m[1], doctorId:did,
+      channel:(before && before.channelType) || "community", outcome:"failed", reason:e.message || "发送失败", requestId,
+      before, after:auditOutboxSnapshot(+m[1])
+    });
+    json(res,400,{error:e.message});
+  }
+});
+route("POST", /^\/api\/admin\/community\/outbox\/(\d+)\/cancel$/, async (req,res,m)=>{
+  const did = rowDoctorId("outbound_queue", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"出站消息不存在"});
+  if(!requireAdminAction(req,res,s,"community.outbox.edit",{doctorId:did},"无该出站消息的取消权限")) return;
+  try{ json(res,200,{ ok:true, outbox: await community.setOutboxStatus(+m[1], "cancelled", s.username) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+/* 审核台后台动作（均仅作用于 pending、绝不触发发送；H1 的 send/cancel 纯追加不改） */
+route("POST", /^\/api\/admin\/community\/outbox\/(\d+)\/edit$/, async (req,res,m)=>{
+  const did = rowDoctorId("outbound_queue", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"出站消息不存在"});
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  if(!requireAdminAction(req,res,s,"community.outbox.edit",{doctorId:did},"无该出站消息的编辑权限")) return;
+  try{ json(res,200,{ ok:true, outbox: community.editOutboxText(+m[1], b.text, s.username) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("POST", /^\/api\/admin\/community\/outbox\/(\d+)\/assist-draft$/, async (req,res,m)=>{
+  const did = rowDoctorId("outbound_queue", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"出站消息不存在"});
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  if(!requireAdminAction(req,res,s,"assistant_draft.generate",{doctorId:did},"无 AI 改写草稿权限")) return;
+  try{ json(res,200, await community.generateAssistantDraftForOutbox(+m[1], { ...b, username:s.username })); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("POST", /^\/api\/admin\/community\/outbox\/(\d+)\/assignee$/, async (req,res,m)=>{
+  const did = rowDoctorId("outbound_queue", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"出站消息不存在"});
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  if(!requireAdminAction(req,res,s,"community.outbox.edit",{doctorId:did},"无该出站消息的分派权限")) return;
+  try{ json(res,200,{ ok:true, outbox: community.setOutboxAssignee(+m[1], b.assignee, s.username) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+route("POST", /^\/api\/admin\/community\/outbox\/(\d+)\/ignore$/, async (req,res,m)=>{
+  const did = rowDoctorId("outbound_queue", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"出站消息不存在"});
+  if(!requireAdminAction(req,res,s,"community.outbox.edit",{doctorId:did},"无该出站消息的忽略权限")) return;
+  try{ json(res,200,{ ok:true, outbox: await community.setOutboxStatus(+m[1], "ignored", s.username) }); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+
+const SIDEBAR_CODES = [
+  "101","102","103","105","201","301","302",
+  "606","616","626","808","818","909","919","929"
+];
+const SIDEBAR_CODE_LABELS = {
+  "101":"医生咨询",
+  "102":"视频问诊",
+  "103":"查看就医相关电话",
+  "105":"查看回复",
+  "201":"挂号及门诊时间",
+  "301":"加号",
+  "302":"住院预约",
+  "606":"学习科普",
+  "616":"住院及手术知识",
+  "626":"就医常见问题",
+  "808":"医生简介展示",
+  "818":"介绍给亲友",
+  "909":"感谢医生",
+  "919":"评价医生",
+  "929":"写感谢信"
+};
+function parseJsonArray(raw){
+  try{ const v = JSON.parse(raw || "[]"); return Array.isArray(v) ? v : []; }
+  catch(e){ return []; }
+}
+function responseMethods(resp){
+  const methods = new Set();
+  const r = resp || {};
+  const ext = r.external || {};
+  const text = r.text || r.title || r.modal || "";
+  if(String(text).trim()) methods.add("文字");
+  if(r.type === "image") methods.add("图片/海报");
+  if(r.type === "qr") methods.add("二维码");
+  if(r.type === "popup") methods.add("弹窗/本地信息");
+  if(r.page) methods.add(["contact-form","add-number","admission","review","story","thank-doctor"].includes(r.page) ? "本地表单" : "本地页面");
+  if(ext.url){
+    methods.add(/\/rec\//.test(ext.url) ? "问卷" : "H5/公众号");
+  }
+  if(ext.shortLink) methods.add("小程序短链");
+  if(r.type === "mp") methods.add("小程序入口");
+  return methods;
+}
+function responseAllowsNativeWeapp(resp){
+  const ext = (resp && resp.external) || {};
+  return !(ext.status === "fallback_short_link" || ext.nativeCard === false);
+}
+function responseNativeWeappCandidate(resp){
+  const ext = (resp && resp.external) || {};
+  return !!(resp && (resp.type === "mp" || ext.mode === "mini_program" || ext.shortLink));
+}
+function sidebarFulfillment(doctorId, cards){
+  const rules = db.prepare("SELECT code,aliases,responses,enabled FROM rules WHERE doctor_id=?").all(Number(doctorId));
+  const ruleMap = new Map(rules.map(r=>[r.code, r]));
+  const cardMap = new Map((cards || []).map(c=>[c.code, c]));
+  const rows = SIDEBAR_CODES.map(code=>{
+    const rule = ruleMap.get(code);
+    const responses = parseJsonArray(rule && rule.responses);
+    const methods = new Set();
+    responses.forEach(r=>responseMethods(r).forEach(x=>methods.add(x)));
+    const card = cardMap.get(code);
+    const nativeAllowed = responses.some(r=>responseNativeWeappCandidate(r) && responseAllowsNativeWeapp(r));
+    if(card && card.ready && nativeAllowed) methods.add("企微原生卡片");
+    else if(card && card.sourceShortLink) methods.add("小程序短链");
+    const enabled = !!(rule && rule.enabled);
+    const fulfilled = enabled && methods.size > 0;
+    return {
+      code,
+      label:SIDEBAR_CODE_LABELS[code] || "",
+      enabled,
+      fulfilled,
+      cardReady:!!(card && card.ready && nativeAllowed),
+      methods:Array.from(methods),
+      title:(card && card.title) || (responses[0] && (responses[0].title || responses[0].modal || responses[0].page || responses[0].text)) || "",
+      missing:(card && card.missing) || []
+    };
+  });
+  return {
+    total:rows.length,
+    fulfilled:rows.filter(x=>x.fulfilled).length,
+    nativeCards:rows.filter(x=>x.cardReady).length,
+    rows,
+    gaps:rows.filter(x=>!x.fulfilled).map(x=>x.code)
+  };
+}
+
+/* 企微侧边栏：面向当前聊天的小工作台聚合接口。只读聚合，发送/忽略仍走 outbox 明确动作接口。 */
+route("GET", /^\/api\/admin\/wecom\/sidebar$/, (req,res,m,q)=>{
+  const cfg = qiwe.loadConfig();
+  const did = Number(q.doctorId || cfg.doctorId || qiweBridge.activeDoctorId(cfg));
+  if(!Number.isInteger(did) || did <= 0) return json(res,400,{error:"doctorId 非法"});
+  const s=gate(req,res,did); if(!s)return;
+  try{
+    const overview = community.overview(did);
+    const sessions = triage.listSessions(did).slice(0, 8);
+    const requestedSessionId = Number(q.sessionId || 0);
+    const fallbackSessionId = (sessions[0] && sessions[0].id) || 0;
+    const requestedOwner = Number.isInteger(requestedSessionId) && requestedSessionId > 0 ? rowDoctorId("triage_sessions", requestedSessionId) : null;
+    const activeSessionId = requestedOwner === did ? requestedSessionId : fallbackSessionId;
+    const sessionDetail = activeSessionId ? triage.sessionDetail(activeSessionId) : null;
+    const cards = qiwe.publicWeappTemplates(did);
+    const readyCards = cards.filter(c=>c.ready);
+    const fulfillment = sidebarFulfillment(did, cards);
+    const pendingOutbox = overview.outbox.filter(o=>o.status === "pending").slice(0, 12);
+    const groupId = String(q.groupId || q.externalGroupId || "").trim();
+    const userId = String(q.externalUserId || q.userId || q.wxid || "").trim();
+    let currentGroup = null, currentMember = null;
+    if(groupId){
+      currentGroup = db.prepare(`
+        SELECT * FROM community_groups
+        WHERE doctor_id=? AND (external_group_id=? OR CAST(id AS TEXT)=?)
+        ORDER BY id DESC LIMIT 1`).get(did, groupId, groupId) || null;
+    }
+    if(userId){
+      currentMember = db.prepare(`
+        SELECT m.*, g.name AS group_name, g.external_group_id
+        FROM community_members m
+        LEFT JOIN community_groups g ON g.id=m.group_id
+        WHERE m.doctor_id=? AND m.external_user_id=?
+        ORDER BY m.id DESC LIMIT 1`).get(did, userId) || null;
+    }
+    const qiwePublic = qiwe.publicConfig(cfg);
+    const qiweSafe = adminScope(s) === null ? qiwePublic : {
+      configured:qiwePublic.configured,
+      enabled:qiwePublic.enabled,
+      autoSend:qiwePublic.autoSend,
+      allowGroup:qiwePublic.allowGroup,
+      callbackSecret:qiwePublic.callbackSecret
+    };
+    json(res,200,{
+      ok:true,
+      doctorId:did,
+      qiwe:qiweSafe,
+      context:{
+        groupId,
+        externalUserId:userId,
+        group:currentGroup ? {
+          id:currentGroup.id,
+          name:currentGroup.name || "",
+          externalGroupId:currentGroup.external_group_id || "",
+          memberCount:currentGroup.member_count || 0,
+          status:currentGroup.status || ""
+        } : null,
+        member:currentMember ? {
+          id:currentMember.id,
+          displayName:currentMember.display_name || "",
+          externalUserId:currentMember.external_user_id || "",
+          groupId:currentMember.group_id || null,
+          groupName:currentMember.group_name || ""
+        } : null
+      },
+      summary:overview.summary,
+      groups:overview.groups.slice(0, 8),
+      messages:overview.messages.slice(0, 16),
+      pendingOutbox,
+      sessions,
+      sessionDetail,
+      cards:{
+        total:cards.length,
+        ready:readyCards.length,
+        readyCodes:readyCards.map(c=>c.code),
+        missing:cards.filter(c=>!c.ready).slice(0, 12).map(c=>({ code:c.code, title:c.title, missing:c.missing || [] }))
+      },
+      fulfillment
+    });
+  }catch(e){ json(res,400,{error:e.message}); }
+});
+
+/* 运营策略台：知识库分层 / 群运营边界 / 医生画像 / 效果回收 */
+const KNOWLEDGE_LAYERS = new Set(["医院通用","医院/科室通用","医生个人","群运营动态"]);
+const KNOWLEDGE_MODES = new Set(["预制菜","半预制","现炒菜"]);
+const KNOWLEDGE_STATUS = new Set(["draft","ready","retired"]);
+function cleanText(v, max){ return String(v==null?"":v).trim().slice(0, max||2000); }
+function cleanInt(v){ const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0; }
+function doctorRow(doctorId){ return db.prepare("SELECT id,slug,name,title,hospital,dept,specialty FROM doctors WHERE id=?").get(+doctorId); }
+function ensureOpsAssets(doctorId){
+  const d = doctorRow(doctorId);
+  if(!d) return null;
+  const nowIso = now();
+  const specialty = (d.specialty || "") + (d.dept || "");
+  const goodDept = /外科|骨科|消化/.test(specialty);
+  const weakDept = /神经|皮肤|儿科/.test(specialty);
+  db.prepare(`INSERT OR IGNORE INTO ops_strategy(
+    doctor_id,group_mode,private_chat_policy,doctor_profile,specialty_fit,pharma_value,notes,updated_at
+  ) VALUES(?,?,?,?,?,?,?,?)`).run(
+    d.id,
+    "以微信群运营为主：入群欢迎、编号菜单、每周科普、门诊/复诊提醒、常见问题答疑；AI先做助理草稿和低风险自动回复。",
+    "默认不主动加患者微信私聊。仅在患者主动提交联络表、加号、住院等表单，或医生明确授权的场景下进入一对一承接。",
+    "优先匹配两类医生：一流三甲的二流医生（刚晋升副主任、业务热情高、追求个人发展），以及二流医院的一流医生（区域普通三甲主任/骨干专家）。",
+    goodDept ? "当前科室适配度高：外科/骨科/消化内科就医路径明确，复诊、检查、住院、加号和随访抓手强。" :
+      weakDept ? "当前科室需谨慎试点：神经/皮肤/儿科横向反馈偏弱，建议先小样本验证内容、转化和合规边界。" :
+      "当前科室建议作为观察组评估：先看医生配合度、可承接服务和群运营素材质量。",
+    "药企价值以医生合作破冰为主：把工具赠送给目标医生，帮助医生做患者服务与科普运营，从一次性拜访变成持续触点。",
+    "效果评估不做强因果承诺。建议每月回收医生门诊量趋势、群活跃、患者意向与医生主观感受；约40%医生可能直观感受到门诊量增长。",
+    nowIso
+  );
+  const existing = db.prepare("SELECT COUNT(*) c FROM knowledge_items WHERE doctor_id=?").get(d.id).c;
+  if(existing === 0){
+    const ins = db.prepare(`INSERT INTO knowledge_items(doctor_id,layer,mode,title,body,source,owner,status,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)`);
+    [
+      ["医院通用","预制菜","医院就医基础信息",`${d.hospital || "医院"}地址、挂号规则、门诊电话、医保/病案复印/住院流程等通用信息。`,"医院服务号/官网","平台运营","ready"],
+      ["医院/科室通用","预制菜","科室常见问题与就医路径",`${d.dept || "科室"}常见病种、检查前准备、复诊节奏、住院/手术宣教和FAQ。`,"科室模板","医学运营","ready"],
+      ["医生个人","半预制","医生个人主页与科普素材",`${d.name}医生的擅长方向、出诊时间、个人科普、病例分享、感谢信和可分享海报。`,"医生/助理提供","医生运营","draft"],
+      ["群运营动态","现炒菜","本周群运营动作","每周科普、门诊变化、停诊/加号、患者高频问题和群内舆情处理。","运营实时整理","群运营","draft"]
+    ].forEach(x=>ins.run(d.id, ...x, nowIso));
+  }
+  return d;
+}
+function outcomeOut(r){
+  return { id:r.id, period:r.period, outpatient_baseline:r.outpatient_baseline||0, outpatient_current:r.outpatient_current||0,
+    perceived_growth:!!r.perceived_growth, group_active:r.group_active||0, consult_leads:r.consult_leads||0,
+    notes:r.notes||"", created_at:r.created_at };
+}
+
+const CONFIG_DOMAINS = {
+  prompts:{ title:"AI 判断规则", scope:"global", superOnly:true, desc:"约束系统怎样判断风险、整理资料、生成草稿。"},
+  scripts:{ title:"患者/医助话术", scope:"doctor", superOnly:false, desc:"欢迎语、编号引导、转人工、急症提醒、图片语音兜底。"},
+  safety:{ title:"安全红线", scope:"global", superOnly:true, desc:"哪些话必须转人工、哪些症状必须优先提醒线下就医。"},
+  doctor_group:{ title:"医生与社群", scope:"doctor", superOnly:false, desc:"医生资料、负责社群、新群默认处理方式。"},
+  codes_cards:{ title:"编号入口", scope:"doctor", superOnly:false, desc:"患者发哪个编号，对应文字、卡片、链接或问卷入口。"}
+};
+const CONFIG_DOMAIN_ORDER = ["prompts","scripts","safety","doctor_group","codes_cards"];
+const SECRET_KEY_RE = /(secret|token|password|passwd|authorization|bearer|api[_-]?key|callbackSecret|encodingAESKey|aesKey)/i;
+function configIsSuper(s){ return adminScope(s) === null; }
+function configMeta(domain){ return CONFIG_DOMAINS[String(domain||"")] || null; }
+function configOwnerId(domain, doctorId){
+  const meta = configMeta(domain);
+  return meta && meta.scope === "global" ? 0 : doctorId;
+}
+function parseConfigJson(text, fallback){
+  try{ const v = JSON.parse(text || "null"); return v && typeof v === "object" && !Array.isArray(v) ? v : (fallback||{}); }
+  catch(e){ return fallback||{}; }
+}
+function parseJsonAny(text, fallback){ try{ const v = JSON.parse(text || "null"); return v==null ? fallback : v; }catch(e){ return fallback; } }
+function stableJson(v){ return JSON.stringify(v || {}, null, 2); }
+function publicGroupName(v){ return String(v || "").replace(/（群名待甲方确认）|\(群名待甲方确认\)/g, "").trim(); }
+function doctorContent(did){
+  const r = db.prepare("SELECT content FROM doctors WHERE id=?").get(+did);
+  return parseConfigJson(r && r.content, {});
+}
+const LV_DOCX_SCRIPTS = {
+  groupWelcome:"您好，欢迎加入吕富靖主任建立的【院外公益健康群】👏\n⭐点击【医患联络表】提交基础信息，便于医生了解您的情况☑\n⭐在群里输入数字 “1”，查看所有群功能😄\n⭐点击下方小程序观看吕富靖主任给您的视频问候💗",
+  code101:"为保护您的隐私，请通过医生小程序主页相关服务进行 1对1 咨询医生，医生利用空闲时间回复，请耐心等待。感谢您的理解和配合[玫瑰][玫瑰]。\n🌻 紧急情况，请及时到医院就诊。",
+  code102:"为保护您的隐私，请通过医生小程序主页视频问诊服务进行 1对1 咨询医生，医生利用空闲时间回复，请耐心等待。感谢您的理解和配合[玫瑰][玫瑰]。\n🌻 紧急情况，请及时到医院就诊。",
+  code103:"西城院区010-63138585、科室电话：010-63014411，地址 北京市西城区永安路95号。\n通州院区010-80838585，地址 北京市通州区潞苑东路101号院。\n顺义院区010-81608585，地址 北京市顺义区友谊南街1号。",
+  code105:"点击问诊小程序，查看医生回复，如果未回复请耐心等待一下。",
+  code201:"请您选择合适的时间，通过医院官方挂号平台挂号，挂号成功后持医保卡前往医院取号。",
+  code202:"-",
+  code301:"注意：本次加号为群内专属，与医院官方发布门诊信息不互通。请留意医院公众号及群内通知，排除医生停诊日，停诊日加号无效。\n📢 【申请加号】操作步骤如下：\n1、打开【小程序链接】，选择【预约就诊】，根据流程操作。\n2、申请加号后，您可通过订单页面查看加号结果。",
+  code302:"📝 填写须知：\n1、请填写【住院申请表】，向医生申请住院。最终能否入院及具体入院时间，由院方审核后再行通知。\n2、由于医院床位紧张，请各位朋友提前做好安排，避免错过最佳治疗时机。\n🌻 友情提醒：\n1. 填写完信息后，请在群里【告知医助】，以便及时为您跟进。\n2. 床位安排确定后，住院部医生会提前电话通知，最终住院时间以医生电话通知为准。",
+  code501:"-",
+  code606:"🌻 吕主任的科普在以下渠道发布，欢迎大家关注\n1、抖音：消化内科吕富靖\n2、小红书：消化内科吕富靖\n3、百家号：消化内科吕富靖\n4、快手：消化内科吕富靖\n5、微信公众号：吃好喝好",
+  code616:"直接弹出链接",
+  code626:"直接弹出链接",
+  code808:"直接弹出链接",
+  code818:"🌻 感谢您转发海报，让更多患者获得主任的帮助\n👉🏻 转发方法：保存图片，转发到朋友圈、微信好友或微信群",
+  code888:"-",
+  code909:"感谢您的信任与认可，祝您后续诊疗一切顺利，早日痊愈。",
+  code919:"分享您的就医感受，让更多人了解吕主任。",
+  code929:"🌻 感谢您对吕主任的认可。诚邀您分享您的医患情缘与经历。\n这就是对我们医护团队的最好表扬，也是对其他患友的帮助与鼓励！",
+  "code联络表":"您好，欢迎加入吕富靖主任建立的【院外公益健康群】👏\n⭐点击【医患联络表】提交基础信息，便于医生了解您的情况☑\n⭐在群里输入数字 “1”，查看所有群功能😄\n⭐点击下方小程序观看吕富靖主任给您的视频问候💗",
+  memberVisit:"【新患者到访 · 仅供医助关注，无需发送】{patient} 首次在群内发言，系统已发送入群欢迎。建议医助关注后续消息，必要时确认身份、备注为「姓名+疾病」，并主动引导 101 咨询/201 挂号等入口。"
+};
+function defaultOpsConfig(domain, did){
+  const d = doctorRow(did) || { name:"医生", hospital:"医院", dept:"科室", specialty:"" };
+  const c = doctorContent(did);
+  const groups = db.prepare("SELECT id,name,external_group_id,channel_type,welcome_enabled,auto_reply_enabled,review_mode FROM community_groups WHERE doctor_id=? ORDER BY id").all(+did);
+  const rules = db.prepare("SELECT code,aliases,match_type,bot,responses,enabled,sort FROM rules WHERE doctor_id=? ORDER BY sort,id").all(+did)
+    .map(r=>({ code:r.code, aliases:parseJsonAny(r.aliases, []), matchType:r.match_type, bot:r.bot, responses:parseJsonAny(r.responses, []), enabled:!!r.enabled, sort:r.sort||0 }));
+  const cards = db.prepare("SELECT code,title,app_id,username,page_path,source_short_link,source_type,desc FROM qiwe_weapp_templates WHERE doctor_id=? ORDER BY code,id").all(+did);
+  if(domain === "prompts") return {
+    riskAssessment:"你是吕富靖主任团队的医助助手，只做预分诊和医助草稿，不替医生诊断。先体现“已经认真看到患者的问题”，再整理风险；AI 助手只能补充表达，不能降低本地安全规则判定的风险等级。",
+    intakeCard:"像医助接诊前整理病历一样，提取主诉、症状特点、持续时间、伴随症状、既往史与用药、患者诉求。缺失信息写“待补充”，不要编造；语气要让医助感觉患者被认真对待。",
+    lowRiskReply:"以“主任团队医助”的身份回复：先回应患者、表示已收到并会帮其整理，再做服务引导和一般性健康教育；不诊断、不用药、不解读检查报告、不承诺疗效。",
+    intentRecognition:"识别编号、挂号、咨询、住院、随访、投诉、闲聊、紧急症状等意图；拿不准或涉及具体病情判断时转人工。不要让患者觉得被机器打发，要给出下一步明确入口。"
+  };
+  if(domain === "safety") return {
+    redFlags:["胸痛","呼吸困难","呕血","黑便","便血","剧烈腹痛","持续高热","意识不清"],
+    humanTriggers:["要不要手术","怎么吃药","报告怎么看","是不是癌","处方","诊断"],
+    levels:{
+      high:{ name:"高风险", action:"立即转人工并提示线下急诊/正规医院就诊", modelAllowed:false, sendPolicy:"safe_template_plus_human" },
+      medium:{ name:"中风险", action:"生成草稿，必须人工确认", modelAllowed:true, sendPolicy:"human_confirm" },
+      low:{ name:"低风险", action:"可生成服务型回复，仍需二次安全扫描", modelAllowed:true, sendPolicy:"guarded_auto_or_confirm" }
+    }
+  };
+  if(domain === "scripts"){
+    const welcomeGroupName = publicGroupName(groups[0] && groups[0].name ? groups[0].name : `${d.name}医生健康群`) || `${d.name}医生健康群`;
+    const baseScripts = {
+    groupWelcome:`新朋友，欢迎加入${welcomeGroupName}！这里由${d.name}医生团队和医助共同维护，我会先帮大家整理问题、引导到合适入口，复杂情况再找医生确认。\n\n为方便医生快速识别您的情况，建议把群昵称改成「姓名+疾病」（例如：王先生+胃炎）。\n· 发送 1 查看群功能菜单\n· 发送 101 向医生咨询\n· 想了解挂号/出诊时间，发送 303\n\n群内以健康科普与就医服务为主；涉及具体病情、用药、检查报告判断会找医生确认。若出现胸痛、呼吸困难、呕血、剧烈腹痛等紧急情况，请直接线下就医或拨打 120。`,
+    code101:"我收到您的咨询需求了。发送 101 后，我会把医生春雨主页/咨询入口发给您，您可以在里面选择图文、电话、视频或预约就诊等合适方式；涉及具体病情时，也会由医助继续跟进，不会把您落下。",
+    code303:"我来帮您看挂号和出诊相关入口。发送 303 后，医助会回复医院挂号通道、出诊时间与就诊地点；如果页面信息不够明确，也可以继续在群里说明，我会转医助帮您确认。",
+    transferHuman:"您的情况我已经收到，涉及具体病情判断，需要医助进一步确认。我先帮您转人工，请稍等一下；如果症状持续加重，请优先线下就医。",
+    emergency:"您描述的情况可能需要尽快由线下医生判断。为安全起见，请不要只在群里等待回复；如症状紧急或持续加重，请立即到线下急诊/正规医院就诊，必要时拨打 120。医助也会继续关注这条消息。",
+    nonText:"您发来的图片/资料我已经收到。图片内容需要医助人工查看，我会帮您转给医助跟进；如果方便，也请补充一句文字说明您最想咨询的问题，这样处理会更快。",
+    voice:"不好意思，您的语音我这边暂时没能听清/稳定识别。为了不漏掉您的情况，麻烦您用文字简单补充一下；如果不方便打字，我也会帮您转医助人工查看。",
+    memberVisit:"【新患者到访 · 仅供医助关注，无需发送】{patient} 首次在群内发言，系统已发送入群欢迎。建议医助关注后续消息，必要时确认身份、备注为「姓名+疾病」，并主动引导 101 咨询/303 挂号等入口。"
+    };
+    return d.slug === "lvfujing" ? Object.assign({}, baseScripts, LV_DOCX_SCRIPTS) : baseScripts;
+  }
+  if(domain === "doctor_group") return {
+    doctor:{ id:d.id, name:d.name, hospital:d.hospital, dept:d.dept, title:d.title || "", specialty:d.specialty || "", profile:(c.doctorProfile && c.doctorProfile.intro) || "" },
+    groups:groups.map(g=>({ id:g.id, name:g.name, externalGroupId:g.external_group_id, channelType:g.channel_type, welcomeEnabled:!!g.welcome_enabled, autoReplyEnabled:!!g.auto_reply_enabled, reviewMode:g.review_mode })),
+    defaultNewGroup:{ welcomeEnabled:true, autoReplyEnabled:false, reviewMode:"human_review", owner:"医助" }
+  };
+  if(domain === "codes_cards") return {
+    codes:rules.map(r=>({ code:r.code, aliases:r.aliases, enabled:r.enabled, responses:r.responses })),
+    cards:cards.map(x=>({ code:x.code, title:x.title, appId:x.app_id ? "configured" : "", username:x.username ? "configured" : "", pagePath:x.page_path ? "configured" : "", sourceType:x.source_type, sourceShortLink:x.source_short_link, desc:x.desc })),
+    fallback:{ missingCard:"原生卡片未就绪时，按文字/链接/问卷承接；404 页面不存在时使用 101 医生主页卡兜底。" }
+  };
+  return {};
+}
+const OLD_PROMPT_DEFAULTS = {
+  riskAssessment:"系统只做预分诊和医助草稿，不替医生诊断。AI 只能补充表达，不能降低安全规则判定的风险等级。",
+  intakeCard:"提取主诉、症状特点、持续时间、伴随症状、既往史与用药、患者诉求。缺失信息标注待补充。",
+  lowRiskReply:"仅做服务引导和一般性健康教育，不给诊断、用药、检查解读或治疗方案。",
+  intentRecognition:"识别编号、挂号、咨询、住院、随访、投诉、闲聊、紧急症状等意图；无法判断时转人工。"
+};
+const OLD_SCRIPT_DEFAULTS = {
+  code101:"发送 101 后，医助会发送医生春雨主页/咨询入口。请选择适合的问诊方式。",
+  code303:"发送 303 后，医助会回复医院挂号通道、出诊时间与就诊地点。",
+  transferHuman:"您的情况需要医助进一步确认，我已为您转人工，请稍等。",
+  emergency:"如症状紧急或持续加重，请立即到线下急诊/正规医院就诊，必要时拨打 120。",
+  nonText:"图片或文件内容暂由医助人工查看处理，请稍等。",
+  voice:"语音内容暂时无法稳定自动识别，请补充文字描述；医助也会人工查看。",
+  memberVisit:"【新患者到访 · 仅供医助关注，无需发送】{patient} 首次在群内发言，已自动发送入群欢迎。建议：确认身份、备注为「姓名+疾病」，并留意其后续咨询。"
+};
+const CURRENT_SCRIPT_DEFAULTS = {
+  code101:"我收到您的咨询需求了。发送 101 后，我会把医生春雨主页/咨询入口发给您，您可以在里面选择图文、电话、视频或预约就诊等合适方式；涉及具体病情时，也会由医助继续跟进，不会把您落下。",
+  code303:"我来帮您看挂号和出诊相关入口。发送 303 后，医助会回复医院挂号通道、出诊时间与就诊地点；如果页面信息不够明确，也可以继续在群里说明，我会转医助帮您确认。",
+  transferHuman:"您的情况我已经收到，涉及具体病情判断，需要医助进一步确认。我先帮您转人工，请稍等一下；如果症状持续加重，请优先线下就医。",
+  emergency:"您描述的情况可能需要尽快由线下医生判断。为安全起见，请不要只在群里等待回复；如症状紧急或持续加重，请立即到线下急诊/正规医院就诊，必要时拨打 120。医助也会继续关注这条消息。",
+  nonText:"您发来的图片/资料我已经收到。图片内容需要医助人工查看，我会帮您转给医助跟进；如果方便，也请补充一句文字说明您最想咨询的问题，这样处理会更快。",
+  voice:"不好意思，您的语音我这边暂时没能听清/稳定识别。为了不漏掉您的情况，麻烦您用文字简单补充一下；如果不方便打字，我也会帮您转医助人工查看。",
+  memberVisit:"【新患者到访 · 仅供医助关注，无需发送】{patient} 首次在群内发言，系统已发送入群欢迎。建议医助关注后续消息，必要时确认身份、备注为「姓名+疾病」，并主动引导 101 咨询/303 挂号等入口。"
+};
+const LEGACY_LV_DOCX_SCRIPT_DEFAULTS = {
+  code101:"为保护您的隐私，关于您的问题请通过下方链接 1对1 咨询医生，医生利用空闲时间回复，请耐心等待。感谢您的理解和配合[玫瑰][玫瑰]。\n🌻 紧急情况，请及时到医院就诊。",
+  code102:"为保护您的隐私，关于您的问题请通过下方链接 1对1 咨询医生，医生利用空闲时间回复，请耐心等待。感谢您的理解和配合[玫瑰][玫瑰]。\n🌻 紧急情况，请及时到医院就诊。",
+  code818:"🌻 感谢您转发海报，让更多患者获得主任的帮助\n👉🏻 转发方法：只需1步，保存图片，并转发到朋友圈",
+  code929:"🌻 感谢您对吕主任的认可。诚邀您分享您的医患情缘与经历。\n这就是对我们医护团队的最好表扬，也是对其他患友的最好鼓励。"
+};
+function normalizeWelcomeScriptText(v){
+  let s = String(v || "");
+  if(!s) return s;
+  s = s.replace(/（群名待甲方确认）|\(群名待甲方确认\)/g, "");
+  s = s.replace(/复杂情况再转人工[\/／]医生确认/g, "复杂情况再找医生确认");
+  s = s.replace(/会转人工处理/g, "会找医生确认");
+  s = s.replace(/转人工/g, "找医生");
+  s = s.replace(/呕血、黑便、/g, "呕血、");
+  s = s.replace(/、黑便/g, "");
+  s = s.replace(/发送 3 查看/g, "发送 1 查看");
+  s = s.replace(/发 3 看/g, "发 1 看");
+  s = s.replace(/数字[「“"]3[」”"]/g, "数字「1」");
+  return s;
+}
+function upgradeDefaultOpsConfigValues(domain, cfg, def){
+  let changed = false;
+  if(!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return { cfg:def, changed:true };
+  if(domain === "prompts"){
+    Object.keys(OLD_PROMPT_DEFAULTS).forEach(k=>{
+      if(cfg[k] === OLD_PROMPT_DEFAULTS[k] && def[k]){
+        cfg[k] = def[k];
+        changed = true;
+      }
+    });
+  }
+  if(domain === "scripts"){
+    if(typeof cfg.groupWelcome === "string"){
+      const normalizedWelcome = normalizeWelcomeScriptText(cfg.groupWelcome);
+      if(normalizedWelcome !== cfg.groupWelcome){
+        cfg.groupWelcome = normalizedWelcome;
+        changed = true;
+      }
+    }
+    if(typeof cfg.groupWelcome === "string" &&
+      /发送 1 查看全部功能；发送 101 获取医生咨询入口；出现胸痛、呼吸困难、呕血等紧急情况请立即线下就医或拨打 120。$/.test(cfg.groupWelcome) &&
+      def.groupWelcome){
+      cfg.groupWelcome = def.groupWelcome;
+      changed = true;
+    }
+    if(typeof cfg.groupWelcome === "string" && /^您好，欢迎加入吕富靖主任/.test(String(def.groupWelcome || "")) &&
+      /医生团队和医助共同维护|发送 101 向医生咨询|想了解挂号\/出诊时间/.test(cfg.groupWelcome)){
+      cfg.groupWelcome = def.groupWelcome;
+      changed = true;
+    }
+    Object.keys(def || {}).forEach(k=>{
+      if(!(k in cfg)){
+        cfg[k] = def[k];
+        changed = true;
+      }
+    });
+    [OLD_SCRIPT_DEFAULTS, CURRENT_SCRIPT_DEFAULTS, LEGACY_LV_DOCX_SCRIPT_DEFAULTS].forEach(defaults=>{
+      Object.keys(defaults).forEach(k=>{
+        if(cfg[k] === defaults[k] && def[k]){
+          cfg[k] = def[k];
+          changed = true;
+        }
+      });
+    });
+  }
+  return { cfg, changed };
+}
+function maybeUpgradeOpsConfigDefaults(row, did){
+  if(!row || !["prompts","scripts"].includes(row.domain)) return row;
+  const def = defaultOpsConfig(row.domain, did);
+  const draft = upgradeDefaultOpsConfigValues(row.domain, parseConfigJson(row.draft_json, {}), def);
+  const pub = upgradeDefaultOpsConfigValues(row.domain, parseConfigJson(row.published_json, {}), def);
+  if(!draft.changed && !pub.changed) return row;
+  const nowIso = now();
+  db.prepare(`UPDATE ops_configs SET draft_json=?, published_json=?, updated_at=?, published_at=COALESCE(published_at, ?), updated_by=COALESCE(NULLIF(updated_by,''), 'system')
+    WHERE id=?`).run(stableJson(draft.cfg), stableJson(pub.cfg), nowIso, nowIso, row.id);
+  configAudit(row.id, row.doctor_id, row.domain, "seed", "system", { upgradedDefaults:true }, { ok:true });
+  return db.prepare("SELECT * FROM ops_configs WHERE id=?").get(row.id);
+}
+function configAudit(configId, did, domain, action, actor, snapshot, result){
+  db.prepare(`INSERT INTO ops_config_audit(config_id,doctor_id,domain,action,actor,snapshot_json,result_json,created_at)
+    VALUES(?,?,?,?,?,?,?,?)`).run(configId||null, did||0, domain, action, actor||"", stableJson(snapshot), stableJson(result), now());
+  adminAudit(null, auditSessionForUsername(actor || "system"), {
+    action:"config." + String(action || "update"),
+    resourceType:"ops_config",
+    resourceId:configId || null,
+    doctorId:did || 0,
+    outcome:result && result.ok === false ? "failed" : "success",
+    after:snapshot,
+    meta:{ domain, result }
+  });
+}
+function ensureOpsConfig(domain, did){
+  const meta = configMeta(domain);
+  if(!meta) return null;
+  const ownerId = configOwnerId(domain, did);
+  let row = db.prepare("SELECT * FROM ops_configs WHERE doctor_id=? AND domain=?").get(ownerId, domain);
+  if(!row){
+    const def = defaultOpsConfig(domain, did);
+    const r = db.prepare(`INSERT INTO ops_configs(doctor_id,domain,title,scope,draft_json,published_json,published_version,status,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(ownerId, domain, meta.title, meta.scope, stableJson(def), stableJson(def), 1, "published", now());
+    row = db.prepare("SELECT * FROM ops_configs WHERE id=?").get(r.lastInsertRowid);
+    configAudit(row.id, ownerId, domain, "seed", "system", def, { ok:true });
+  }
+  row = maybeUpgradeOpsConfigDefaults(row, did);
+  return row;
+}
+function configOut(row, did, canEdit){
+  const meta = configMeta(row.domain) || {};
+  return {
+    id:row.id, doctorId:row.doctor_id, requestedDoctorId:did, domain:row.domain, title:row.title || meta.title || row.domain,
+    desc:meta.desc || "", scope:row.scope || meta.scope || "doctor", superOnly:!!meta.superOnly, canEdit:!!canEdit,
+    draft:parseConfigJson(row.draft_json, {}), published:parseConfigJson(row.published_json, {}),
+    publishedVersion:row.published_version||0, status:row.status, updatedBy:row.updated_by||"", updatedAt:row.updated_at||"",
+    publishedBy:row.published_by||"", publishedAt:row.published_at||""
+  };
+}
+function configAccess(req, res, id, action){
+  const row = db.prepare("SELECT * FROM ops_configs WHERE id=?").get(+id);
+  const s = gate(req, res, row ? (row.doctor_id ? row.doctor_id : undefined) : null);
+  if(!s) return {};
+  if(!row){ json(res,404,{error:"配置不存在"}); return {}; }
+  const meta = configMeta(row.domain);
+  if(!meta){ json(res,400,{error:"未知配置域"}); return {}; }
+  if(row.doctor_id === 0 && !configIsSuper(s)){ json(res,403,{error:"仅超级管理员可操作全局配置"}); return {}; }
+  if(meta.superOnly && !configIsSuper(s)){ json(res,403,{error:"仅超级管理员可操作该配置"}); return {}; }
+  if(action && !requireAdminAction(req,res,s,action,{doctorId:row.doctor_id || undefined}, action === "config.publish" ? "无发布运营配置权限" : "无保存运营配置草稿权限")) return {};
+  return { row, s, meta };
+}
+function walkConfig(v, fn, path){
+  path = path || [];
+  if(Array.isArray(v)) return v.forEach((x,i)=>walkConfig(x, fn, path.concat(i)));
+  if(v && typeof v === "object") Object.keys(v).forEach(k=>{ fn(k, v[k], path.concat(k)); walkConfig(v[k], fn, path.concat(k)); });
+}
+function validateOpsConfig(domain, cfg){
+  const errors = [], warnings = [];
+  if(!cfg || typeof cfg !== "object" || Array.isArray(cfg)) errors.push("配置内容格式不正确");
+  walkConfig(cfg, (k,v,p)=>{
+    if(SECRET_KEY_RE.test(k)) errors.push("禁止在运营配置中保存密钥字段："+p.join("."));
+    if(typeof v === "string" && /Bearer\s+[A-Za-z0-9._-]{12,}/i.test(v)) errors.push("禁止在运营配置中保存 Authorization/Bearer 密钥："+p.join("."));
+    const lk = String(k).toLowerCase();
+    if(typeof v === "string" && (lk === "regex" || lk.endsWith("regex") || lk === "pattern")){
+      try{ new RegExp(v); }catch(e){ errors.push("规则格式不正确："+p.join(".")+"（"+e.message+"）"); }
+    }
+  });
+  if(domain === "safety"){
+    if(!Array.isArray(cfg.redFlags) || cfg.redFlags.length === 0) errors.push("安全红线必须填写至少一个高风险词");
+    if(!Array.isArray(cfg.humanTriggers) || cfg.humanTriggers.length === 0) errors.push("安全红线必须填写至少一个转人工词");
+    ["high","medium","low"].forEach(k=>{ if(!cfg.levels || !cfg.levels[k]) errors.push("安全红线必须保留高/中/低风险处理动作"); });
+    if(cfg.levels && cfg.levels.high && cfg.levels.high.modelAllowed !== false) errors.push("高风险必须保持：不交给 AI 自行判断");
+    if(cfg.levels && cfg.levels.medium && !/human|confirm|人工/.test(String(cfg.levels.medium.sendPolicy||""))) warnings.push("中风险建议保持人工确认策略");
+  }
+  return { ok:errors.length===0, errors, warnings };
+}
+function parseConfigBody(body){
+  if(body && body.config && typeof body.config === "object" && !Array.isArray(body.config)) return body.config;
+  if(typeof body.json === "string"){
+    const v = JSON.parse(body.json);
+    if(v && typeof v === "object" && !Array.isArray(v)) return v;
+  }
+  throw new Error("配置内容格式不正确");
+}
+
+route("GET", /^\/api\/admin\/config-center$/, (req,res,m,q)=>{
+  const did = Number(q.doctorId);
+  if(!Number.isInteger(did) || did <= 0) return json(res,400,{error:"doctorId 非法"});
+  const s = gate(req,res,did); if(!s)return;
+  if(!doctorRow(did)) return json(res,404,{error:"医生不存在"});
+  const isSuper = configIsSuper(s);
+  const domains = CONFIG_DOMAIN_ORDER.filter(d=>{
+    const meta = configMeta(d);
+    if(!meta) return false;
+    if(meta.superOnly && !isSuper) return false;
+    if(q.domain && q.domain !== d) return false;
+    return true;
+  }).map(d=>{
+    const row = ensureOpsConfig(d, did);
+    return configOut(row, did, isSuper || canAdmin(s, "config.draft", {doctorId:row.doctor_id || did}));
+  });
+  json(res,200,{ ok:true, doctor:doctorRow(did), domains, order:CONFIG_DOMAIN_ORDER });
+});
+
+route("PUT", /^\/api\/admin\/config-center\/(\d+)\/draft$/, async (req,res,m)=>{
+  const { row, s } = configAccess(req,res,+m[1],"config.draft"); if(!row)return;
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  let cfg;
+  try{ cfg = parseConfigBody(b); }catch(e){ return json(res,400,{error:e.message}); }
+  const check = validateOpsConfig(row.domain, cfg);
+  if(!check.ok) return json(res,400,{error:"配置校验失败", errors:check.errors, warnings:check.warnings});
+  const updatedAt = now();
+  db.prepare("UPDATE ops_configs SET draft_json=?,status='draft',updated_by=?,updated_at=? WHERE id=?")
+    .run(stableJson(cfg), s.username, updatedAt, row.id);
+  configAudit(row.id, row.doctor_id, row.domain, "draft", s.username, cfg, check);
+  json(res,200,{ ok:true, validation:check, updatedAt, updatedBy:s.username });
+});
+
+route("POST", /^\/api\/admin\/config-center\/(\d+)\/preview$/, async (req,res,m)=>{
+  const { row, s } = configAccess(req,res,+m[1],"config.draft"); if(!row)return;
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  let cfg = parseConfigJson(row.draft_json, {});
+  if(b && (b.config || b.json)){
+    try{ cfg = parseConfigBody(b); }catch(e){ return json(res,400,{error:e.message}); }
+  }
+  const check = validateOpsConfig(row.domain, cfg);
+  const impact = row.doctor_id === 0 ? "全局配置：发布后所有医生和患者群都会使用这版内容。"
+    : "医生配置：发布后只有当前医生下的编号、话术或患者群会使用这版内容。";
+  configAudit(row.id, row.doctor_id, row.domain, "preview", s.username, cfg, check);
+  json(res,200,{ ok:check.ok, validation:check, impact, testResult:check.ok?"校验通过，可发布。":"校验未通过，不允许发布。" });
+});
+
+route("POST", /^\/api\/admin\/config-center\/(\d+)\/publish$/, async (req,res,m)=>{
+  const { row, s } = configAccess(req,res,+m[1],"config.publish"); if(!row)return;
+  const cfg = parseConfigJson(row.draft_json, {});
+  const check = validateOpsConfig(row.domain, cfg);
+  if(!check.ok) return json(res,400,{error:"配置校验失败，已阻止发布", errors:check.errors, warnings:check.warnings});
+  const version = (row.published_version||0) + 1;
+  const publishedAt = now();
+  db.prepare(`UPDATE ops_configs SET published_json=?,published_version=?,status='published',
+    published_by=?,published_at=?,updated_by=?,updated_at=? WHERE id=?`)
+    .run(stableJson(cfg), version, s.username, publishedAt, s.username, publishedAt, row.id);
+  configAudit(row.id, row.doctor_id, row.domain, "publish", s.username, cfg, { ok:true, version });
+  json(res,200,{ ok:true, version, validation:check, publishedAt, publishedBy:s.username });
+});
+
+route("POST", /^\/api\/admin\/config-center\/(\d+)\/rollback$/, async (req,res,m)=>{
+  const { row, s } = configAccess(req,res,+m[1],"config.publish"); if(!row)return;
+  const prev = db.prepare(`SELECT snapshot_json FROM ops_config_audit
+    WHERE config_id=? AND action='publish' ORDER BY id DESC LIMIT 1 OFFSET 1`).get(row.id);
+  const cfg = parseConfigJson(prev && prev.snapshot_json, parseConfigJson(row.published_json, {}));
+  const check = validateOpsConfig(row.domain, cfg);
+  if(!check.ok) return json(res,400,{error:"历史版本校验失败，已阻止回滚", errors:check.errors});
+  const version = (row.published_version||0) + 1;
+  const publishedAt = now();
+  db.prepare(`UPDATE ops_configs SET draft_json=?,published_json=?,published_version=?,status='rolled_back',
+    published_by=?,published_at=?,updated_by=?,updated_at=? WHERE id=?`)
+    .run(stableJson(cfg), stableJson(cfg), version, s.username, publishedAt, s.username, publishedAt, row.id);
+  configAudit(row.id, row.doctor_id, row.domain, "rollback", s.username, cfg, { ok:true, version, source:prev?"previous_publish":"current_published" });
+  json(res,200,{ ok:true, version, restoredPrevious:!!prev, publishedAt, publishedBy:s.username });
+});
+
+route("GET", /^\/api\/admin\/config-center\/audit$/, (req,res,m,q)=>{
+  const did = Number(q.doctorId);
+  if(!Number.isInteger(did) || did <= 0) return json(res,400,{error:"doctorId 非法"});
+  const s = gate(req,res,did); if(!s)return;
+  const isSuper = configIsSuper(s);
+  const rows = db.prepare(`SELECT id,config_id,doctor_id,domain,action,actor,result_json,created_at
+    FROM ops_config_audit WHERE doctor_id IN (?,0) ORDER BY id DESC LIMIT 80`).all(did)
+    .filter(r=>isSuper || (r.doctor_id !== 0 && !(configMeta(r.domain)||{}).superOnly))
+    .map(r=>({ id:r.id, configId:r.config_id, doctorId:r.doctor_id, domain:r.domain, title:(configMeta(r.domain)||{}).title||r.domain,
+      action:r.action, actor:r.actor, result:parseConfigJson(r.result_json, {}), createdAt:r.created_at }));
+  json(res,200,{ ok:true, rows });
+});
+
+route("GET", /^\/api\/admin\/ops-strategy$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  const did = +q.doctorId;
+  if(!Number.isInteger(did)) return json(res,400,{error:"缺少 doctorId"});
+  const doctor = ensureOpsAssets(did);
+  if(!doctor) return json(res,404,{error:"医生不存在"});
+  const strategy = db.prepare("SELECT * FROM ops_strategy WHERE doctor_id=?").get(did) || null;
+  const knowledge = db.prepare(`SELECT * FROM knowledge_items WHERE doctor_id=?
+    ORDER BY CASE layer WHEN '医院通用' THEN 1 WHEN '医院/科室通用' THEN 2 WHEN '医生个人' THEN 3 ELSE 4 END, id`).all(did);
+  const outcomes = db.prepare("SELECT * FROM outcome_reports WHERE doctor_id=? ORDER BY period DESC,id DESC LIMIT 24").all(did).map(outcomeOut);
+  const summary = {
+    knowledgeTotal: knowledge.length,
+    knowledgeReady: knowledge.filter(x=>x.status==="ready").length,
+    knowledgeDraft: knowledge.filter(x=>x.status==="draft").length,
+    outcomeReports: outcomes.length,
+    perceivedGrowthReports: outcomes.filter(x=>x.perceived_growth).length,
+    latestOutcome: outcomes[0] || null
+  };
+  json(res,200,{ doctor, strategy, knowledge, outcomes, summary });
+});
+
+route("PUT", /^\/api\/admin\/ops-strategy$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = +b.doctorId;
+  const s=gate(req,res,did); if(!s)return;
+  if(!Number.isInteger(did)) return json(res,400,{error:"缺少 doctorId"});
+  if(!requireAdminAction(req,res,s,"ops.strategy.manage",{doctorId:did},"无运营策略维护权限")) return;
+  if(!ensureOpsAssets(did)) return json(res,404,{error:"医生不存在"});
+  db.prepare(`INSERT INTO ops_strategy(doctor_id,group_mode,private_chat_policy,doctor_profile,specialty_fit,pharma_value,notes,updated_at)
+    VALUES(?,?,?,?,?,?,?,?)
+    ON CONFLICT(doctor_id) DO UPDATE SET group_mode=excluded.group_mode, private_chat_policy=excluded.private_chat_policy,
+      doctor_profile=excluded.doctor_profile, specialty_fit=excluded.specialty_fit, pharma_value=excluded.pharma_value,
+      notes=excluded.notes, updated_at=excluded.updated_at`).run(
+      did,
+      cleanText(b.group_mode, 2000),
+      cleanText(b.private_chat_policy, 2000),
+      cleanText(b.doctor_profile, 2000),
+      cleanText(b.specialty_fit, 2000),
+      cleanText(b.pharma_value, 2000),
+      cleanText(b.notes, 2000),
+      now()
+    );
+  json(res,200,{ ok:true });
+});
+
+route("POST", /^\/api\/admin\/knowledge$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = +b.doctorId;
+  const s=gate(req,res,did); if(!s)return;
+  if(!Number.isInteger(did)) return json(res,400,{error:"缺少 doctorId"});
+  if(!requireAdminAction(req,res,s,"knowledge.manage",{doctorId:did},"无知识源维护权限")) return;
+  if(!doctorRow(did)) return json(res,404,{error:"医生不存在"});
+  const title = cleanText(b.title, 120);
+  if(!title) return json(res,400,{error:"标题必填"});
+  const layer = KNOWLEDGE_LAYERS.has(b.layer) ? b.layer : "医生个人";
+  const mode = KNOWLEDGE_MODES.has(b.mode) ? b.mode : "半预制";
+  const status = KNOWLEDGE_STATUS.has(b.status) ? b.status : "draft";
+  const r = db.prepare(`INSERT INTO knowledge_items(doctor_id,layer,mode,title,body,source,owner,status,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?)`).run(did, layer, mode, title, cleanText(b.body, 6000), cleanText(b.source, 200),
+      cleanText(b.owner, 120), status, now());
+  json(res,200,{ ok:true, id:r.lastInsertRowid });
+});
+
+route("PUT", /^\/api\/admin\/knowledge\/(\d+)$/, async (req,res,m)=>{
+  const did = rowDoctorId("knowledge_items", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"知识条目不存在"});
+  if(!requireAdminAction(req,res,s,"knowledge.manage",{doctorId:did},"无知识源维护权限")) return;
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const title = cleanText(b.title, 120);
+  if(!title) return json(res,400,{error:"标题必填"});
+  const layer = KNOWLEDGE_LAYERS.has(b.layer) ? b.layer : "医生个人";
+  const mode = KNOWLEDGE_MODES.has(b.mode) ? b.mode : "半预制";
+  const status = KNOWLEDGE_STATUS.has(b.status) ? b.status : "draft";
+  db.prepare(`UPDATE knowledge_items SET layer=?,mode=?,title=?,body=?,source=?,owner=?,status=?,updated_at=? WHERE id=?`)
+    .run(layer, mode, title, cleanText(b.body, 6000), cleanText(b.source, 200), cleanText(b.owner, 120), status, now(), +m[1]);
+  json(res,200,{ ok:true });
+});
+
+route("DELETE", /^\/api\/admin\/knowledge\/(\d+)$/, (req,res,m)=>{
+  const did = rowDoctorId("knowledge_items", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"知识条目不存在"});
+  if(!requireAdminAction(req,res,s,"knowledge.manage",{doctorId:did},"无知识源维护权限")) return;
+  db.prepare("DELETE FROM knowledge_items WHERE id=?").run(+m[1]);
+  db.prepare("DELETE FROM knowledge_vectors WHERE item_id=?").run(+m[1]);
+  json(res,200,{ ok:true });
+});
+
+// RAG Phase 1 向量重建（docs/specs/rag-embedding-rerank-plan.md）：对该医生 status='ready' 的知识，
+// 比对 content_hash，对新增/过期的重算 embedding（≤10 批）写入 knowledge_vectors（存在则更新、幂等）。
+// gate(did) + 直接查 knowledge_items 均限本医生 → scoped 医助不越权；无 DASHSCOPE key → 503（不半途写脏）。
+route("POST", /^\/api\/admin\/doctors\/(\d+)\/knowledge\/embed$/, async (req,res,m)=>{
+  const did = +m[1];
+  const s = gate(req,res,did); if(!s) return;
+  if(!doctorRow(did)) return json(res,404,{error:"医生不存在"});
+  if(!requireAdminAction(req,res,s,"knowledge.manage",{doctorId:did},"无知识源向量重建权限")) return;
+  if(!process.env.DASHSCOPE_API_KEY) return json(res,503,{error:"未配置向量服务凭证（DASHSCOPE_API_KEY）"});
+  const items = db.prepare("SELECT id,title,body FROM knowledge_items WHERE doctor_id=? AND status='ready' ORDER BY id").all(did);
+  const getVec = db.prepare("SELECT content_hash FROM knowledge_vectors WHERE item_id=?");
+  // 只对「无向量 或 content_hash 过期」的条目重算；已是最新的跳过（幂等、省额度）。
+  const stale = items.filter(it=>{
+    const cur = getVec.get(it.id);
+    return !cur || cur.content_hash !== triage.knowledgeContentHash(it.title, it.body);
+  });
+  if(!stale.length) return json(res,200,{ ok:true, embedded:0, skipped:items.length });
+  let embedded = 0, failed = 0;
+  const nowIso = now();
+  const upsert = db.prepare(`INSERT INTO knowledge_vectors(item_id,doctor_id,model_id,dim,content_hash,vector,embedded_at)
+    VALUES(?,?,?,?,?,?,?)
+    ON CONFLICT(item_id) DO UPDATE SET doctor_id=excluded.doctor_id,model_id=excluded.model_id,dim=excluded.dim,
+      content_hash=excluded.content_hash,vector=excluded.vector,embedded_at=excluded.embedded_at`);
+  // 分批 embed（embedTexts 内部已 ≤10 分批 + fail-safe null）；任一批失败 → 该批不写、计入 failed，不污染已写的批。
+  for(let i=0;i<stale.length;i+=10){
+    const batch = stale.slice(i, i+10);
+    const texts = batch.map(it=>(String(it.title||"")+" "+String(it.body||"")).slice(0,1500));
+    let vecs = null;
+    try{ vecs = await triage.embedTexts(texts); }catch(e){ vecs = null; }
+    if(!vecs || vecs.length !== batch.length){ failed += batch.length; continue; }
+    batch.forEach((it,j)=>{
+      try{
+        upsert.run(it.id, did, "text-embedding-v4", 1024, triage.knowledgeContentHash(it.title, it.body), JSON.stringify(vecs[j]), nowIso);
+        embedded++;
+      }catch(e){ failed++; }
+    });
+  }
+  json(res, failed ? 207 : 200, { ok:failed===0, embedded, skipped:items.length - stale.length, failed });
+});
+
+route("POST", /^\/api\/admin\/outcomes$/, async (req,res)=>{
+  const b = await parseBody(req);
+  if(b.__oversize) return json(res,413,{error:"请求体过大（上限 1MB）"});
+  const did = +b.doctorId;
+  const s=gate(req,res,did); if(!s)return;
+  if(!Number.isInteger(did)) return json(res,400,{error:"缺少 doctorId"});
+  if(!requireAdminAction(req,res,s,"outcome.manage",{doctorId:did},"无效果回收维护权限")) return;
+  if(!doctorRow(did)) return json(res,404,{error:"医生不存在"});
+  const period = cleanText(b.period, 20);
+  if(!period) return json(res,400,{error:"回收周期必填"});
+  const r = db.prepare(`INSERT INTO outcome_reports(doctor_id,period,outpatient_baseline,outpatient_current,perceived_growth,group_active,consult_leads,notes,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?)`).run(did, period, cleanInt(b.outpatient_baseline), cleanInt(b.outpatient_current),
+      b.perceived_growth ? 1 : 0, cleanInt(b.group_active), cleanInt(b.consult_leads), cleanText(b.notes, 2000), now());
+  json(res,200,{ ok:true, id:r.lastInsertRowid });
+});
+
+route("DELETE", /^\/api\/admin\/outcomes\/(\d+)$/, (req,res,m)=>{
+  const did = rowDoctorId("outcome_reports", +m[1]);
+  const s=gate(req,res,did); if(!s)return;
+  if(did==null) return json(res,404,{error:"效果回收记录不存在"});
+  if(!requireAdminAction(req,res,s,"outcome.manage",{doctorId:did},"无效果回收维护权限")) return;
+  db.prepare("DELETE FROM outcome_reports WHERE id=?").run(+m[1]);
+  json(res,200,{ ok:true });
+});
+
+/* AI 分诊台 */
+route("GET", /^\/api\/admin\/triage\/sessions$/, (req,res,m,q)=>{ const s=gate(req,res,+q.doctorId); if(!s)return;
+  json(res,200, triage.listSessions(+q.doctorId)); });
+route("GET", /^\/api\/admin\/triage\/sessions\/(\d+)$/, (req,res,m)=>{ const s=gate(req,res, rowDoctorId("triage_sessions",+m[1])); if(!s)return;
+  const detail = triage.sessionDetail(+m[1]);
+  detail ? json(res,200,community.attachTriageOutboxes(detail)) : json(res,404,{error:"分诊会话不存在"}); });
+route("POST", /^\/api\/admin\/triage\/decisions\/(\d+)\/confirm$/, async (req,res,m)=>{
+  const did = decisionDoctorId(+m[1]);
+  const s=gate(req,res, did); if(!s) return;
+  if(!requireAdminAction(req,res,s,"triage.confirm_send",{doctorId:did},"无该分诊回复的确认发送权限")) return;
+  const b = await parseBody(req);
+  const requestId = auditRequestId(req);
+  const before = auditDecisionSnapshot(+m[1]);
+  adminAudit(req, s, {
+    action:"triage.confirm_send", resourceType:"triage_decision", resourceId:+m[1], doctorId:did,
+    patientId:before && before.patientId, sessionId:before && before.sessionId, riskLevel:before && before.riskLevel,
+    channel:"community", outcome:"requested", requestId,
+    before, meta:{ text:auditText(b.text || "", 240) }
+  });
+  try{
+    const delivery = await community.sendOutboxForDecision(+m[1], b.text, s.username);
+    const finalText = delivery && delivery.outbox && delivery.outbox.text ? delivery.outbox.text : b.text;
+    const detail = community.attachTriageOutboxes(triage.confirmDecision(+m[1], finalText, s.username));
+    adminAuditBestEffort(req, s, {
+      action:"triage.confirm_send", resourceType:"triage_decision", resourceId:+m[1], doctorId:did,
+      patientId:before && before.patientId, sessionId:before && before.sessionId, riskLevel:before && before.riskLevel,
+      channel:(delivery && delivery.outbox && delivery.outbox.channelType) || "community", outcome:"success", requestId,
+      before, after:auditDecisionSnapshot(+m[1]), meta:{ outboxId:delivery && delivery.outbox && delivery.outbox.id, alreadySent:!!(delivery && delivery.alreadySent) }
+    });
+    json(res,200,{ ok:true, delivery, ...detail });
+  }
+  catch(e){
+    adminAuditBestEffort(req, s, {
+      action:"triage.confirm_send", resourceType:"triage_decision", resourceId:+m[1], doctorId:did,
+      patientId:before && before.patientId, sessionId:before && before.sessionId, riskLevel:before && before.riskLevel,
+      channel:"community", outcome:"failed", reason:e.message || "发送失败", requestId,
+      before, after:auditDecisionSnapshot(+m[1])
+    });
+    json(res,400,{error:e.message});
+  }
+});
+route("POST", /^\/api\/admin\/triage\/sessions\/(\d+)\/status$/, async (req,res,m)=>{
+  const did = rowDoctorId("triage_sessions",+m[1]);
+  const s=gate(req,res, did); if(!s) return;
+  if(!requireAdminAction(req,res,s,"triage.note_status",{doctorId:did},"无该分诊会话的状态处理权限")) return;
+  const b = await parseBody(req);
+  json(res,200, triage.updateSessionStatus(+m[1], b.status, b.handler || s.username));
+});
+route("POST", /^\/api\/admin\/triage\/sessions\/(\d+)\/note$/, async (req,res,m)=>{
+  const did = rowDoctorId("triage_sessions",+m[1]);
+  const s=gate(req,res, did); if(!s) return;
+  if(!requireAdminAction(req,res,s,"triage.note_status",{doctorId:did},"无该分诊会话的备注权限")) return;
+  const b = await parseBody(req);
+  try{ json(res,200, triage.addNote(+m[1], b.text, s.username)); }
+  catch(e){ json(res,400,{error:e.message}); }
+});
+
+/* ---------- 静态文件 ---------- */
+function serveStatic(req,res){
+  let p;
+  try{ p = decodeURIComponent(req.url.split("?")[0]); }
+  catch(e){ return send(res,400,"bad request","text/plain; charset=utf-8"); } // 畸形 % 转义 → decodeURIComponent 抛 URIError
+  if(p.indexOf("\0") !== -1) return send(res,400,"bad request","text/plain; charset=utf-8"); // 路径含 null 字节 → fs.readFile 会同步抛错
+  if(p==="/") p="/index.html";
+  if(p==="/admin"||p==="/admin/") p="/admin.html";
+  if(p==="/wecom/sidebar"||p==="/wecom/sidebar/") p="/wecom-sidebar.html";
+  const file = path.join(PUB, path.normalize(p));
+  if(!file.startsWith(PUB)) return send(res,403,"forbidden","text/plain");
+  fs.readFile(file,(err,data)=>{
+    if(err) return send(res,404,"404 Not Found","text/plain; charset=utf-8");
+    send(res,200,data, MIME[path.extname(file).toLowerCase()]||"application/octet-stream"); // 扩展名小写归一：Windows 大小写不敏感下大写扩展名也返回正确 MIME
+  });
+}
+
+/* ---------- 主处理 ---------- */
+// 日志/回显脱敏：qiwe 回调的 URL 令牌即回调密钥，绝不进日志或错误响应——只对 /api/qiwe/callback 前缀生效（不影响其他路由排障）。
+function redactQiweUrl(u){
+  const s = String(u || "");
+  if(!s.startsWith("/api/qiwe/callback")) return s;
+  return s.replace(/^(\/api\/qiwe\/callback)\/[^/?#]+/, "$1/<token>").replace(/([?&]t=)[^&#]*/g, "$1<token>");
+}
+const server = http.createServer(async (req,res)=>{
+  try{
+    const u = new URL(req.url, "http://localhost");
+    const q = Object.fromEntries(u.searchParams);
+    if(u.pathname.startsWith("/api/")){
+      if(u.pathname.startsWith("/api/admin/") && !["GET","HEAD","OPTIONS"].includes(req.method) && !adminWriteOriginAllowed(req)){
+        return json(res,403,{error:"后台写接口来源校验失败"});
+      }
+      for(const r of routes){ if(r.method===req.method){ const mm=u.pathname.match(r.re); if(mm){ await r.fn(req,res,mm,q); return; } } }
+      return json(res,404,{error:"接口不存在: "+req.method+" "+redactQiweUrl(u.pathname)});
+    }
+    serveStatic(req,res);
+  }catch(e){
+    // 错误边界：任何路由（同步或异步）抛错都在此收口，返回 500 而非崩掉整个进程
+    console.error("[request error]", req.method, redactQiweUrl(req.url), e && e.message);
+    if(!res.headersSent){ try{ json(res,500,{error:"服务器内部错误"}); }catch(_){ try{ res.end(); }catch(__){} } }
+    else { try{ res.end(); }catch(_){} }
+  }
+});
+
+// 进程级最后兜底：漏网的异常/拒绝只记录、不退出，保证服务不被单个畸形请求打挂
+process.on("uncaughtException", (e)=>console.error("[uncaughtException]", e && (e.stack||e.message||e)));
+process.on("unhandledRejection", (e)=>console.error("[unhandledRejection]", e && (e.stack||e.message||e)));
+
+// 仅作为主进程启动时才 listen / 起定时器（require.main 守卫）：让 server.js 可被测试文件 require 以取用其导出的纯函数（如 preserveBigIntIds），
+//   而不触发监听端口/定时器副作用。生产/npm start 仍是 `node server.js`（require.main===module 恒真）→ listen 照常，行为零变化。零 require 依赖（无文件 require 本模块）。
+if(require.main === module){
+server.listen(PORT, ()=>{
+  console.log(`\n  春雨医生社群 · 本地全栈服务已启动`);
+  console.log(`  患者端:  http://localhost:${PORT}/`);
+  console.log(`  医助后台: http://localhost:${PORT}/admin   ${process.env.ADMIN_PASSWORD ? "(口令见 ADMIN_PASSWORD 环境变量)" : "(admin / admin888)"}`);
+  if(!process.env.ADMIN_PASSWORD) console.log("  ⚠️  后台使用默认口令 admin888；上线前请设置环境变量 ADMIN_PASSWORD 修改");
+  
+/* [2026-07-13] 手动回复 API：医助在分诊台直接编辑回复并发送到群 */
+route("POST", /^\/api\/admin\/triage\/(\d+)\/manual-reply$/, async (req,res,m)=>{
+  const sessionId = +m[1];
+  const did = rowDoctorId("triage_sessions", sessionId);
+  const s=gate(req,res,did); if(!s) return;
+  if(!requireAdminAction(req,res,s,"triage.confirm_send",{doctorId:did},"无该分诊回复的发送权限")) return;
+  const b = await parseBody(req);
+  if(!b.text || !b.text.trim()) return json(res,400,{error:"回复内容不能为空"});
+  const sess = db.prepare("SELECT * FROM triage_sessions WHERE id=?").get(sessionId);
+  if(!sess) return json(res,404,{error:"分诊会话不存在"});
+  const target = triageSessionDeliveryTarget(sess);
+  const targetId = target && target.toId ? target.toId : "";
+  const outId = insertDirectOutbound({
+    doctorId: sess.doctor_id,
+    targetId,
+    text: b.text.trim(),
+    source: "manual_reply",
+    channelType: (target && target.channel === "community") ? "wechat" : "qiwe",
+    isGroup: !!(target && target.isGroup),
+    atUserId: target && target.atUserId,
+    groupId: target && target.groupId,
+  });
+  try {
+    const qiweMod = require("./qiwe.js");
+    const cfgRow = db.prepare("SELECT * FROM qiwe_configs WHERE doctor_id=?").get(sess.doctor_id);
+    if(cfgRow && cfgRow.guid && cfgRow.self_user_id && targetId){
+      const cfg = {guid:cfgRow.guid, selfUserId:cfgRow.self_user_id, token:cfgRow.token};
+      if(target.isGroup && target.atUserId){
+        await qiweMod.sendHyperText(targetId, b.text.trim(), {atUserIds:[target.atUserId]}, cfg);
+      }else{
+        await qiweMod.sendText(targetId, b.text.trim(), cfg);
+      }
+      db.prepare("UPDATE outbound_queue SET status='sent',sent_at=datetime('now') WHERE id=?").run(outId);
+      console.log("[manual-reply] sent to", targetId);
+    }
+  } catch(e){
+    console.error("[manual-reply] send failed:", e.message);
+  }
+  triage.updateSessionStatus(sessionId, "closed", s.username||String(s.adminId));
+  json(res,200,{ok:true, outboxId:outId});
+});
+
+/* [v2.1] 全量消息列表 API（含筛选、分页、待处理计数） */
+route("GET", /^\/api\/admin\/messages$/, (req,res,m,q)=>{
+  const did = +q.doctorId;
+  const s=gate(req,res,did); if(!s) return;
+  const level = q.level ? +q.level : null;
+  const status = q.status || null;
+  const patientId = q.patientId || null;
+  const limit = Math.min(+(q.limit||50), 200);
+  const offset = +(q.offset||0);
+  
+  let where = "WHERE doctor_id=?"; const params = [did];
+  if(level){ where += " AND level=?"; params.push(level); }
+  if(status){ where += " AND reply_status=?"; params.push(status); }
+  if(patientId){ where += " AND patient_id=?"; params.push(patientId); }
+  params.push(limit, offset);
+  
+  const rows = db.prepare("SELECT * FROM message_log "+where+" ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?").all(...params);
+  const total = db.prepare("SELECT count(*) as c FROM message_log "+where.replace(/ LIMIT.*$/,"")).get(...params.slice(0,-2));
+  
+  // 待处理计数
+  const pending = db.prepare("SELECT count(*) as c FROM message_log WHERE doctor_id=? AND reply_status='pending' AND level<=3").get(did);
+  
+  json(res,200,{ messages:rows, total:total.c, pending:pending.c });
+});
+
+/* [v2.1] 患者消息历史（按患者聚合） */
+route("GET", /^\/api\/admin\/messages\/patient\/([^\/]+)$/, (req,res,m,q)=>{
+  const did = +q.doctorId;
+  const s=gate(req,res,did); if(!s) return;
+  const key = decodeURIComponent(m[1]);
+  const { patient, lookupKey } = resolvePatientRecord(key);
+  if(patient && +patient.doctor_id !== did) return json(res,403,{error:"无该医生数据的访问权限"});
+  const pid = patient ? String(patient.id) : key;
+  const rows = db.prepare("SELECT * FROM message_log WHERE doctor_id=? AND (patient_id=? OR sender_id=?) ORDER BY created_at DESC LIMIT 50").all(did, pid, lookupKey);
+  json(res,200,{ messages:rows });
+});
+
+function resolvePatientRecord(patientKey){
+  const key = decodeURIComponent(String(patientKey || "").trim());
+  if(!key) return { patient:null, lookupKey:"" };
+  const num = +key;
+  if(Number.isInteger(num) && num > 0){
+    const byId = db.prepare("SELECT * FROM patients WHERE id=?").get(num);
+    if(byId) return { patient:byId, lookupKey:String(num) };
+  }
+  const ident = db.prepare("SELECT patient_id FROM patient_identities WHERE external_id=? LIMIT 1").get(key);
+  if(ident){
+    const byIdent = db.prepare("SELECT * FROM patients WHERE id=?").get(ident.patient_id);
+    if(byIdent) return { patient:byIdent, lookupKey:String(byIdent.id) };
+  }
+  const byName = db.prepare("SELECT * FROM patients WHERE display_name=? OR real_name=? LIMIT 1").get(key, key);
+  if(byName) return { patient:byName, lookupKey:String(byName.id) };
+  return { patient:null, lookupKey:key };
+}
+
+/* [v2.1] 患者档案卡片 API */
+route("GET", /^\/api\/admin\/messages\/patient\/(.+)\/profile$/, (req,res,m,q)=>{
+  const did = +q.doctorId;
+  const s=gate(req,res,did); if(!s) return;
+  const { patient, lookupKey } = resolvePatientRecord(m[1]);
+  if(patient && +patient.doctor_id !== did) return json(res,403,{error:"无该医生数据的访问权限"});
+  const pid = patient ? String(patient.id) : lookupKey;
+  const stats = db.prepare(`SELECT count(*) as total,
+    sum(case when reply_status='pending' then 1 else 0 end) as pending,
+    min(created_at) as first_msg, max(created_at) as last_msg
+    FROM message_log WHERE doctor_id=? AND (patient_id=? OR sender_id=?)`).get(did, pid, lookupKey);
+  const recentSessions = patient
+    ? db.prepare(`SELECT id, status, risk_level, patient_name, created_at,
+        (SELECT text FROM triage_messages WHERE session_id=triage_sessions.id AND role='patient' ORDER BY id DESC LIMIT 1) AS last_patient_text
+      FROM triage_sessions WHERE doctor_id=? AND patient_id=? ORDER BY created_at DESC LIMIT 8`).all(did, patient.id)
+    : db.prepare(`SELECT id, status, risk_level, patient_name, created_at,
+        (SELECT text FROM triage_messages WHERE session_id=triage_sessions.id AND role='patient' ORDER BY id DESC LIMIT 1) AS last_patient_text
+      FROM triage_sessions WHERE doctor_id=? AND (patient_key LIKE ? OR patient_name=?) ORDER BY created_at DESC LIMIT 8`).all(did, "%"+lookupKey+"%", lookupKey);
+  const submissions = patient
+    ? db.prepare("SELECT id,type,status,payload,created_at AS at FROM submissions WHERE doctor_id=? AND patient_id=? ORDER BY created_at DESC LIMIT 8").all(did, patient.id)
+    : [];
+  const followups = patient
+    ? db.prepare("SELECT id,plan_name,status,patient_name,patient_phone,created_at FROM followups WHERE doctor_id=? AND patient_id=? ORDER BY created_at DESC LIMIT 5").all(did, patient.id)
+    : [];
+  const identities = patient
+    ? db.prepare("SELECT channel,external_id,group_id,created_at FROM patient_identities WHERE doctor_id=? AND patient_id=? ORDER BY created_at DESC LIMIT 6").all(did, patient.id)
+    : [];
+  json(res,200,{ patient: patient||null, stats: stats||{}, recentSessions, submissions, followups, identities });
+});
+
+/* [v2.1] 转医生 API */
+route("POST", /^\/api\/admin\/messages\/(\d+)\/escalate$/, async (req,res,m)=>{
+  const msgId = +m[1];
+  const s=gateMessageLog(req,res,msgId); if(!s) return;
+  const did = rowDoctorId("message_log", msgId);
+  if(!requireAdminAction(req,res,s,"triage.note_status",{doctorId:did},"无该消息转医生权限")) return;
+  const b = await parseBody(req);
+  const msg = db.prepare("SELECT * FROM message_log WHERE id=?").get(msgId);
+  if(!msg) return json(res,404,{error:"消息不存在"});
+  
+  // 更新消息状态为 escalated
+  db.prepare("UPDATE message_log SET reply_status='escalated', action_taken='transfer_doctor' WHERE id=?").run(msgId);
+  
+  // 写入 doctor_notifications 表
+  db.prepare(`INSERT OR IGNORE INTO doctor_notifications(doctor_id, message_log_id, patient_id, patient_name, text, level, level_label, note, status, created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,datetime('now'))`).run(
+    msg.doctor_id, msgId, msg.patient_id, msg.patient_name, msg.text, msg.level, msg.level_label,
+    b.note||"", "pending"
+  );
+  
+  json(res,200,{ok:true, status:"escalated"});
+});
+
+/* [v2.1] 医生回复回流 API（医生处理完后回流消息给医助确认） */
+route("POST", /^\/api\/admin\/messages\/(\d+)\/doctor-reply$/, async (req,res,m)=>{
+  const msgId = +m[1];
+  const s=gateMessageLog(req,res,msgId); if(!s) return;
+  const did = rowDoctorId("message_log", msgId);
+  if(!requireAdminAction(req,res,s,"triage.note_status",{doctorId:did},"无该消息处理权限")) return;
+  const b = await parseBody(req);
+  if(!b.text || !b.text.trim()) return json(res,400,{error:"回复内容不能为空"});
+  const msg = db.prepare("SELECT * FROM message_log WHERE id=?").get(msgId);
+  if(!msg) return json(res,404,{error:"消息不存在"});
+  
+  // 更新通知状态
+  db.prepare("UPDATE doctor_notifications SET status='replied', reply_text=?, replied_at=datetime('now') WHERE message_log_id=?").run(b.text.trim(), msgId);
+  // 更新消息状态为 doctor_replied（回流给医助确认发送）
+  db.prepare("UPDATE message_log SET reply_status='doctor_replied', ai_draft=? WHERE id=?").run(b.text.trim(), msgId);
+  
+  json(res,200,{ok:true, status:"doctor_replied"});
+});
+
+/* [v2.1] 发送回复并更新状态（闭环：点发送→状态实时变 sent） */
+route("POST", /^\/api\/admin\/messages\/(\d+)\/send$/, async (req,res,m)=>{
+  const msgId = +m[1];
+  const s=gateMessageLog(req,res,msgId); if(!s) return;
+  const did = rowDoctorId("message_log", msgId);
+  if(!requireAdminAction(req,res,s,"triage.confirm_send",{doctorId:did},"无该消息发送权限")) return;
+  const b = await parseBody(req);
+  if(!b.text || !b.text.trim()) return json(res,400,{error:"回复内容不能为空"});
+  const msg = db.prepare("SELECT * FROM message_log WHERE id=?").get(msgId);
+  if(!msg) return json(res,404,{error:"消息不存在"});
+  
+  // 写入出站队列
+  const targetId = msg.group_id || msg.sender_id || "";
+  const outId = insertDirectOutbound({
+    doctorId: msg.doctor_id,
+    targetId,
+    text: b.text.trim(),
+    source: "msg_center",
+    channelType: msg.channel === "community" ? "wechat" : (msg.channel || "qiwe"),
+    isGroup: !!msg.group_id,
+    atUserId: msg.group_id ? msg.sender_id : null,
+  });
+  
+  // 尝试真发
+  let sent = false;
+  try {
+    const qiwe = require("./qiwe.js");
+    const cfgRow = db.prepare("SELECT * FROM qiwe_configs WHERE doctor_id=?").get(msg.doctor_id);
+    if(cfgRow && cfgRow.guid && cfgRow.self_user_id){
+      const cfg = {guid:cfgRow.guid, selfUserId:cfgRow.self_user_id, token:cfgRow.token};
+      // 群内回复 @患者
+      const targetId = msg.group_id || msg.sender_id;
+      if(msg.group_id && msg.sender_id){
+        await qiwe.sendHyperText(targetId, b.text.trim(), {atUserIds:[msg.sender_id]}, cfg);
+      } else {
+        await qiwe.sendText(targetId, b.text.trim(), cfg);
+      }
+      sent = true;
+      db.prepare("UPDATE outbound_queue SET status='sent',sent_at=datetime('now') WHERE id=?").run(outId);
+    }
+  } catch(e){ console.error("[msg-send]", e.message); }
+  
+  // 更新消息状态
+  const newStatus = sent ? "sent" : "send_failed";
+  db.prepare("UPDATE message_log SET reply_status=?, action_taken=? WHERE id=?").run(newStatus, "replied_"+newStatus, msgId);
+  
+  json(res,200,{ok:true, sent, status:newStatus, outboxId:outId});
+});
+
+/* [v2.1] 消息合并：获取同一患者最近未处理消息（上下文关联） */
+route("GET", /^\/api\/admin\/messages\/patient\/(.+)\/pending$/, (req,res,m,q)=>{
+  const did = +q.doctorId;
+  const s=gate(req,res,did); if(!s) return;
+  const patientId = decodeURIComponent(m[1]);
+  const rows = db.prepare("SELECT * FROM message_log WHERE doctor_id=? AND patient_id=? AND reply_status='pending' ORDER BY created_at ASC").all(did, patientId);
+  json(res,200,{ messages:rows, count:rows.length });
+});
+
+/* [v2.1] 批量标记已处理（多条消息合并处理后一次性标记） */
+route("POST", /^\/api\/admin\/messages\/batch-resolve$/, async (req,res)=>{
+  const s0=authed(req); if(!s0) return json(res,401,{error:"未登录"});
+  const b = await parseBody(req);
+  if(!b.ids || !Array.isArray(b.ids) || !b.ids.length) return json(res,400,{error:"ids 必填"});
+  const ids = b.ids.map(Number).filter(Boolean);
+  for(const id of ids){
+    const did = rowDoctorId("message_log", id);
+    if(did == null) return json(res,404,{error:"消息不存在"});
+    if(!allowDoctor(s0, did)) return json(res,403,{error:"无该医生数据的访问权限"});
+    if(!requireAdminAction(req,res,s0,"triage.note_status",{doctorId:did},"无该消息处理权限")) return;
+  }
+  const status = b.status || "resolved";
+  const stmt = db.prepare("UPDATE message_log SET reply_status=? WHERE id=?");
+  ids.forEach(id => stmt.run(status, id));
+  json(res,200,{ok:true, updated:ids.length});
+});
+
+/* [v2.1] 医生待处理通知列表 */
+route("GET", /^\/api\/admin\/doctor-notifications$/, (req,res,m,q)=>{
+  const did = +q.doctorId;
+  const s=gate(req,res,did); if(!s) return;
+  const status = q.status || "pending";
+  const rows = db.prepare("SELECT dn.*, ml.text as original_text, ml.level, ml.level_label, ml.patient_name FROM doctor_notifications dn LEFT JOIN message_log ml ON dn.message_log_id=ml.id WHERE dn.doctor_id=? AND dn.status=? ORDER BY dn.created_at DESC LIMIT 50").all(did, status);
+  json(res,200,{ notifications:rows });
+});
+
+/* [v2.1] 记录全量消息（内部调用） */
+function logMessage(opts){
+  try {
+    db.prepare(`INSERT INTO message_log(doctor_id,patient_id,patient_name,sender_id,channel,direction,text,level,level_label,action_taken,ai_draft,triage_session_id,group_id,reply_status)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      opts.doctorId, opts.patientId||null, opts.patientName||null, opts.senderId||null,
+      opts.channel||"qiwe", opts.direction||"inbound", opts.text||"",
+      opts.level||4, opts.levelLabel||"", opts.action||"",
+      opts.aiDraft||null, opts.triageSessionId||null, opts.groupId||null,
+      opts.replyStatus||"pending"
+    );
+  } catch(e){ console.error("[logMessage]", e.message); }
+}
+
+console.log(`  短信验证码: ${SMS_DEMO ? "演示模式（响应明文返回 code，仅本地用，勿用于生产）" : "生产模式（不返回 code，需接入真实短信通道）"}\n`);
+});
+
+// 周五定时群运营（默认关；WEEKLY_OPS_AUTO=1 才起）：每小时 tick → community.runWeeklyAuto 判周五/窗口/幂等 → 仅产 pending 草稿，绝不自动发。
+// 进程级便利定时器，仅单进程 demo/小规模部署用；生产更稳 = 关掉它、用外部 cron 每周五定点打 POST /api/admin/community/campaigns/weekly。
+if(process.env.WEEKLY_OPS_AUTO === "1"){
+  try{ const gen = community.runWeeklyAuto(new Date()); if(gen.length) console.log("[weekly-auto] 启动生成", gen.length, "条周运营草稿"); }
+  catch(e){ console.error("[weekly-auto]", e && e.message); }
+  setInterval(()=>{ try{ community.runWeeklyAuto(new Date()); }catch(e){ console.error("[weekly-auto]", e && e.message); } }, 3600000);
+  console.log("  周五群运营自动草稿: 已开启（每小时检查；仅产待审草稿，绝不自动发）");
+}
+}  // ← require.main 守卫闭合
+
+// 导出纯函数供测试（require 本模块不触发 listen，见上方 require.main 守卫）：preserveBigIntIds = qiwe 回调大整数 ID 保真。
+module.exports = { preserveBigIntIds };

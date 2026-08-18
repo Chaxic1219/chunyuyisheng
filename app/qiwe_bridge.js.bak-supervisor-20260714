@@ -1,0 +1,1453 @@
+/* QiWe 单聊桥：把第三方企微回调转换成患者消息，再通过 QiWe 真实账号发回去。
+   文本走患者回复链路；小程序卡片回调用来采集 /msg/sendWeapp 模板。 */
+const fs = require("fs");
+const path = require("path");
+const { db, resolvePatient } = require("./db.js");
+const qiwe = require("./qiwe.js");
+const opsConfig = require("./ops_config.js");
+const groupGate = require("./group_gate.js");
+const triage = require("./triage.js");
+const { logInboundMessage } = require("./message_log.js");
+const { buildPatientReply, responsesToQiweText, miniProgramResponses } = require("./patient_reply.js");
+
+// 静态海报只读白名单目录（与 server.js 静态目录同源）：仅此目录下 jpg/jpeg/png 可作为 818 真图发送素材。
+const ASSETS_DIR = path.join(__dirname, "public", "assets");
+
+const pendingTemplateCodes = new Map();
+const DEDUP_MS = 10 * 60 * 1000;
+const PENDING_TEMPLATE_MS = 10 * 60 * 1000;
+
+function now(){ return Date.now(); }
+
+function textBeforeRichDelayMs(){
+  if(Object.prototype.hasOwnProperty.call(process.env, "QIWE_TEXT_BEFORE_RICH_DELAY_MS")){
+    const n = Number(process.env.QIWE_TEXT_BEFORE_RICH_DELAY_MS);
+    return Number.isFinite(n) && n >= 0 ? Math.min(Math.round(n), 10000) : 0;
+  }
+  return qiwe.DRY_RUN ? 0 : 3000;
+}
+
+function sleep(ms){ return new Promise(resolve=>setTimeout(resolve, ms)); }
+
+function hasSentTextPart(sentParts){
+  return (sentParts || []).some(p=>{
+    const type = String((p && p.type) || "");
+    return type === "text"
+      || type === "hypertext_atmember"
+      || type === "text_atmember_fallback"
+      || type === "hypertext_atall"
+      || type === "text_atall_fallback"
+      || type === "text_fallback";
+  });
+}
+
+async function delayTextBeforeRich(sentParts, hasRich){
+  const ms = hasRich && hasSentTextPart(sentParts) ? textBeforeRichDelayMs() : 0;
+  if(ms > 0) await sleep(ms);
+  return ms;
+}
+
+/* 回调去重落 DB（防重放/防重复处理，红线）：从内存 Map 改为 qiwe_seen 持久表 → 重启仍记得。
+   语义与旧内存逻辑 1:1：读时 TTL 清理(超 DEDUP_MS 视为新消息) → 命中返 true(跳过) → 否则登记返 false。 */
+function seenDuplicate(key, cur){
+  if(!key) return false;
+  db.prepare("DELETE FROM qiwe_seen WHERE seen_at < ?").run(cur - DEDUP_MS);
+  if(db.prepare("SELECT 1 FROM qiwe_seen WHERE msg_id=?").get(key)) return true;
+  db.prepare("INSERT OR IGNORE INTO qiwe_seen(msg_id, seen_at) VALUES(?,?)").run(key, cur);
+  return false;
+}
+
+function activeDoctorId(cfg){
+  if(cfg && cfg.doctorId && db.prepare("SELECT 1 FROM doctors WHERE id=?").get(+cfg.doctorId)) return +cfg.doctorId;
+  const active = db.prepare("SELECT id FROM doctors WHERE active=1 ORDER BY id LIMIT 1").get();
+  if(active) return active.id;
+  const first = db.prepare("SELECT id FROM doctors ORDER BY id LIMIT 1").get();
+  return first ? first.id : null;
+}
+
+function idAllowed(evt, cfg){
+  const targets = String((cfg && cfg.testToId) || "")
+    .split(/[\s,，;；]+/)
+    .map(x=>x.trim())
+    .filter(Boolean);
+  if(!targets.length) return true;
+  const allowed = new Set(targets);
+  // 群消息：范围以群(fromRoomId)为准——不得用登录账号本人(receiverId/loggedInUserId)命中白名单蒙混，
+  // 否则只要本人在白名单，任何未列入的群都被放行（欢迎/回复真发到越界群，codex 复核抓出）。
+  if(evt.isGroup || evt.fromRoomId){
+    return allowed.has(String(evt.fromRoomId || ""));
+  }
+  return [evt.senderId, evt.receiverId, evt.replyToId, evt.loggedInUserId].some(x=>allowed.has(String(x || "")));
+}
+
+/* 严格版白名单（仅非文字转人工兜底路径用）：与 idAllowed 完全一致，唯独 DM 分支去掉 evt.loggedInUserId——
+   loggedInUserId 在 raw.userId 缺失时会回落成 selfUserId（qiwe.js normalizeEvent），若 selfUserId∈testToId（常见配置），
+   「省略 userId、sender/receiver 均不在白名单」的越界伪造消息会借此过 idAllowed。转人工 pending 队列不该被这种自回落越界消息污染，
+   故只认真实发件三元 [senderId, receiverId, replyToId]（群分支不变，仍只认 fromRoomId）。text/voice 既存路径的 idAllowed 不动（本批不放大 blast radius）。 */
+function idAllowedStrict(evt, cfg){
+  const targets = String((cfg && cfg.testToId) || "")
+    .split(/[\s,，;；]+/)
+    .map(x=>x.trim())
+    .filter(Boolean);
+  if(!targets.length) return true;
+  const allowed = new Set(targets);
+  if(evt.isGroup || evt.fromRoomId){
+    return allowed.has(String(evt.fromRoomId || ""));
+  }
+  return [evt.senderId, evt.receiverId, evt.replyToId].some(x=>allowed.has(String(x || "")));
+}
+
+function replyCode(reply){
+  // entryCode 增读（甲方验收实弹缺陷一修 2026-07-03 夜）：triage.handleIncoming 原样结果的编号在顶层 entryCode
+  // （buildPatientReply 会映射成 intentCode，但直连桥的 ai_triage 形状回复不经该映射）。优先级 intentCode > entryCode > code，
+  // 既有消费方（rememberPendingTemplateCode 的 {code:evt.text}、keyword_rule 的 reply.code、ai_intent 的 intentCode）语义零变化。
+  return String((reply && (reply.intentCode || reply.entryCode || reply.code)) || "").trim();
+}
+
+function nativeWeappAllowedResponse(r){
+  const ext = (r && r.external) || {};
+  if(ext.nativeCard === false) return false;
+  // fallback_short_link 默认只能进入兜底入口再手动点目标页；202 的「我的全部服务」是例外：
+  // 真实卡片 page_path 必须再经 templateNativeWeappAllowed 校验为 all_service，旧首页卡仍 fail-closed。
+  if(ext.status === "fallback_short_link"){
+    const text = [r && r.title, r && r.sub, r && r.page, ext.shortLink, ext.shortLinkScope, ext.note]
+      .filter(Boolean).join(" ");
+    return /PuW00A6zBsHAw9y|我的全部服务|我的订单|订单\/回复/.test(text);
+  }
+  return true;
+}
+
+function nativeWeappResponses(reply){
+  return miniProgramResponses(reply).filter(nativeWeappAllowedResponse);
+}
+
+function cleanText(v, n){
+  return String(v == null ? "" : v).trim().slice(0, n || 240);
+}
+
+function publicGroupName(v){
+  return cleanText(v, 120).replace(/（群名待甲方确认）|\(群名待甲方确认\)/g, "").trim();
+}
+
+function qiweScriptVars(doctorId, patientName, extra){
+  let d = {};
+  try{ d = db.prepare("SELECT name,hospital,dept,specialty,group_name FROM doctors WHERE id=?").get(+doctorId) || {}; }catch(e){ d = {}; }
+  const ext = extra || {};
+  return {
+    patient: cleanText(patientName || ext.patient || "", 80),
+    group: publicGroupName(ext.group || d.group_name || ""),
+    doctor: cleanText(d.name || "", 80),
+    dept: cleanText(d.dept || d.specialty || "", 80),
+    hospital: cleanText(d.hospital || "", 120),
+    senderId: cleanText(ext.senderId || "", 120),
+    roomId: cleanText(ext.roomId || "", 120)
+  };
+}
+
+function configuredScript(doctorId, keys, vars){
+  const list = Array.isArray(keys) ? keys : [keys];
+  const scripts = opsConfig.scripts(doctorId);
+  for(const k of list){
+    const v = opsConfig.render(opsConfig.scriptValue(scripts, k), vars);
+    if(v) return v;
+  }
+  return "";
+}
+
+/* 缺陷二修（甲方验收实弹 2026-07-03 夜·测试群①实拍；codex 复核续修「0/前导0」形态）：@指定成员 userId 防呆。
+   qiweapi sendHyperText 的 @段 text=对方 userId，平台把无效 userId 按 0 处理，而「text 空或 0 = @所有人」
+   （api-344613914 官方语义，见 sendHyperText 注释）——非数字（生产冒烟 senderId="smoke-lowllm-0703"）与纯 0/前导 0
+   形态（"0"/"00"/"0123"，qiweapi 皆当 0）都会被渲染成 @所有人（真实患者群事故隐患）。
+   fail-closed：仅「不带前导 0 的正整数串」才允许走 sendHyperText @指定成员——真实 qiwe userId 恒为此形态
+   （如 1688857254811415）；"0"/"00"/前导 0/非数字一律跳过 @、直接 sendText（内容照发，只降 @）。
+   needAtAll（显式 @所有人广播）语义不动。 */
+function atMemberIdSendable(v){
+  return /^[1-9]\d*$/.test(String(v == null ? "" : v).trim());
+}
+
+function escapeRegExp(s){
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function realMentionName(v){
+  let s = cleanText(v, 80).replace(/^@+/, "").trim();
+  s = s.replace(/^(?:微信的|企业微信的|微信用户)/, "").trim();
+  s = s.replace(/[，,。；;：:\s]+$/g, "").trim();
+  if(!s || s === "企微患者" || s === "新朋友" || s === "新成员") return "";
+  if(/小助手|助手|机器人|系统|企业微信团队|群聊|外部群聊|邀请|欢迎/.test(s)) return "";
+  return s.slice(0, 40);
+}
+
+function ensureTextMention(text, patientName){
+  const body = String(text || "").trim();
+  const name = realMentionName(patientName);
+  if(!name || !body || body.startsWith("@")) return body;
+  // 文案已以姓名开头时仍要在姓名与正文间留空格，避免「@Chaxic拉肚子」粘连
+  if(body.startsWith(name)){
+    const rest = body.slice(name.length).replace(/^[，,、：:\s]*/, "");
+    return rest ? ("@" + name + " " + rest) : ("@" + name);
+  }
+  return "@" + name + " " + body;
+}
+
+function stripTextMention(text, patientName){
+  const body = String(text || "").trim();
+  const name = realMentionName(patientName);
+  if(!name || !body) return body;
+  const re = new RegExp("^@?" + escapeRegExp(name) + "[，,、：:\\s]*");
+  const stripped = body.replace(re, "").trim();
+  return stripped || body;
+}
+
+function httpUrl(v){
+  const s = cleanText(v, 1000);
+  return /^https?:\/\//i.test(s) ? s : "";
+}
+
+/* 相对深链补全（域名深链承接，甲方 2026-07-03，fail-closed）：seed 里深链卡 linkUrl 存相对路径 /?p=<key>（可移植纪律：不硬编码域名）。
+   发企微链接卡片必须是绝对 https；以 "/" 开头的相对 linkUrl 用 publicOrigin() 补全成绝对地址后再交 httpUrl 校验。
+   PUBLIC_ORIGIN 为空 → 返回空串（下游据此跳过该卡，绝不发相对路径死链）。非 "/" 开头（已是绝对 http/s 或其它）按原样返回、由 httpUrl 兜底。 */
+function resolveLinkUrl(v){
+  const s = cleanText(v, 1000);
+  if(/^\//.test(s)){
+    const origin = publicOrigin();
+    return origin ? origin + s : "";   // origin 空 → 空串 → linkCardFromResponse 跳过该卡（fail-closed，不发死链）
+  }
+  return s;
+}
+
+function publicOrigin(){
+  // 可移植纪律（CLAUDE.md）：app 代码不硬编码任何 self-URL/域名，只从 env 注入（本地=空→localhost 由部署侧配）。
+  // 无 env → 返回空串；下游 defaultLinkIconUrl 据此回退空 iconUrl（不因缺域名丢卡，见 linkCardFromResponse）。
+  return cleanText(process.env.PUBLIC_ORIGIN || process.env.APP_PUBLIC_ORIGIN || "", 240).replace(/\/+$/, "");
+}
+
+function defaultLinkIconUrl(){
+  const origin = publicOrigin();
+  return origin ? origin + "/assets/chunyu-doctor-icon.png" : "";
+}
+
+function linkCardFromResponse(r){
+  if(!r) return null;
+  const ext = r.external || {};
+  // 深链卡 linkUrl 可能是相对路径 /?p=<key>（域名深链承接）→ resolveLinkUrl 先按 PUBLIC_ORIGIN 补全绝对 https，
+  //   origin 空 → 返回空串 → 下方 url 为空 → 跳过该卡（fail-closed，绝不发相对路径死链）；绝对 http/s 链接原样通过。
+  const url = httpUrl(resolveLinkUrl(r.linkUrl || r.url || ext.url || ext.urlLink || ext.linkUrl));
+  if(!url) return null;
+  const iconUrl = httpUrl(r.iconUrl || r.thumbUrl || r.coverUrl || ext.iconUrl || ext.coverUrl) || defaultLinkIconUrl();
+  return {
+    title:cleanText(r.title || ext.label || "相关链接", 120),
+    desc:cleanText(r.desc || r.sub || r.source || ext.service || ext.provider || ext.note || "", 240),
+    iconUrl,
+    linkUrl:url
+  };
+}
+
+function linkCards(reply){
+  const responses = Array.isArray(reply) ? reply : (reply && reply.responses);
+  return (Array.isArray(responses) ? responses : [])
+    .map(linkCardFromResponse)
+    .filter(Boolean);
+}
+
+/* 兜底链接卡抑制（甲方 2026-07-06·h5_webview 四码「优先 weapp、成功即不重复发兜底链接卡」）：
+   同源扩展既有「有卡片就不发文本链接」的 omitLinkCards 机制——把「压制」从 mp 短链文本延伸到「该规则的兜底 linkCards」。
+   返回该「实发 weapp 编号」当前 enabled 规则响应会成卡的 linkUrl 集合（用 linkCardFromResponse 同口径解析，
+   PUBLIC_ORIGIN 相对深链补全、绝对 http/s 原样，确保与 articleLinkCards 里对应卡的 linkUrl 逐字对齐）。
+   仅返回「属于实发 weapp 那条规则」的 URL —— 低危 LLM 合并回复可拼入别的编号(attach)的 link 卡，那些绝不能被压制。
+   fail-closed 边界（关键）：本集合只在「weapp 真发成功后」于投递点用来跳过对应卡；weapp 未就绪 / sendWeapp 失败
+   一律不使用（linkCards 照发、链接永不丢）。code 不存在 / 规则关闭 / 解析失败 → 空 Set（不压制任何卡，保守）。 */
+function weappRuleLinkUrls(doctorId, code){
+  const urls = new Set();
+  if(!doctorId || !code) return urls;
+  let responses = [];
+  try{
+    const r = db.prepare("SELECT responses FROM rules WHERE doctor_id=? AND code=? AND enabled=1").get(doctorId, String(code));
+    const parsed = r && r.responses ? JSON.parse(r.responses) : [];
+    responses = Array.isArray(parsed) ? parsed : [];
+  }catch(e){ responses = []; }
+  for(const r of responses){
+    const card = linkCardFromResponse(r);
+    if(card && card.linkUrl) urls.add(card.linkUrl);
+  }
+  return urls;
+}
+
+/* weapp 是否「回执确认真发」（codex 跨厂复核 fail-closed 反例修 2026-07-06）：sendWeapp 的 promise 不抛错 ≠ 业务真发出——
+   qiweapi 可能 code:0（HTTP/API 层成功）却 data.isSendSuccess=0/false（业务侧未发出）。这种「resolved 但未真发」若被当成功，
+   会抑制该规则兜底 linkCard → 小程序卡实际没发、兜底链接也被跳过 → 破「链接永不丢」红线。
+   判据（保守·只在明确指示未发时才判 false）：回执里 isSendSuccess **显式为假值** → 未真发(返 false)；
+   假值口径（codex 第 3 轮硬化 2026-07-06）：数字/布尔 0/false；字符串先 .trim().toLowerCase() 归一化后 ∈ {"0","false"}
+   —— 覆盖 "0"/"false"/"False"/"FALSE"/" false "（大小写/前后空白）等真实回执变体，绝不因大写/空白漏判成"已发"→误抑制兜底卡。
+   其余（isSendSuccess 真 / DRY_RUN 桩 data.dryRun=true / qiweapi 某 method 不回该字段 → 字段 undefined）→ 视为已发(返 true)。
+   为何字段缺失判 true：DRY_RUN 桩与部分真实回执不带 isSendSuccess，一律判 false 会让抑制永不触发（回归 100% 冗余卡）、
+   且「多发一张兜底卡」本就不丢链接、安全侧无害；而「显式为假」是明确的未发信号、必须 fail-closed 不抑制。 */
+function weappSendConfirmed(res){
+  const data = (res && res.data) || {};
+  if("isSendSuccess" in data){
+    const v = data.isSendSuccess;
+    if(v === 0 || v === false) return false;                       // 数字/布尔假值
+    if(typeof v === "string"){                                     // 字符串归一化（去空白+小写）后判假值：覆盖 "False"/" false " 等变体
+      const norm = v.trim().toLowerCase();
+      if(norm === "0" || norm === "false") return false;
+    }
+    return true;
+  }
+  return true;   // 无 isSendSuccess 字段（DRY_RUN 桩 / 部分真实回执）→ 沿用「promise 未抛错 + code:0」既有成功语义
+}
+
+/* 818 海报真图素材解析（fail-closed·仅在 QIWE_SENDIMAGE_EXPERIMENTAL 开态被调用；关态整条分支短路，绝不进此函数）。
+   判据：reply 含 image 响应（type==='image' 且 page/svg==='poster'）+ 该医生 content.posterImage 通过白名单校验
+   （仅 /assets/<name>.{jpg,jpeg,png}，与患者端 ui.js validPosterImage 同白名单）→ 读真实 jpg 字节发图；
+   否则返回 null（无 posterImage / SVG 生成海报无真实 jpg → 保持现状文字占位，见任务卡「SVG 生成海报不发图」）。
+   路径穿越双防护：① 正则只放行 /assets/ + basename（无 / \ .. 段）；② path.resolve 后校验仍在 ASSETS_DIR 内（realpath 前缀锚定）。
+   纯 I/O 读文件、无副作用；文件不存在/读失败 → null（不抛错、回落文字占位）。 */
+function hasPosterImageResponse(reply){
+  const responses = Array.isArray(reply) ? reply : (reply && reply.responses);
+  return (Array.isArray(responses) ? responses : []).some(r=>
+    r && r.type === "image" && (r.page === "poster" || r.svg === "poster"));
+}
+
+function doctorPosterImagePath(doctorId){
+  let content = {};
+  try{ content = JSON.parse((db.prepare("SELECT content FROM doctors WHERE id=?").get(+doctorId) || {}).content || "{}"); }catch(e){ content = {}; }
+  const s = String((content && content.posterImage) || "").trim();
+  // 白名单：仅 /assets/<basename>.{jpg,jpeg,png}，basename 不含路径分隔/穿越段（与 ui.js validPosterImage 同口径）。
+  if(!/^\/assets\/[A-Za-z0-9_.\-]+\.(jpg|jpeg|png)$/i.test(s)) return "";
+  return s;
+}
+
+function resolvePosterAsset(doctorId, reply){
+  if(!doctorId || !hasPosterImageResponse(reply)) return null;
+  return loadPosterAssetBytes(doctorId);
+}
+
+/* deliverOutbox（医助确认发送）路径专用：只有持久化 row（无活 reply 对象），故按 code 反查该规则响应判是否含海报 image 响应。
+   与 codeNativeWeappAllowed 同源的确定性 DB 反查（不加 payload 字段、旧 pending 行零 schema 变更、向后兼容）。同样仅在开态被调用。 */
+function resolvePosterAssetByCode(doctorId, code){
+  if(!doctorId || !code) return null;
+  let responses = [];
+  try{
+    const r = db.prepare("SELECT responses FROM rules WHERE doctor_id=? AND code=? AND enabled=1").get(doctorId, String(code));
+    const parsed = r && r.responses ? JSON.parse(r.responses) : [];
+    responses = Array.isArray(parsed) ? parsed : [];
+  }catch(e){ responses = []; }
+  if(!hasPosterImageResponse({ responses })) return null;
+  return loadPosterAssetBytes(doctorId);
+}
+
+// 共用：读该医生 content.posterImage 真实 jpg 字节（白名单 + 路径穿越双防护）。无 posterImage / 非法 / 文件缺失 → null。
+function loadPosterAssetBytes(doctorId){
+  const rel = doctorPosterImagePath(doctorId);
+  if(!rel) return null;
+  const basename = rel.replace(/^\/assets\//, "");
+  const resolved = path.resolve(path.join(ASSETS_DIR, basename));
+  // 路径穿越二次防护：解析后的绝对路径必须仍在 ASSETS_DIR 内（前缀 + 分隔符锚定，杜绝 assetsX 同前缀绕过）。
+  if(resolved !== path.resolve(ASSETS_DIR, basename)) return null;
+  if(resolved.indexOf(path.resolve(ASSETS_DIR) + path.sep) !== 0) return null;
+  let buffer = null;
+  try{ if(fs.existsSync(resolved)) buffer = fs.readFileSync(resolved); }catch(e){ buffer = null; }
+  if(!buffer || !buffer.length) return null;
+  const origin = publicOrigin();
+  return { path:resolved, filename:basename, buffer, fileUrl:origin ? origin + rel : "" };
+}
+
+/* deliverOutbox 发原生卡前的二次判定（fail-closed，堵 105/909 fallback 冒充原生直达洞）：
+   按 doctorId+code 取该 code 当前规则响应，用与 prepareDelivery 同源的 nativeWeappResponses
+   (miniProgramResponses ∘ nativeWeappAllowedResponse) 判定是否允许企微原生直达。
+   为何必要：草稿旗标 weappReadyAtDraft 对「缺该字段的旧 pending 行 / 手工构造 payload」(===undefined)
+   会因 !==false 默认放行——而 105 或其它 status=fallback_short_link 的响应，其模板可能经同一短链
+   被 hydrateRelatedTemplates 补成 ready，于是 deliverOutbox 会误发原生卡冒充「已直达」。此处按 code 当前规则响应重判：
+   只有响应确实允许原生直达（非 fallback_short_link / nativeCard!==false）才返回 true；
+   code 不存在 / 规则关闭 / 无原生候选响应 → false（缺字段旧行也不发原生卡，fail-closed）。 */
+function codeNativeWeappAllowed(doctorId, code){
+  if(!doctorId || !code) return false;
+  // 甲方 2026-07-03 裁定（看真实测试群截图）：挂号「春雨小程序发卡不发文本短链」——解禁挂号原生卡。
+  // 解禁后 hasReadyTemplate=true 时既有 omitMiniPrograms 机制自动「发卡 + 文本不带 #小程序:// 行」。105 all_service 白名单与其余逻辑零改动。
+  let responses = [];
+  try{
+    const r = db.prepare("SELECT responses FROM rules WHERE doctor_id=? AND code=? AND enabled=1").get(doctorId, String(code));
+    const parsed = r && r.responses ? JSON.parse(r.responses) : [];
+    responses = Array.isArray(parsed) ? parsed : [];
+  }catch(e){ responses = []; }
+  return nativeWeappResponses({ responses }).length > 0;
+}
+
+function templateNativeWeappAllowed(code, template){
+  if(!template || !template.ready) return false;
+  const c = String(code || template.code || "").trim();
+  // 查看回复 all_service 只允许订单页原生模板；旧 202 仅作迁移兼容，新编号为 105。
+  if(c === "105" || c === "202"){
+    return /(^|\/)pages\/all_service\/index\.html(?:[?#]|$)/.test(String(template.pagePath || ""));
+  }
+  return true;
+}
+
+/* 真发闸门（#5a，fail-closed 收紧）：autoSend ON 时，仅以下回复可自动真发，与 triage canAutoSend / 社群 auto_keywords 口径一致——
+   · source=keyword_rule / ai_intent（确定性编号/规则/意图命中，= 医生预置安全话术）→ 可自动发；
+   · source=ai_triage / triage_error（走 AI 分诊）→ 仅当 reply.triage.canAutoSend===true 才自动发（三档裁定 2026-07-02：low/high 为 true——
+     low 发双闸 LLM 文本(生产 LOW_RISK_LLM_REPLY=1 开态)/否则服务模板、high 发本地安全话术+101 卡且 needsHuman 仍 true；medium 恒 false 转人工 pending）。
+   · 其它/缺字段 → false（保守默认）。注意：真发内容 = responsesToQiweText（low 档 LOW_RISK_LLM_REPLY=1 时含过双闸的 LLM 文本、否则确定性安全模板+101 卡），绝不发 aiDraft（不变）。 */
+function replyAutoSendable(reply){
+  const src = reply && reply.source;
+  if(src === "keyword_rule" || src === "ai_intent") return true;
+  if(src === "service_ack" || src === "triage_service_ack") return true; // 安全模板自动真发
+  if(src === "service_ack" || src === "triage_service_ack") return true; // 安全模板自动真发
+  if(src === "service_ack" || src === "triage_service_ack") return true; // 安全模板自动真发
+  if(src === "service_ack" || src === "triage_service_ack") return true; // 安全模板自动真发
+  if(src === "service_ack" || src === "triage_service_ack") return true; // 安全模板自动真发
+  if(src === "ai_triage" || src === "triage_error") return !!(reply.triage && reply.triage.canAutoSend === true);
+  return false;
+}
+
+function captureKey(evt, cfg){
+  if(evt && evt.fromRoomId) return "room:" + evt.fromRoomId;
+  return "dm:" + String((cfg && cfg.testToId) || (evt && (evt.replyToId || evt.senderId || evt.receiverId)) || "default");
+}
+
+function knownWeappCode(doctorId, code){
+  if(!doctorId || !code) return false;
+  const row = db.prepare("SELECT 1 FROM qiwe_weapp_templates WHERE doctor_id=? AND code=? AND source_short_link<>''").get(doctorId, code);
+  return !!row;
+}
+
+function rememberPendingTemplateCode(evt, cfg, doctorId){
+  // 严格真实自发（同 weappCaptureSkip 口径）：不用 isFromSelf（含 loggedInUserId 回落 self 的漏洞），改 senderId===selfUserId；selfUserId 未配则不记。
+  if(!evt || !evt.isText) return "";
+  if(!cfg || !cfg.selfUserId || evt.senderId !== cfg.selfUserId) return "";
+  const code = replyCode({ code:evt.text });
+  if(!/^\d{3}$/.test(code) || !knownWeappCode(doctorId, code)) return "";
+  pendingTemplateCodes.set(captureKey(evt, cfg), { code, at:now() });
+  return code;
+}
+
+function takePendingTemplateCode(evt, cfg){
+  const key = captureKey(evt, cfg);
+  const item = pendingTemplateCodes.get(key);
+  if(!item) return "";
+  if(now() - item.at > PENDING_TEMPLATE_MS){
+    pendingTemplateCodes.delete(key);
+    return "";
+  }
+  pendingTemplateCodes.delete(key);
+  return item.code;
+}
+
+function inferTemplateCode(evt, card, pendingCode){
+  if(pendingCode) return pendingCode;
+  const text = [
+    evt && evt.text,
+    card && card.title,
+    card && card.desc,
+    card && card.pagePath
+  ].filter(Boolean).join(" ");
+  const m = text.match(/\b(\d{3})\b/);
+  if(m) return m[1];
+  // 找医生/找专家/换医生/院内转诊 类卡片（转诊已整体下线、标题无三位编号）无法可靠归类 → 返回空码；captureWeappTemplate 据此
+  //   早退不保存，避免误落覆盖、破坏既有模板（codex 红线复核·修1/r6）。加同义词 + /i 大小写不敏感（pages/DoctorList 也命中）；位置在 101/105 之前。
+  if(/找医生|找专家|换个?医生|院内转诊|转诊|doctor[_-]?list|doctorlist|search|hospital|department/i.test(text)) return "";
+  if(/doc_mainpage|doc_id=|吕富靖|图文|问诊|医生主页/.test(text)) return "101";
+  if(/我的全部服务|全部服务|我的订单|all_service/.test(text)) return "105";
+  return "";   // 默认（无法确信归类）→ 空码跳过、不保存，绝不默认落 101 覆盖既有模板（codex r6 定论）
+}
+
+function templateCaptureLocked(doctorId, code){
+  if(!doctorId || !code) return false;
+  const row = db.prepare("SELECT raw_payload FROM qiwe_weapp_templates WHERE doctor_id=? AND code=?").get(Number(doctorId), String(code));
+  return !!(row && row.raw_payload);
+}
+
+function archiveBusinessGroup(evt, doctorId){
+  if(!evt || !evt.isGroup) return null;
+  return require("./community.js").archiveQiweInbound({
+    doctorId,
+    roomId:evt.fromRoomId,
+    senderId:evt.senderId,
+    senderName:evt.senderName,
+    text:evt.text,
+    msgType:evt.isVoice ? "voice" : (evt.isWeapp ? "weapp" : (evt.isText ? "text" : "media")),
+    externalMsgId:evt.externalMsgId,
+    rawPayload:evt.raw
+  });
+}
+
+function captureWeappTemplate(evt, cfg){
+  const doctorId = activeDoctorId(cfg);
+  if(!doctorId) return { ok:false, error:"doctor_not_found" };
+
+  // 真实群只允许已由 QiWe 同步、且管理员明确选中的业务群进入患者与分诊链路。
+  if(evt.isGroup){
+    const communityRecord = archiveBusinessGroup(evt, doctorId);
+    if(!communityRecord.accepted){
+      return { ok:true, skipped:communityRecord.reason || "non_business_group",
+        event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:true } };
+    }
+  }
+  qiwe.syncWeappTemplatesFromRules(doctorId);
+  const card = qiwe.normalizeWeappCard(evt.raw || evt.msgData);
+  const pendingCode = takePendingTemplateCode(evt, cfg);
+  const code = inferTemplateCode(evt, card, pendingCode);
+  // 空码 = 无法可靠归类的卡片（如找医生/院内转诊，转诊已下线）→ 早退不保存；saveWeappTemplate 遇空码会抛错，
+  //   更不能落默认 101 覆盖既有 101 模板（codex 红线复核·修1）。
+  if(!code) return { ok:true, skipped:"uninferable_code", doctorId };
+  // 模板永久锁（甲方 2026-07-03 裁定：已封装的卡片必须改代码才能改）：已有真实 raw_payload 的模板位拒绝任何运行时覆盖——
+  // 含「先发编号再发卡」这条托管号覆盖路径（删原 !pendingCode 豁免）。空白模板位（raw_payload 空）仍保留首次学习，
+  // 否则 202 all_service 等真卡永远采不进来。rememberPendingTemplateCode/takePendingTemplateCode 保留（首学仍用 pendingCode 归类）。
+  if(templateCaptureLocked(doctorId, code)) return { ok:true, skipped:"weapp_template_locked", doctorId, code };
+  const saved = qiwe.saveWeappTemplate({
+    doctorId,
+    code,
+    card:evt.raw || evt.msgData,
+    rawPayload:evt.raw
+  });
+  return {
+    ok:true,
+    skipped:"weapp_template_saved",
+    doctorId,
+    code,
+    title:saved && saved.title,
+    ready:!!(saved && saved.ready),
+    missing:(saved && saved.missing) || []
+  };
+}
+
+/* 从「允许原生直达」的 mp 响应反查其所属规则编号（缺陷一修 2026-07-03 夜，确定性 DB 反查、零猜测）：
+   按 external.shortLink + title 双相等 与该医生 enabled=1 规则响应精确匹配——同医生多编号常共用同一条主页短链
+   （101/102/404/808/909 都挂医生主页 shortLink），只锚 shortLink 会误配到别的编号（模板 title 各不相同），
+   加 title 相等才唯一锚定所属规则。无 shortLink / 无 title 的响应不反查（无模板可锚，fail-closed）。
+   返回编号按响应顺序去重；查询失败/无命中 → []（回落现状）。 */
+function inferResponseCodes(doctorId, responses){
+  const anchors = (Array.isArray(responses) ? responses : [])
+    .map(r=>({ link:String(((r && r.external) || {}).shortLink || "").trim(), title:String((r && r.title) || "").trim() }))
+    .filter(a=>a.link && a.title);
+  if(!doctorId || !anchors.length) return [];
+  let rows = [];
+  try{ rows = db.prepare("SELECT code,responses FROM rules WHERE doctor_id=? AND enabled=1 ORDER BY sort,id").all(doctorId); }catch(e){ rows = []; }
+  const parsed = rows.map(row=>{
+    let list = [];
+    try{ list = JSON.parse(row.responses || "[]"); }catch(e){ list = []; }
+    return { code:String(row.code == null ? "" : row.code).trim(), list:Array.isArray(list) ? list : [] };
+  });
+  const codes = [];
+  for(const a of anchors){
+    for(const row of parsed){
+      if(!row.code || codes.includes(row.code)) continue;
+      const hit = row.list.some(x=>x && typeof x === "object"
+        && String(((x.external) || {}).shortLink || "").trim() === a.link
+        && String(x.title || "").trim() === a.title);
+      if(hit) codes.push(row.code);
+    }
+  }
+  return codes;
+}
+
+/* ===== 缺陷一修（甲方验收实弹 2026-07-03 夜·测试群①实拍）：原生卡模板不再只锚定单一主编号 =====
+   现象：低危 LLM attach 可带多编号卡（如 ["饮食","101"]），triage 只回传首个编号（entryCode=okCodes[0]→intentCode），
+   而原生卡机制原先只按这一个编号查模板——首编号（饮食）无就绪模板 → hasReadyTemplate=false → 同回复里 101 的
+   已采集就绪真卡也被整体拖成「#小程序:// 文本短链 + 微信扫一扫」裸文本（生产群实拍）。
+   修：主编号模板就绪 → 现状不变；不就绪时，从已过 nativeWeappAllowedResponse 的 mp 响应反查所属编号
+   （inferResponseCodes），取首个过 templateNativeWeappAllowed 的就绪模板（编号+模板一起替换，audit 记实发编号）。
+   不变量保持：202 只放行 all_service（templateNativeWeappAllowed 原样复用）；fallback_short_link 响应
+   进入本函数前已被 nativeWeappAllowedResponse 滤掉，不可能被反查捞回；全部不就绪 → 返回主编号+其模板（可能 null），
+   行为与现状一致（文本兜底、链接不丢）。 */
+function resolveWeappDelivery(doctorId, primaryCode, nativeMiniResponses){
+  const tryCode = code=>{
+    if(!code) return null;
+    const t = qiwe.loadWeappTemplate(doctorId, code);
+    return templateNativeWeappAllowed(code, t) ? { code, template:t, ready:true } : null;
+  };
+  if(doctorId && nativeMiniResponses.length){
+    const primary = tryCode(primaryCode);
+    if(primary) return primary;
+    for(const code of inferResponseCodes(doctorId, nativeMiniResponses)){
+      if(code === primaryCode) continue;
+      const hit = tryCode(code);
+      if(hit) return hit;
+    }
+  }
+  return {
+    code:primaryCode,
+    template:(primaryCode && nativeMiniResponses.length) ? qiwe.loadWeappTemplate(doctorId, primaryCode) : null,
+    ready:false
+  };
+}
+
+function prepareDelivery(doctorId, reply, patientName, options){
+  options = options || {};
+  if(doctorId) qiwe.syncWeappTemplatesFromRules(doctorId);
+  const primaryCode = replyCode(reply);
+  const allMiniResponses = miniProgramResponses(reply);
+  const miniResponses = allMiniResponses.filter(nativeWeappAllowedResponse);
+  const articleLinkCards = linkCards(reply);
+  // 缺陷一修（2026-07-03 夜）：主编号模板不就绪时从 native-allowed mp 响应反查就绪模板（见 resolveWeappDelivery），
+  // code/template/weappReady 三者同源替换——101 等就绪真卡不再被首编号（饮食）拖成文本短链+扫码裸文案。
+  const resolved = resolveWeappDelivery(doctorId, primaryCode, miniResponses);
+  const code = resolved.code;
+  const template = resolved.template;
+  const hasReadyTemplate = resolved.ready;
+  const textOptions = {
+    omitMiniPrograms:hasReadyTemplate,
+    omitQr:hasReadyTemplate,
+    // 有卡片就不发文本链接（甲方 2026-07-03）：会真成链接卡片(articleLinkCards)的响应，文本里整条省略——同一链接不再既发卡又发文本行。
+    // 与 articleLinkCards 同口径（willBecomeLinkCard↔linkCardFromResponse）：PUBLIC_ORIGIN 空→相对深链不成卡→文本行保留（不丢链接）。
+    omitLinkCards:true,
+    omitPatientName:!!options.isGroup
+  };
+  const replyText = responsesToQiweText(reply, patientName, textOptions);
+  // omitLinkCards:true（codex 2026-07-03 同型核查·修）：weappFallbackText 是原生卡 sendWeapp 失败时的文本回落，取 allMiniResponses；
+  //   若某 mp 响应带 external.url（既进 allMiniResponses → weappFallbackText，又被 linkCardFromResponse 认成卡 → articleLinkCards），
+  //   原生卡失败回落发 weappFallbackText（含该 url 文本行）+ linkCards 循环又发同 url 卡 → 重复。与 mpFallbackText/draftText 同口径省略成卡响应。
+  //   不成卡场景（PUBLIC_ORIGIN 空的相对深链等）照旧保留文本（willBecomeLinkCard=false，链接不丢·fail-closed 对齐）。
+  const weappFallbackText = hasReadyTemplate
+    ? responsesToQiweText({ responses:allMiniResponses }, patientName, { omitLinkCards:true, omitPatientName:!!options.isGroup })
+    : "";
+  // 兜底链接卡抑制清单（甲方 2026-07-06·h5_webview 四码优先 weapp、成功即不重发冗余兜底链接卡）：
+  //   仅当模板就绪(hasReadyTemplate)时，收集「实发 weapp 那条规则(code)」会成卡的 linkUrl —— 这些是同编号指向同一服务的
+  //   /?p=<key> 域名深链卡 + 外链问卷/官网卡，weapp 卡成功发出后即冗余。⚠️ 只在「sendWeapp 真发成功」的投递点用来跳过对应卡；
+  //   weapp 未就绪 / 发送失败一律不用（linkCards 照发、链接永不丢·fail-closed，见 deliverReplyToQiwe/deliverOutbox）。
+  //   低危 LLM 合并回复里别的编号(attach)的 link 卡不在本清单内 → 永不被压制（只压实发 weapp 那条规则的兜底）。
+  const weappSuppressLinkUrls = hasReadyTemplate ? weappRuleLinkUrls(doctorId, code) : new Set();
+  return {
+    code,
+    replyText,
+    hasMiniProgram:allMiniResponses.length > 0,
+    weappReady:hasReadyTemplate,
+    weappTemplate:template,
+    weappFallbackText,
+    weappSuppressLinkUrls,
+    weappPublic:template ? {
+      code:template.code,
+      title:template.title,
+      ready:template.ready,
+      missing:template.missing || [],
+      updatedAt:template.updatedAt || ""
+    } : null,
+    linkCards:articleLinkCards
+  };
+}
+
+async function deliverReplyToQiwe(input){
+  const cfg = input.cfg || qiwe.loadConfig();
+  const plan = prepareDelivery(input.doctorId, input.reply, input.patientName, { isGroup:!!input.isGroup });
+  const toId = input.toId;
+  const sentParts = [];
+  const results = [];
+  const poster = qiwe.sendImageExperimentalOn() ? resolvePosterAsset(input.doctorId, input.reply) : null;
+  let textRichDelayMs = 0;
+  if(plan.replyText){
+    // @指定成员（群回复@患者本人，input.atUserId）优先于 @所有人（广播）——患者回复场景只会有 atMember，二者互斥取其一（if/else-if 顺序保证）。
+    // 各自需对应实验开关 ON 才真发 @；开关默认关 → atMember/needAt 恒 false → 走原 sendText（默认行为零变化）。sendHyperText 失败回落 sendText（@降级为文字）。
+    // 缺陷二修：atUserId 须纯数字（atMemberIdSendable）才走 @，非数字 userId 会被 qiweapi 按 0=@所有人渲染（生产实拍）。
+    const atMember = atMemberIdSendable(input.atUserId) && qiwe.atMemberExperimentalOn();
+    const needAt = !!input.needAtAll && qiwe.atallExperimentalOn();
+    if(atMember){
+      try{
+        const r = await qiwe.sendHyperText(toId, plan.replyText, { atUserIds:[input.atUserId] }, cfg);
+        sentParts.push({ type:"hypertext_atmember", preview:plan.replyText.slice(0, 80) });
+        results.push({ type:"hypertext_atmember", result:r });
+      }catch(e){
+        const r = await qiwe.sendText(toId, plan.replyText, cfg);
+        sentParts.push({ type:"text_atmember_fallback", preview:plan.replyText.slice(0, 80), error:e.message });
+        results.push({ type:"text_atmember_fallback", result:r, error:e.message });
+      }
+    }else if(needAt){
+      try{
+        const r = await qiwe.sendHyperText(toId, plan.replyText, { atAll:true }, cfg);
+        sentParts.push({ type:"hypertext_atall", preview:plan.replyText.slice(0, 80) });
+        results.push({ type:"hypertext_atall", result:r });
+      }catch(e){
+        const r = await qiwe.sendText(toId, plan.replyText, cfg);
+        sentParts.push({ type:"text_atall_fallback", preview:plan.replyText.slice(0, 80), error:e.message });
+        results.push({ type:"text_atall_fallback", result:r, error:e.message });
+      }
+    }else{
+      const r = await qiwe.sendText(toId, plan.replyText, cfg);
+      sentParts.push({ type:"text", preview:plan.replyText.slice(0, 80) });
+      results.push({ type:"text", result:r });
+    }
+  }
+  textRichDelayMs = await delayTextBeforeRich(sentParts, !!plan.weappReady || (plan.linkCards || []).length > 0 || !!poster);
+  // weapp 真发成功旗标（甲方 2026-07-06·h5_webview 四码优先 weapp、成功即抑制冗余兜底链接卡）：
+  //   仅当 sendWeapp 真正成功才置 true → 下方 linkCards 循环据此跳过 plan.weappSuppressLinkUrls 里的兜底卡；
+  //   weapp 未就绪 / sendWeapp 失败 → 恒 false → 兜底 linkCards 照发（链接永不丢·fail-closed，含既有反例3 失败回落路径）。
+  let weappSent = false;
+  if(plan.weappReady){
+    try{
+      const r = await qiwe.sendWeapp(toId, plan.weappTemplate, cfg);
+      // codex 跨厂复核 fail-closed 反例修（2026-07-06）：promise 不抛错 ≠ 真发出——回执 code:0 却 isSendSuccess=0/false（业务未发）
+      //   必须当失败处理，否则「记 weapp 成功 + 据此抑制兜底卡」→ 卡实际没发、链接也被跳过（破链接永不丢）。显式未发 → throw 进下方失败回落。
+      //   「记为已发 weapp(sentParts)」与「据此抑制(weappSent)」同一判据 weappSendConfirmed，绝不错位。
+      if(!weappSendConfirmed(r)) throw new Error("weapp 回执未确认真发（isSendSuccess 假）");
+      sentParts.push({ type:"weapp", code:plan.code, title:plan.weappTemplate.title });
+      results.push({ type:"weapp", result:r });
+      weappSent = true;
+    }catch(e){
+      const fallback = plan.weappFallbackText || "";
+      if(fallback){
+        const r = await qiwe.sendText(toId, fallback, cfg);
+        sentParts.push({ type:"text_fallback", preview:fallback.slice(0, 80), error:e.message });
+        results.push({ type:"text_fallback", result:r, error:e.message });
+      }else if(plan.linkCards && plan.linkCards.length){
+        // codex 2026-07-03 反例3修：weappFallbackText 被 omitLinkCards 省略后为空（mp 会成卡时），旧 else 直接 throw → 后面 linkCards 循环不执行，
+        //   URL 本应由链接卡承载却因抛错整条中断、卡不发。故有 linkCards 时不 throw：记 weapp 失败（results+console.error）、继续走 linkCards 循环由卡承载 URL。
+        console.error("[qiwe] sendWeapp 失败，无 fallback 文本但有链接卡，转由链接卡承载：", plan.code, "-", e.message);
+        results.push({ type:"weapp_error", code:plan.code, error:e.message });
+      }else{
+        throw e;   // 文本和卡都没有可发回落 → 保留原语义报错（完全无可发才 throw）
+      }
+    }
+  }
+  if(!textRichDelayMs){
+    textRichDelayMs = await delayTextBeforeRich(sentParts, (plan.linkCards || []).length > 0 || !!poster);
+  }
+  // 抑制清单只在 weapp 真发成功时生效（fail-closed）：weappSent=false（未就绪/失败）→ 空集 → 所有兜底卡照发、链接永不丢。
+  const suppress = weappSent && plan.weappSuppressLinkUrls instanceof Set ? plan.weappSuppressLinkUrls : new Set();
+  for(const card of (plan.linkCards || [])){
+    // 甲方 2026-07-06：weapp 已成功承载该规则服务 → 跳过其冗余兜底链接卡（同编号 /?p=<key> 深链卡 + 外链问卷/官网卡）。
+    //   记 link_card_suppressed（不计入 sentParts）便于审计；别的编号(attach)的卡不在 suppress 集内、照发。
+    if(card && suppress.has(card.linkUrl)){
+      results.push({ type:"link_card_suppressed", code:plan.code, title:card.title, linkUrl:card.linkUrl });
+      continue;
+    }
+    // 每张卡独立容错：/msg/sendLink 生产接口尚未真机验证（可能不存在/参数不符），单张抛错不得中断——
+    // 否则已发的文本/weapp 回执丢失、后续卡片全不发、上层记整条失败。失败仅记 link_card_error（不计入 sentParts），继续下一张。
+    try{
+      const r = await qiwe.sendLink(toId, card, cfg);
+      sentParts.push({ type:"link_card", title:card.title, linkUrl:card.linkUrl });
+      results.push({ type:"link_card", result:r });
+    }catch(e){
+      console.error("[qiwe] sendLink 失败，跳过该链接卡片：", card.title, "-", e.message);
+      results.push({ type:"link_card_error", title:card.title, error:e.message });
+    }
+  }
+  // 818 海报真图（behind flag·关态零变化）：仅当 QIWE_SENDIMAGE_EXPERIMENTAL 开 且 image 响应解析到真实 /assets jpg 素材 →
+  //   追加发一张真图；开关关（默认）→ 整条短路，image 响应不额外转成「【图片/海报】…」占位文本。
+  //   独立容错（同 link_card）：单张失败不中断、不影响已发文本/卡片、不误标失败——SVG 生成海报无真实 jpg → resolvePosterAsset 返 null → 不发。
+  if(qiwe.sendImageExperimentalOn()){
+    if(poster){
+      try{
+        const r = await qiwe.sendImage(toId, { buffer:poster.buffer, filename:poster.filename, fileUrl:poster.fileUrl }, cfg);
+        sentParts.push({ type:"image", filename:poster.filename });
+        results.push({ type:"image", result:r });
+      }catch(e){
+        console.error("[qiwe] sendImage 失败，跳过海报图片：", poster.filename, "-", e.message);
+        results.push({ type:"image_error", filename:poster.filename, error:e.message });
+      }
+    }
+  }
+  return {
+    sent:sentParts.length > 0,
+    sentParts,
+    results,
+    replyText:plan.replyText,
+    weapp:plan.weappPublic,
+    hasMiniProgram:plan.hasMiniProgram,
+    textBeforeRichDelayMs:textRichDelayMs,
+    linkCards:plan.linkCards || []
+  };
+}
+
+/* 小程序卡片采集「信任闸」（H2 防投毒，红线#5）：
+   除 enabled/configured/cmd/group 外，要求「严格真实自发」= 医助本人绑定账号(senderId===selfUserId)发的卡片才采集。
+   ⚠️ 故意不用 idAllowed / loggedInUserId / isFromSelf 做采集判定 —— normalizeEvent 把缺省 userId 回落成 selfUserId
+   (qiwe.js:500 loggedInUserId = raw.userId || cfg.selfUserId；qiwe.js:519 isFromSelf 含 senderId===loggedInUserId)，
+   攻击者只要省略 userId、且 selfUserId∈testToId(常见配置)即可绕过 → 投毒 active 医生卡片。senderId 是真实发件人、不被该回落污染。
+   selfUserId 未配 → 不采集(fail-closed)。
+   口径 = V1 方案 A(医助自发)。若以后放宽到「患者也可分享官方卡片」(方案 B)，不能放松 sender 闸，需改走
+   卡片 appId / 原始ID 白名单校验(校验是否春雨官方卡)——待甲方提供官方 appId/原始ID 再切。 */
+function weappCaptureSkip(evt, cfg){
+  if(!cfg || !cfg.enabled) return "disabled";
+  if(!cfg.token || !cfg.guid) return "not_configured";
+  if(Number.isFinite(evt.cmd) && evt.cmd !== 15000) return "not_chat_message";
+  if(evt.isGroup && !cfg.allowGroup) return "group_disabled";
+  if(!cfg.selfUserId || evt.senderId !== cfg.selfUserId) return "not_self";
+  return "";
+}
+
+function skipReason(evt, cfg){
+  if(!cfg || !cfg.enabled) return "disabled";
+  if(!cfg.token || !cfg.guid) return "not_configured";
+  if(Number.isFinite(evt.cmd) && evt.cmd !== 15000) return "not_chat_message";
+  if(evt.isGroup && !cfg.allowGroup) return "group_disabled";
+  if(!evt.isText) return "unsupported_msg_type";
+  if(!evt.text) return "empty_text";
+  if(evt.isFromSelf) return "self_message";
+  if(!idAllowed(evt, cfg)) return "outside_test_scope";
+  if(!evt.replyToId) return "missing_reply_to";
+  const key = evt.externalMsgId;
+  if(key){
+    const cur = now();
+    if(seenDuplicate(key, cur)) return "duplicate";
+  }
+  return "";
+}
+
+/* 语音转写前的信任闸 = skipReason 去掉 {isText, empty_text, dedup}：
+   语音本就非 text、转写前无正文，且 dedup 留给转写成功后落进的 skipReason 跑一次（避免双重去重冲突）。
+   只在 enabled/configured/cmd/group/self/scope/replyTo 都通过时才真调转写（省调用、不处理不可信语音）。 */
+function voiceSkipReason(evt, cfg){
+  if(!cfg || !cfg.enabled) return "disabled";
+  if(!cfg.token || !cfg.guid) return "not_configured";
+  if(Number.isFinite(evt.cmd) && evt.cmd !== 15000) return "not_chat_message";
+  if(evt.isGroup && !cfg.allowGroup) return "group_disabled";
+  if(evt.isFromSelf) return "self_message";
+  if(!idAllowed(evt, cfg)) return "outside_test_scope";
+  if(!evt.replyToId) return "missing_reply_to";
+  return "";
+}
+
+/* ===== 新患者入群提醒 =====
+   只处理明确的入群提示/入群事件文本（如「某某您好，欢迎加入...」「邀请某某加入群聊」）。
+   不再用「某群该 senderId 首次在群内发言」近似入群：老群友首次被系统处理时也会误发欢迎。 */
+
+/* 入群提示去重登记：INSERT OR IGNORE 到 qiwe_room_member_seen；changes>0 = 本次提示未处理过。 */
+function markRoomMemberFirstSeen(doctorId, roomId, senderId, senderName){
+  const rid = String(roomId || "").trim();
+  const sid = String(senderId || "").trim();
+  if(!rid || !sid) return false;
+  const sname = realMentionName(senderName);
+  const syntheticId = sname ? ("join-name:" + sname) : "";
+  if(syntheticId){
+    const args = [doctorId || null, rid];
+    if(sid !== syntheticId && db.prepare("SELECT 1 FROM qiwe_room_member_seen WHERE doctor_id IS ? AND room_id=? AND sender_id=?").get(args[0], args[1], syntheticId)) return false;
+    if(sid === syntheticId && db.prepare("SELECT 1 FROM qiwe_room_member_seen WHERE doctor_id IS ? AND room_id=? AND sender_name=? AND sender_id<>?").get(args[0], args[1], sname, syntheticId)) return false;
+  }
+  const r = db.prepare("INSERT OR IGNORE INTO qiwe_room_member_seen(doctor_id,room_id,sender_id,sender_name,first_at) VALUES(?,?,?,?,?)")
+    .run(doctorId || null, rid, sid, String(senderName || "").slice(0, 80), new Date().toISOString());
+  return (r.changes || 0) > 0;
+}
+
+const WELCOME_WEAPP_CODES = ["联络表", "808"];
+
+function welcomeWeappPayload(){
+  return WELCOME_WEAPP_CODES.slice();
+}
+
+function loadWelcomeWeappTemplate(doctorId, code){
+  const tplCandidate = codeNativeWeappAllowed(doctorId, code) ? qiwe.loadWeappTemplate(doctorId, code) : null;
+  const tpl = templateNativeWeappAllowed(code, tplCandidate) ? tplCandidate : null;
+  if(!tpl || !tpl.ready) throw new Error("欢迎卡模板未就绪：" + code);
+  return tpl;
+}
+
+async function sendWelcomeWeappCards(toId, doctorId, cfg){
+  const sentCards = [], cardErrors = [];
+  for(const code of WELCOME_WEAPP_CODES){
+    try{
+      const tpl = loadWelcomeWeappTemplate(doctorId, code);
+      const r = await qiwe.sendWeapp(toId, tpl, cfg);
+      if(!weappSendConfirmed(r)) throw new Error("weapp 回执未确认真发（isSendSuccess 假）");
+      sentCards.push({ code:tpl.code, title:tpl.title });
+    }catch(e){
+      cardErrors.push({ code, error:(e && e.message) || "发送失败" });
+    }
+  }
+  return { sentCards, cardErrors };
+}
+
+/* 给患者的入群欢迎话术（确定性服务话术：欢迎 + 联络表 + 菜单入口 + 医生介绍卡提示）。
+   零病情、零 LLM、零个体化诊疗内容——安全等级同 keyword_rule。 */
+function buildGroupWelcomeText(doctorId, patientName){
+  let doctorName = "吕富靖";
+  try{
+    const d = db.prepare("SELECT name FROM doctors WHERE id=?").get(+doctorId);
+    if(d && d.name) doctorName = d.name;
+  }catch(e){}
+  const mentionName = realMentionName(patientName);
+  const titleName = doctorName.endsWith("主任") ? doctorName : `${doctorName}主任`;
+  const greetingPrefix = mentionName ? "" : "新朋友 ";
+  return ensureTextMention([
+    `${greetingPrefix}您好，欢迎加入${titleName}建立的【院外公益健康群】👏`,
+    `⭐点击【医患联络表】提交基础信息，便于医生了解您的情况☑`,
+    `⭐在群里输入数字 “1”，查看所有群功能😄`,
+    `⭐点击下方小程序观看${titleName}给您的视频问候💗`
+  ].join("\n\n"), mentionName);
+}
+
+/* 给医助的内部「新患者到访」提醒文案（仅供关注，绝不外发到任何人）。 */
+function buildMemberVisitText(doctorId, patientName, senderId){
+  if(arguments.length < 3){
+    senderId = patientName;
+    patientName = doctorId;
+    doctorId = null;
+  }
+  let who = String(patientName || "").trim();
+  if(!who || who === "企微患者") who = "新成员";
+  const configured = configuredScript(doctorId, ["memberVisit","newPatientVisit","internalVisit"], qiweScriptVars(doctorId, who, { senderId }));
+  if(configured) return configured;
+  return `【新患者到访 · 仅供医助关注，无需发送】检测到${who}（${senderId || "未知ID"}）入群提示，系统已发送入群欢迎。建议医助关注后续消息，必要时确认身份、备注为「姓名+疾病」，并主动引导 101 咨询/201 挂号等入口。`;
+}
+
+/* 入群提示触发：① 欢迎（autoSend ON→qiwe.sendText 自动真发到群，DRY_RUN 不真发；autoSend OFF 或发送失败→落 pending 由医助确认发）；
+   ② 医助内部「新患者到访」提醒行——故意不带 payload.qiwe.toId → setOutboxStatus qiwe 分支 qtoId 空守门失败 → 落 V1 兜底仅标 sent，
+      **绝不真发到任何人**（deliverOutbox 亦会因缺 toId 抛错），status=pending 仅为在审核台/侧边栏可见「待关注」。
+   注：allowGroup + idAllowed 已由调用点前的 skipReason 把过；这里只按 cfg.autoSend 决定欢迎是否自动发。 */
+async function fireGroupWelcome(evt, cfg, doctorId){
+  const toId = evt.fromRoomId;
+  const name = evt.senderName || "";
+  const welcomeText = buildGroupWelcomeText(doctorId, name);
+  const wantAuto = !!cfg.autoSend;
+  const atUserId = evt.senderId || "";
+  const atMember = atMemberIdSendable(atUserId);
+  let sent = false, sendError = "", sentMode = "";
+  let welcomeCards = { sentCards:[], cardErrors:[] };
+  if(wantAuto){
+    if(atMember){
+      try{
+        await qiwe.sendHyperText(toId, stripTextMention(welcomeText, name), { atUserIds:[atUserId] }, cfg);
+        sent = true; sentMode = "hypertext_atmember";
+      }catch(e){
+        try{
+          await qiwe.sendText(toId, welcomeText, cfg);
+          sent = true; sentMode = "text_atmember_fallback";
+        }catch(e2){
+          sent = false;
+          sendError = (e2 && e2.message) || (e && e.message) || "发送失败";
+        }
+      }
+    }else{
+      try{ await qiwe.sendText(toId, welcomeText, cfg); sent = true; sentMode = "text"; }
+      catch(e){ sent = false; sendError = (e && e.message) || "发送失败"; }
+    }
+    if(sent){
+      welcomeCards = await sendWelcomeWeappCards(toId, doctorId, cfg);
+      if(welcomeCards.cardErrors.length){
+        sendError = welcomeCards.cardErrors.map(x=>`${x.code}:${x.error}`).join("; ");
+      }
+    }
+  }
+  const welcomePayload = { qiwe:{ toId, atUserId, weappCodes:welcomeWeappPayload() }, source:"welcome", memberVisit:true };
+  if(sentMode) welcomePayload.sentMode = sentMode;
+  if(welcomeCards.sentCards.length) welcomePayload.sentCards = welcomeCards.sentCards;
+  if(welcomeCards.cardErrors.length) welcomePayload.cardErrors = welcomeCards.cardErrors;
+  if(sendError) welcomePayload.sendError = sendError;
+  // sent_mode='real'：仅当 sent=true（qiwe.sendText/sendHyperText 真实投递成功后才入库为 sent）→ 经真实企微通道，分诊台可据此放行；
+  // pending（sent=false）留 NULL。溯源标记跟代码路径不跟环境（DRY_RUN 走同一 sendText 路径同标 real）。本 INSERT 是 processEvent 唯一以 status='sent' 落库的真发路径。
+  const wIns = db.prepare(`INSERT INTO outbound_queue(
+    doctor_id,group_id,message_id,target_type,target_name,channel_type,text,payload,status,source,priority,created_at,sent_at,sent_by,sent_mode
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    doctorId, null, null, "qiwe_room", String(toId || ""),
+    "qiwe", welcomeText, JSON.stringify(welcomePayload),
+    sent ? "sent" : "pending", "welcome", "normal", new Date().toISOString(), sent ? new Date().toISOString() : null, sent ? "system" : null, sent ? "real" : null
+  );
+  // 医助到访提醒：payload 顶层放线索但**不放 qiwe.toId** → 不可外发（三重护栏：无 toId + 落 V1 兜底 + deliverOutbox 缺 toId 抛错）。
+  const visitText = buildMemberVisitText(doctorId, name, evt.senderId);
+  const vIns = db.prepare(`INSERT INTO outbound_queue(
+    doctor_id,group_id,message_id,target_type,target_name,channel_type,text,payload,status,source,priority,created_at,sent_at,sent_by
+  ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    doctorId, null, null, "qiwe_room", String(toId || ""),
+    "qiwe", visitText, JSON.stringify({ source:"member_visit", roomId:toId || "", senderId:evt.senderId || "", senderName:name }),
+    "pending", "member_visit", "normal", new Date().toISOString(), null, null
+  );
+  return { welcomeOutboxId:wIns.lastInsertRowid, visitOutboxId:vIns.lastInsertRowid, welcomeSent:sent, sentCards:welcomeCards.sentCards, cardErrors:welcomeCards.cardErrors, sendError };
+}
+
+function extractJoinMemberName(evt){
+  const text = cleanText(evt && evt.text, 1000);
+  if(!text) return "";
+  const patterns = [
+    /邀请(?:微信的|企业微信的|微信用户)?([^，,。\s]{1,40})加入(?:了)?(?:外部)?群聊/,
+    /(?:^|[\n\r\s])(?:@)?([^，,。\s]{1,40})\s*您好[，,、\s]*欢迎加入/,
+    /欢迎\s*@([^，,。\s]{1,40})\s*加入/
+  ];
+  for(const re of patterns){
+    const m = text.match(re);
+    const name = realMentionName(m && m[1]);
+    if(name) return name;
+  }
+  return "";
+}
+
+function joinMemberId(evt, memberName){
+  const raw = (evt && evt.raw) || {};
+  const id = cleanText(raw.joinUserId || raw.newUserId || raw.memberId || raw.joinMemberId || raw.externalUserId || raw.external_userid || "", 120);
+  return id || ("join-name:" + realMentionName(memberName));
+}
+
+async function processEvent(raw, cfg){
+  cfg = cfg || qiwe.loadConfig();
+  const evt = qiwe.normalizeEvent(raw, cfg);
+  const doctorId = activeDoctorId(cfg);
+  if(doctorId) qiwe.syncWeappTemplatesFromRules(doctorId);
+  // 群内语音（msgType=16/cmd=15000）：先过信任闸 → 转写 → 当普通文本喂进后续 engine→triage 管线
+  // （风险仍本地判、非 low 仍转人工、患者侧仍 service-only；语音只是把音变字）。转写失败/空 → pending 转人工草稿。
+  let communityRecord = null;
+  if(evt.cmd === 15000 && evt.msgType === 16){
+    const vskip = voiceSkipReason(evt, cfg);
+    if(vskip) return { ok:true, skipped:vskip, event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:evt.isGroup } };
+    if(!doctorId) return { ok:false, error:"doctor_not_found" };
+    const msgServerId = String((evt.raw && evt.raw.msgServerId) || evt.externalMsgId || "").trim();
+    let transcript = "";
+    try{ transcript = String(await qiwe.voiceToText(msgServerId, cfg) || "").trim(); }catch(e){ transcript = ""; }
+    if(!transcript){
+      communityRecord = archiveBusinessGroup(evt, doctorId);
+      if(communityRecord && !communityRecord.accepted) return { ok:true, skipped:communityRecord.reason || "non_business_group" };
+      // 修2：失败/空分支自补去重（成功路径仍由下方 skipReason 登记一次，这里只管失败/空，避免双重登记）。
+      // 同一 msgServerId/msgUniqueIdentifier 重放 → 已见过则直接 return，不重复插 qiwe_voice 草稿。
+      const dkey = evt.externalMsgId;
+      if(dkey){
+        const cur = now();
+        if(seenDuplicate(dkey, cur)) return { ok:true, skipped:"duplicate", voiceFailed:true, event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:evt.isGroup } };
+      }
+      // 转写失败/空：绝不喂空/猜测进 triage、绝不自动答 → 入 pending「转人工」草稿（患者侧文案为服务性安抚，不含医学内容）。
+      const isGroup = !!evt.isGroup;
+      const toId = evt.replyToId;
+      const vars = qiweScriptVars(doctorId, evt.senderName, { senderId:evt.senderId, roomId:evt.fromRoomId || "" });
+      const text = configuredScript(doctorId, ["voice","voiceFailed","voiceFallback"], vars)
+        || "不好意思，您的语音我这边暂时没能听清/稳定识别。为了不漏掉您的情况，麻烦您用文字简单补充一下；如果不方便打字，我也会帮您转医助人工查看。";
+      const ins = db.prepare(`INSERT INTO outbound_queue(
+        doctor_id,group_id,message_id,target_type,target_name,channel_type,text,payload,status,source,priority,created_at,sent_at,sent_by
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        doctorId, null, null, isGroup ? "qiwe_room" : "qiwe_dm", String(toId || ""),
+        "qiwe", text, JSON.stringify({ qiwe:{ toId, atUserId:isGroup ? (evt.senderId || "") : "", voiceFailed:true }, source:"qiwe_voice" }),
+        "pending", "qiwe_voice", "high", new Date().toISOString(), null, null
+      );
+      return { ok:true, sent:false, reviewOnly:true, voiceFailed:true, outboxId:ins.lastInsertRowid, toId, skipped:"voice_transcribe_failed" };
+    }
+    // 转写成功：就地改成"文本事件"，落进下面 ④⑤⑥⑦ 全链（skipReason 此时 isText 通过、dedup 跑一次、buildPatientReply 吃转写文本）。
+    evt.text = transcript;
+    evt.isText = true;
+    evt.isVoice = true;
+  }
+  // 信任/范围闸先行（H2）：未启用/未配置/非聊天cmd/群未放开/不在测试白名单 → 既不采集卡片、也不记 pending code（防投毒）。
+  const captureSkip = weappCaptureSkip(evt, cfg);
+  if(evt.isWeapp){
+    if(captureSkip) return { ok:true, skipped:captureSkip, event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:evt.isGroup } };
+    return captureWeappTemplate(evt, cfg);
+  }
+  // 非文字/非语音/非卡片聊天消息（图片/文件/视频/位置等，msgType 值未知→粗粒度 !isText 兜底，不试图仅图片精确触发）：
+  // 不下载、不解读、不猜 qiweapi 图片字段/媒体接口 → 落一条 pending「转人工」草稿 + 纯服务话术（零医学内容），永远 pending、绝不自动发。
+  // 安全闸复用 voiceSkipReason（= 同一套 enabled/configured/cmd/群/自发/越界/replyTo 判定，语义上就是「非文字消息信任闸」），
+  // 再加 dedup（复用语音失败分支写法）：self/越界/群禁/缺 replyTo/重复 仍照旧 skip，不因兜底漏出。放在 skipReason 之前判定
+  // （skipReason:287 无差别 !isText→unsupported_msg_type 会抢先吞掉），skipReason 一字不动、其 :287 保留作 fail-closed 后备。
+  // 故意不 markRoomMemberFirstSeen：非文字消息只落转人工草稿；入群欢迎必须来自明确入群提示，不能用首条消息近似。
+  if(!evt.isText && !evt.isVoice && !evt.isWeapp){
+    const nskip = voiceSkipReason(evt, cfg);
+    if(nskip) return { ok:true, skipped:nskip, event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:evt.isGroup } };
+    // 转人工 pending 路径用严格白名单（比 text/voice 的 idAllowed 更紧，codex 红线复核收口）：idAllowed 的 DM 分支含 loggedInUserId，
+    // 它在 raw.userId 缺失时回落成 selfUserId（qiwe.js normalizeEvent），「省略 userId、sender/receiver 均不在白名单」的越界伪造消息
+    // 借 selfUserId∈testToId 过 idAllowed → 会漏进转人工队列。此处用 idAllowedStrict（去掉该自回落），越界伪造 → outside_test_scope、不落草稿。
+    if(!idAllowedStrict(evt, cfg)) return { ok:true, skipped:"outside_test_scope", nonText:true, event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:evt.isGroup } };
+    if(!doctorId) return { ok:false, error:"doctor_not_found" };
+    communityRecord = archiveBusinessGroup(evt, doctorId);
+    if(communityRecord && !communityRecord.accepted) return { ok:true, skipped:communityRecord.reason || "non_business_group" };
+    // dedup：同一非文字消息重放 → 已见过直接跳过，不重复落草稿（与语音失败分支同口径）。
+    const dkey = evt.externalMsgId;
+    if(dkey && seenDuplicate(dkey, now())) return { ok:true, skipped:"duplicate", nonText:true, event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:evt.isGroup } };
+    // 落 pending 转人工草稿（复用语音失败那套 INSERT）：患者侧纯服务话术、零医学内容（诊断/病情/用药/症状/检查报告 一个都不带）；
+    // source=qiwe_media、priority=high、needsHuman；永远 pending、绝不进 deliverReplyToQiwe/replyAutoSendable → 结构上不可能自动发。
+    const isGroup = !!evt.isGroup;
+    const toId = evt.replyToId;
+    const vars = qiweScriptVars(doctorId, evt.senderName, { senderId:evt.senderId, roomId:evt.fromRoomId || "" });
+    const text = configuredScript(doctorId, ["nonText","media","mediaFallback","imageFallback","fileFallback"], vars)
+      || "您发来的图片/资料我已经收到。图片内容需要医助人工查看，我会帮您转给医助跟进；如果方便，也请补充一句文字说明您最想咨询的问题，这样处理会更快。";
+    const materialReview = triage.materialReviewSummary({ msgType:evt.msgType, name:evt.msgTypeName || "", mime:"" });
+    const ins = db.prepare(`INSERT INTO outbound_queue(
+      doctor_id,group_id,message_id,target_type,target_name,channel_type,text,payload,status,source,priority,created_at,sent_at,sent_by
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      doctorId, null, null, isGroup ? "qiwe_room" : "qiwe_dm", String(toId || ""),
+      "qiwe", text, JSON.stringify({ qiwe:{ toId, atUserId:isGroup ? (evt.senderId || "") : "", nonText:true, needsHuman:true }, source:"qiwe_media", materialReview }),
+      "pending", "qiwe_media", "high", new Date().toISOString(), null, null
+    );
+    return { ok:true, sent:false, reviewOnly:true, nonText:true, needsHuman:true, outboxId:ins.lastInsertRowid, toId, skipped:"nontext_handoff" };
+  }
+  // 文本路径：仅在过信任闸后才记 pending code（医助"先发码再转卡片"的学习铺垫，防被伪造事件污染）。
+  if(!captureSkip) rememberPendingTemplateCode(evt, cfg, doctorId);
+  const skip = skipReason(evt, cfg);
+  if(skip) return { ok:true, skipped:skip, event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:evt.isGroup } };
+
+  if(!doctorId) return { ok:false, error:"doctor_not_found" };
+
+  communityRecord = archiveBusinessGroup(evt, doctorId);
+  if(communityRecord && !communityRecord.accepted){
+    console.warn("[qiwe] 业务群门禁拦截（将不回复）：", communityRecord.reason || "non_business_group",
+      "room=", evt.fromRoomId, "doctor=", doctorId);
+    return { ok:true, skipped:communityRecord.reason || "non_business_group",
+      event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:true } };
+  }
+  if(evt.isGroup && communityRecord && communityRecord.accepted){
+    console.log("[qiwe] 业务群已归档 messageId=", communityRecord.messageId,
+      "groupId=", communityRecord.groupRow && communityRecord.groupRow.id, "text=", String(evt.text||"").slice(0,40));
+  }
+
+  // 真实群里常见形态：企微/小助手会先发「某某您好，欢迎加入...」或系统文案「邀请某某加入群聊」。
+  // 这类消息不是患者提问，不能把小助手当患者去命中 101/联络表；识别到新人姓名后，仅触发入群欢迎并停止患者回复链路。
+  const joinedName = evt.isGroup ? extractJoinMemberName(evt) : "";
+  if(joinedName){
+    const joinEvt = Object.assign({}, evt, { senderName:joinedName, senderId:joinMemberId(evt, joinedName) });
+    let welcome = null;
+    try{
+      if(markRoomMemberFirstSeen(doctorId, joinEvt.fromRoomId, joinEvt.senderId, joinEvt.senderName)){
+        welcome = await fireGroupWelcome(joinEvt, cfg, doctorId);
+      }
+    }catch(e){
+      welcome = { error:(e && e.message) || "welcome_failed" };
+    }
+    return { ok:true, skipped:welcome && welcome.welcomeOutboxId ? "member_join_hint_processed" : "member_join_hint_duplicate", memberName:joinedName, welcome };
+  }
+
+  // 群风控 Phase A1 报警接线（2026-07-09，旁路 best-effort）：所有真实群文本先过 scanModeration 落 moderation_flag 给医助看板。
+  // 必须在下方 group_gate 之前——广告/引流/赌博刷群消息通常不 @ 助手，会被 gate 判 chitchat 静默返回，放 gate 之后=最该抓的全漏。
+  // 只发现、只标记，不处置：recordGroupModeration 不写 risk_level、不调 triage、不入 outbound_queue（与医疗分诊三档完全隔离）；
+  // 失败只记日志，绝不中断/改变下方回复主流程。入群系统提示已在上方早退，不会被当患者刷群扫描；DM 单聊不扫（群边界职责）。
+  // 惰性 require：community.js 加载期 require 本模块（R1 单向），顶部 require community 会成加载环 → 函数内运行时取（require 缓存，无开销）。
+  // channelType 传 "wecom"：community_groups 对企微真实群的既有映射约定=wecom（见 db.js「吕富靖真实企微群映射」注释，
+  // community.js CHANNEL_TYPES 无 qiwe 会把它回落 wechat）——保证报警行挂到侧边栏/看板同一群行，不裂群。
+  if(evt.isGroup && evt.text){
+    try{
+      require("./community.js").recordGroupModeration({
+        doctorId,
+        channelType:"wecom",
+        externalGroupId:evt.fromRoomId,
+        externalMsgId:evt.externalMsgId,
+        senderName:evt.senderName || "企微患者",
+        senderId:evt.senderId || "",
+        text:evt.text
+      });
+    }catch(e){ console.error("[qiwe] recordGroupModeration 失败（不影响回复）：", e && e.message); }
+  }
+
+  // 真实业务群已经由 archiveBusinessGroup 完成“QiWe 已同步 + 管理员已勾选”范围校验。
+  // 业务群默认进入分诊；无实际表达意义仍静默（不调 LLM），避免「好的/嗯」刷回复。
+  // 旧闲聊门控只保留给没有业务群归档上下文的兼容来源。
+  if(evt.isGroup){
+    let gate = null;
+    if(communityRecord){
+      if(groupGate.isMeaninglessNoise(evt.text)){
+        const full = groupGate.shouldHandleGroupText({ doctorId, text:evt.text, rawText:evt.text, senderName:evt.senderName, evt, cfg });
+        // @助手 仍放行；其余无意义消息在业务群也静默
+        if(!(full.ok && full.reason === "mention")){
+          gate = { ok:false, reason:"meaningless_noise", skipped:"meaningless_noise", riskLevel:"low" };
+        }
+      }
+    }else{
+      gate = groupGate.shouldHandleGroupText({ doctorId, text:evt.text, rawText:evt.text, senderName:evt.senderName, evt, cfg });
+    }
+    if(gate && !gate.ok){
+      let patientId = null;
+      try{
+        patientId = resolvePatient({ doctorId, channel:"wecom", externalId:evt.senderId || "", displayName:evt.senderName || "群友" });
+      }catch(e){}
+      logInboundMessage({
+        doctorId,
+        patientId,
+        patientName: evt.senderName || null,
+        senderId: evt.senderId || null,
+        channel: "qiwe",
+        groupId: evt.fromRoomId || null,
+        text: evt.text || "",
+        sourceMessageId: communityRecord && communityRecord.messageId,
+        isSilent: true
+      });
+      return { ok:true, skipped:gate.skipped || gate.reason || "group_chitchat", gate,
+        event:{ senderId:evt.senderId, receiverId:evt.receiverId, msgType:evt.msgType, isGroup:evt.isGroup } };
+    }
+  }
+
+  const reply = await buildPatientReply({
+    doctorId,
+    text:evt.text,
+    patientName:evt.senderName || "企微患者",
+    suppressPatientName:!!evt.isGroup,
+    isGroup:!!evt.isGroup,   // 群/DM 显式标志（甲方 2026-07-03 群内脱敏裁定：低危 LLM 档案摘要只注入 DM 场景）
+    patientKey:"qiwe:" + (evt.senderId || evt.replyToId || "unknown")
+  });
+
+  let patientId = null;
+  try{
+    patientId = resolvePatient({ doctorId, channel:"wecom", externalId:evt.senderId || evt.replyToId || "", displayName:evt.senderName || "企微患者" });
+  }catch(e){}
+
+  const isKeywordRule = reply && (reply.source === "keyword_rule" || reply.source === "ai_intent");
+  const autoSent = !!(cfg.autoSend && replyAutoSendable(reply));
+  logInboundMessage({
+    doctorId,
+    patientId,
+    patientName: evt.senderName || null,
+    senderId: evt.senderId || null,
+    channel: "qiwe",
+    groupId: evt.fromRoomId || null,
+    text: evt.text || "",
+    sourceMessageId: communityRecord && communityRecord.messageId,
+    isKeywordRule,
+    aiDraft: reply && reply.aiDraftText ? reply.aiDraftText : (reply && reply.draft) || null,
+    triageSessionId: reply && reply.sessionId ? reply.sessionId : null,
+    autoSent
+  });
+
+const deliveryPlan = prepareDelivery(doctorId, reply, evt.senderName, { isGroup:!!evt.isGroup });
+  // codex 2026-07-03 反例修：某编号回复只有可成卡的 link 响应、无正文 text 时，①去重的 omitLinkCards 会把文本整条省略 → replyText 空。
+  //   原判定只看 replyText/weappReady 未纳入 linkCards → 会 empty_reply 早退，卡既不自动发也不落 pending（违反「去重不丢链接」）。
+  //   故 linkCards 非空时不早退：autoSend 路径经 deliverReplyToQiwe 的 linkCards 循环发卡；pending 路径 draftText 空落库但 payload.linkCards 有卡、deliverOutbox 发卡。
+  const hasLinkCards = !!(deliveryPlan.linkCards && deliveryPlan.linkCards.length);
+  if(!deliveryPlan.replyText && !deliveryPlan.weappReady && !hasLinkCards) return { ok:true, skipped:"empty_reply", source:reply.source || "" };
+
+  if(!cfg.autoSend || !replyAutoSendable(reply)){
+    // autoSend 关 → 一律 pending；autoSend 开但未过真发闸门（三档下=medium AI 分诊 / 分诊异常等）→ 同样落 pending 转人工（#5a 收紧）。
+    // H1：V1 半自动主流程——草稿不丢，入 outbound_queue(pending) 等医助在后台「确认发送」。
+    // 持久化口径：text=纯文本(去小程序)；mpFallbackText=小程序当文本版(无条件算，链接不丢)；卡片不塞 payload，按 code 发送时重查模板。
+    const isGroup = !!evt.isGroup;
+    // text 永远去 mp（小程序由原生卡片/fallback 单独发，避免重复链接）；qr 仅在原生卡片就绪时去（与 autoSend 同口径，不混入"微信扫一扫"旧话术）；
+    // 卡片未就绪时保留 qr，作为发不出卡片时的真实联系兜底。
+    // omitLinkCards:true（甲方 2026-07-03 去重）：草稿 payload.linkCards 已带链接卡，deliverOutbox 按其发卡 → draftText 里整条省略成卡链接行，避免重复。
+    // 与 deliveryPlan.linkCards 同口径（willBecomeLinkCard↔linkCardFromResponse，同读 PUBLIC_ORIGIN）：origin 空→深链不成卡→linkCards 空→文本行保留（链接不丢）。
+    const draftText = responsesToQiweText(reply, evt.senderName, { omitMiniPrograms:true, omitQr:deliveryPlan.weappReady, omitLinkCards:true, omitPatientName:isGroup });
+    // omitLinkCards:true（codex 2026-07-03 反例修）：mp 响应带 external.url（如 414 春雨问卷 webLink）会被 linkCardFromResponse 认成卡进 payload.linkCards，
+    //   又出现在 mpFallbackText —— deliverOutbox 无就绪原生模板时发 fallbackText + 又发同 URL link_card → 文本+卡片重复。与 draftText 同口径把成卡响应从 fallback 文本整条省略。
+    //   PUBLIC_ORIGIN 空等不成卡场景照旧保留文本（willBecomeLinkCard=false，两侧 fail-closed 对齐，链接不丢）。mp 同时有 shortLink+url 时整条省略连 shortLink 文本一起省——可接受（卡片已承载链接，且②本就不发 #小程序:// 文本行）。
+    const mpFallbackText = responsesToQiweText({ responses:miniProgramResponses(reply) }, evt.senderName, { omitLinkCards:true, omitPatientName:isGroup });
+    // 缺陷一修（2026-07-03 夜）：草稿 code 与 prepareDelivery 同源（resolveWeappDelivery 命中就绪模板时=该模板编号，
+    // 否则=主编号，现状不变）——低危 attach 首编号（饮食）无模板时，payload.qiwe.code 落 101，医助确认发送时
+    // deliverOutbox 按此 code 重查就绪模板发原生卡（deliverOutbox 只吃持久化行、无法反查响应，必须在入队时定准）。
+    const code = deliveryPlan.code;
+    const toId = evt.replyToId;
+    const risk = reply && reply.triage && reply.triage.riskLevel;
+    const priority = risk === "high" ? "urgent" : (reply && reply.triage && reply.triage.needsHuman) ? "high" : "normal";
+    const payloadObj = {
+      qiwe:{ toId, code, mpFallbackText, atUserId:isGroup ? (evt.senderId || "") : "", hasMiniProgram:deliveryPlan.hasMiniProgram, weappReadyAtDraft:deliveryPlan.weappReady, linkCards:deliveryPlan.linkCards || [] },
+      triage:{ sessionId:reply.sessionId || null, decisionId:reply.decisionId || null },
+      source:reply.source || ""
+    };
+    const ins = db.prepare(`INSERT INTO outbound_queue(
+      doctor_id,group_id,message_id,target_type,target_name,channel_type,text,payload,status,source,priority,created_at,sent_at,sent_by,data_source
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      doctorId, communityRecord ? communityRecord.groupRow.id : null, communityRecord ? communityRecord.messageId : null, isGroup ? "qiwe_room" : "qiwe_dm", String(toId || ""),
+      "qiwe", String(draftText || "").slice(0, 2400), JSON.stringify(payloadObj),
+      "pending", "qiwe", priority, new Date().toISOString(), null, null, communityRecord ? "qiwe" : "manual"
+    );
+    return {
+      ok:true,
+      sent:false,
+      reviewOnly:true,
+      outboxId:ins.lastInsertRowid,
+      toId,
+      replyText:draftText,
+      source:reply.source || "",
+      weapp:deliveryPlan.weappPublic,
+      hasMiniProgram:deliveryPlan.hasMiniProgram
+    };
+  }
+
+  const sendResult = await deliverReplyToQiwe({
+    cfg,
+    doctorId,
+    reply,
+    toId:evt.replyToId,
+    patientName:evt.senderName,
+    isGroup:!!evt.isGroup,
+    atUserId:evt.isGroup ? (evt.senderId || "") : ""
+  });
+  // 自动发成功后必须落出站审计行：即使业务群归档失败/为空，也要让社群工作台看得出「系统已回复」
+  try{
+    db.prepare(`INSERT INTO outbound_queue(
+      doctor_id,group_id,message_id,target_type,target_name,channel_type,text,payload,status,source,priority,created_at,sent_at,sent_by,external_msg_id,sent_mode,data_source
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      doctorId,
+      communityRecord && communityRecord.groupRow ? communityRecord.groupRow.id : null,
+      communityRecord && communityRecord.messageId ? communityRecord.messageId : null,
+      evt.isGroup ? "qiwe_room" : "qiwe_dm",
+      String(evt.replyToId || ""),
+      "qiwe",
+      String(deliveryPlan.replyText || "").slice(0,2400),
+      JSON.stringify({ qiwe:{ toId:evt.replyToId }, result:sendResult }),
+      sendResult.sent ? "sent" : "pending",
+      "qiwe",
+      "normal",
+      new Date().toISOString(),
+      sendResult.sent ? new Date().toISOString() : null,
+      sendResult.sent ? "system" : null,
+      sendResult.externalMsgId || null,
+      sendResult.sent ? "real" : null,
+      communityRecord && communityRecord.accepted ? "qiwe" : "manual"
+    );
+  }catch(e){
+    console.error("[qiwe] autoSend 后写出站队列失败（回复可能已发出）：", e && e.message);
+  }
+  return {
+    ok:true,
+    sent:sendResult.sent,
+    toId:evt.replyToId,
+    source:reply.source || "",
+    replyPreview:(sendResult.replyText || "").slice(0, 160),
+    sentParts:sendResult.sentParts,
+    weapp:sendResult.weapp,
+    qiwe:sendResult.results
+  };
+}
+
+async function handleCallbackBody(body, cfg){
+  cfg = cfg || qiwe.loadConfig();
+  const events = qiwe.extractEvents(body);
+  const results = [];
+  for(const raw of events){
+    try{ results.push(await processEvent(raw, cfg)); }
+    catch(e){ results.push({ ok:false, error:e && e.message ? e.message : "qiwe_event_failed" }); }
+  }
+  return { ok:true, accepted:events.length, results };
+}
+
+/* 从 qiweapi 发送响应里 best-effort 取一个外部消息 ID；qiweapi 文档未稳定给出，取不到留 null。 */
+function pickExternalMsgId(r){
+  const d = (r && r.data) ? r.data : r;
+  if(!d || typeof d !== "object") return null;
+  const v = d.msgId || d.msgid || d.msgServerId || d.newMsgId || d.msg_id || d.clientMsgId || d.seq || "";
+  return v ? String(v) : null;
+}
+
+/* H1：按 outbound_queue 行投递（医助在后台「确认发送」时由 community.setOutboxStatus 调用）。
+   只吃持久化的 row（text + payload.qiwe.{toId,code,mpFallbackText}），不依赖活的 reply 对象，
+   故与 deliverReplyToQiwe（autoSend / preview-reply 仍用）分开，不改后者。
+   卡片按 code 重查 qiwe_weapp_templates：就绪→发原生卡片（失败回落文本）；未就绪→发小程序文本链接（链接不丢）。 */
+async function deliverOutbox(row, cfg){
+  cfg = cfg || qiwe.loadConfig();
+  let payload = {};
+  try{ payload = row && row.payload ? JSON.parse(row.payload) : {}; }catch(e){ payload = {}; }
+  const q = (payload && payload.qiwe) || {};
+  const toId = String(q.toId || "").trim();
+  if(!toId) throw new Error("缺少企微接收方 ID（草稿未带 toId）");
+  const doctorId = row.doctor_id;
+  const code = String(q.code || "").trim();
+  const weappCodes = Array.isArray(q.weappCodes)
+    ? q.weappCodes.map(x=>String(x || "").trim()).filter((x, i, arr)=>x && WELCOME_WEAPP_CODES.includes(x) && arr.indexOf(x) === i)
+    : [];
+  const fallbackText = String(q.mpFallbackText || "");
+  const text = String(row.text || "");
+  const sentParts = [];
+  const linkErrors = [];
+  let externalMsgId = null;
+  const cards = Array.isArray(q.linkCards) ? q.linkCards : [];
+  // fail-closed（洞2）：草稿旗标 weappReadyAtDraft 之外，再按 code 当前规则响应重判 native-allowed（与 prepareDelivery 同源）——
+  // 缺 weappReadyAtDraft 字段的旧行/手工 payload(===undefined) 不再默认放行；fallback_short_link 即便模板被同短链 hydrate 成 ready 也不发原生卡。
+  const allowWeapp = (q.weappReadyAtDraft !== false) && codeNativeWeappAllowed(doctorId, code);
+  const tplCandidate = allowWeapp && code ? qiwe.loadWeappTemplate(doctorId, code) : null;
+  const tpl = templateNativeWeappAllowed(code, tplCandidate) ? tplCandidate : null;
+  const poster = qiwe.sendImageExperimentalOn() ? resolvePosterAssetByCode(doctorId, code) : null;
+  let textRichDelayMs = 0;
+  if(text){
+    // @指定成员（群回复@患者本人，payload.qiwe.atUserId）优先于 @所有人（广播，needAtAll）——患者回复场景只会有 atMember，二者互斥取其一（if/else-if 顺序保证）。
+    // 各自需对应实验开关 ON 才真发 @；开关默认关 → atMember/needAt 恒 false → 走原 sendText（默认行为零变化）。sendHyperText 失败回落 sendText（@降级为文字）。
+    // 缺陷二修：atUserId 须纯数字（atMemberIdSendable）才走 @，非数字 userId 会被 qiweapi 按 0=@所有人渲染（生产实拍，与 deliverReplyToQiwe 同修）。
+    const atMember = atMemberIdSendable(q.atUserId) && qiwe.atMemberExperimentalOn();
+    const needAt = !!q.needAtAll && qiwe.atallExperimentalOn();
+    if(atMember){
+      try{
+        const r = await qiwe.sendHyperText(toId, text, { atUserIds:[q.atUserId] }, cfg);
+        externalMsgId = pickExternalMsgId(r) || externalMsgId;
+        sentParts.push({ type:"hypertext_atmember", preview:text.slice(0, 80) });
+      }catch(e){
+        const r = await qiwe.sendText(toId, text, cfg);
+        externalMsgId = pickExternalMsgId(r) || externalMsgId;
+        sentParts.push({ type:"text_atmember_fallback", preview:text.slice(0, 80), error:e.message });
+      }
+    }else if(needAt){
+      try{
+        const r = await qiwe.sendHyperText(toId, text, { atAll:true }, cfg);
+        externalMsgId = pickExternalMsgId(r) || externalMsgId;
+        sentParts.push({ type:"hypertext_atall", preview:text.slice(0, 80) });
+      }catch(e){
+        const r = await qiwe.sendText(toId, text, cfg);
+        externalMsgId = pickExternalMsgId(r) || externalMsgId;
+        sentParts.push({ type:"text_atall_fallback", preview:text.slice(0, 80), error:e.message });
+      }
+    }else{
+      const r = await qiwe.sendText(toId, text, cfg);
+      externalMsgId = pickExternalMsgId(r) || externalMsgId;
+      sentParts.push({ type:"text", preview:text.slice(0, 80) });
+    }
+  }
+  if(weappCodes.length){
+    textRichDelayMs = await delayTextBeforeRich(sentParts, true);
+    for(const c of weappCodes){
+      try{
+        const cardTpl = loadWelcomeWeappTemplate(doctorId, c);
+        const r = await qiwe.sendWeapp(toId, cardTpl, cfg);
+        if(!weappSendConfirmed(r)) throw new Error("weapp 回执未确认真发（isSendSuccess 假）");
+        externalMsgId = pickExternalMsgId(r) || externalMsgId;
+        sentParts.push({ type:"weapp", code:cardTpl.code, title:cardTpl.title });
+      }catch(e){
+        console.error("[qiwe] deliverOutbox 欢迎卡发送失败：", c, "-", e.message);
+        linkErrors.push({ type:"weapp_error", code:c, error:e.message });
+      }
+    }
+    return linkErrors.length
+      ? { sent:sentParts.length > 0, sentParts, externalMsgId, textBeforeRichDelayMs:textRichDelayMs, linkErrors }
+      : { sent:sentParts.length > 0, sentParts, externalMsgId, textBeforeRichDelayMs:textRichDelayMs };
+  }
+  textRichDelayMs = await delayTextBeforeRich(sentParts, !!(tpl && tpl.ready) || cards.length > 0 || !!poster);
+  // weapp 真发成功旗标（甲方 2026-07-06，与 deliverReplyToQiwe 同修）：仅 sendWeapp 真正成功才置 true →
+  //   下方 q.linkCards 循环据此跳过该编号规则的冗余兜底链接卡；未就绪 / 失败 → 恒 false → 兜底卡照发（链接永不丢·fail-closed）。
+  let weappSent = false;
+  if(tpl && tpl.ready){
+    try{
+      const r = await qiwe.sendWeapp(toId, tpl, cfg);
+      // codex 跨厂复核 fail-closed 反例修（2026-07-06，与 deliverReplyToQiwe 同修）：回执 code:0 却 isSendSuccess=0/false（业务未发）
+      //   → throw 进下方失败回落，绝不「记 weapp 成功 + 据此抑制兜底卡」（否则卡没发、链接也被跳过·破链接永不丢）。同一判据 weappSendConfirmed。
+      if(!weappSendConfirmed(r)) throw new Error("weapp 回执未确认真发（isSendSuccess 假）");
+      externalMsgId = pickExternalMsgId(r) || externalMsgId;
+      sentParts.push({ type:"weapp", code:tpl.code, title:tpl.title });
+      weappSent = true;
+    }catch(e){
+      if(fallbackText){
+        const r = await qiwe.sendText(toId, fallbackText, cfg);
+        externalMsgId = pickExternalMsgId(r) || externalMsgId;
+        sentParts.push({ type:"text_fallback", preview:fallbackText.slice(0, 80), error:e.message });
+      }else if(Array.isArray(q.linkCards) && q.linkCards.length){
+        // codex 2026-07-03 反例3修（同 deliverReplyToQiwe）：mpFallbackText 被 omitLinkCards 省略后为空时，旧 else 直接 throw → 后面 linkCards 循环不执行、卡不发、整条中断。
+        //   故有 q.linkCards 时不 throw：记 weapp 失败（console.error）、继续走后面的 linkCards 循环由卡承载 URL。
+        console.error("[qiwe] deliverOutbox sendWeapp 失败，无 fallback 文本但有链接卡，转由链接卡承载：", code, "-", e.message);
+        linkErrors.push({ type:"weapp_error", code, error:e.message });
+      }else{
+        throw e;   // 文本和卡都没有可发回落 → 保留原语义报错
+      }
+    }
+  }else if(fallbackText){
+    const r = await qiwe.sendText(toId, fallbackText, cfg);
+    externalMsgId = pickExternalMsgId(r) || externalMsgId;
+    sentParts.push({ type:"text_fallback", preview:fallbackText.slice(0, 80) });
+  }
+  if(!textRichDelayMs){
+    textRichDelayMs = await delayTextBeforeRich(sentParts, cards.length > 0 || !!poster);
+  }
+  // 抑制清单只在 weapp 真发成功时生效（fail-closed，与 deliverReplyToQiwe 同源）：weappSent=false（未就绪/失败）→ 空集 → 兜底卡照发、链接永不丢。
+  //   deliverOutbox 只吃持久化行、无活 reply，故按持久化的实发编号 code 反查该规则会成卡的 linkUrl（weappRuleLinkUrls，与 prepareDelivery 同口径）。
+  const suppress = weappSent ? weappRuleLinkUrls(doctorId, code) : new Set();
+  for(const card of cards){
+    // 甲方 2026-07-06（同 deliverReplyToQiwe）：weapp 已成功承载该编号服务 → 跳过其冗余兜底链接卡；别的编号(attach)的卡不在 suppress 集内、照发。
+    //   仅审计 console.log、不塞 linkErrors（那是失败通道、只在有失败时改返回结构）：抑制是正常去重、非失败，无失败时返回结构零变化。
+    if(card && suppress.has(String(card.linkUrl || ""))){
+      console.log("[qiwe] deliverOutbox weapp 成功，抑制该规则冗余兜底链接卡：", code, "-", String(card && card.title || ""));
+      continue;
+    }
+    // 每张卡独立容错（同 deliverReplyToQiwe）：/msg/sendLink 生产接口尚未真机验证，单张抛错不得中断——
+    // 否则已发的文本/weapp 回执丢失、后续卡片不发、上层记整条失败。失败仅记 linkErrors（不计入 sentParts），继续下一张。
+    try{
+      const r = await qiwe.sendLink(toId, card, cfg);
+      externalMsgId = pickExternalMsgId(r) || externalMsgId;
+      sentParts.push({ type:"link_card", title:String(card && card.title || "").slice(0, 80), linkUrl:String(card && card.linkUrl || "").slice(0, 160) });
+    }catch(e){
+      console.error("[qiwe] deliverOutbox sendLink 失败，跳过该链接卡片：", String(card && card.title || ""), "-", e.message);
+      linkErrors.push({ type:"link_card_error", title:String(card && card.title || "").slice(0, 80), error:e.message });
+    }
+  }
+  // 818 海报真图（behind flag·关态零变化，与 deliverReplyToQiwe 同修）：仅当 QIWE_SENDIMAGE_EXPERIMENTAL 开 且
+  //   按 code 反查该规则含海报 image 响应 + 解析到真实 /assets jpg → 追加发一张真图；开关关（默认）→ 整条短路（现状不变）。
+  //   独立容错：单张失败不中断、记 image_error 不计入 sentParts（与 link_card 同口径）。SVG 生成海报无真实 jpg → resolvePosterAssetByCode 返 null → 不发。
+  if(qiwe.sendImageExperimentalOn()){
+    if(poster){
+      try{
+        const r = await qiwe.sendImage(toId, { buffer:poster.buffer, filename:poster.filename, fileUrl:poster.fileUrl }, cfg);
+        externalMsgId = pickExternalMsgId(r) || externalMsgId;
+        sentParts.push({ type:"image", filename:poster.filename });
+      }catch(e){
+        console.error("[qiwe] deliverOutbox sendImage 失败，跳过海报图片：", poster.filename, "-", e.message);
+        linkErrors.push({ type:"image_error", filename:poster.filename, error:e.message });
+      }
+    }
+  }
+  // linkErrors 仅在有失败时附加，不改无失败时的返回结构；文本主体已发时 sent 判定不受卡片失败影响。
+  return linkErrors.length
+    ? { sent:sentParts.length > 0, sentParts, externalMsgId, textBeforeRichDelayMs:textRichDelayMs, linkErrors }
+    : { sent:sentParts.length > 0, sentParts, externalMsgId, textBeforeRichDelayMs:textRichDelayMs };
+}
+
+module.exports = { activeDoctorId, prepareDelivery, deliverReplyToQiwe, deliverOutbox, processEvent, handleCallbackBody, replyAutoSendable, markRoomMemberFirstSeen, buildGroupWelcomeText, buildMemberVisitText, fireGroupWelcome, resolvePosterAsset, resolvePosterAssetByCode, hasPosterImageResponse, textBeforeRichDelayMs };

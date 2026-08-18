@@ -1,0 +1,31 @@
+﻿
+> chunyu-patient-uniapp@0.0.0 test:redesign
+> node --test tests/redesign-contract.test.mjs
+
+鉁?01.鎵瑰噯绋裤€佽璁¤鑼冨拰瀹炴柦钃濆浘鏂囦欢瀹屾暣瀛樺湪 (1.0011ms)
+鉁?02.鏂扮増浠ょ墝浣跨敤娴呴紶灏捐崏缁?#0B6B47) + 澶у渾瑙?+ 48px 瑙︽帶 (0.3901ms)
+鉁?02.tokens.json 涓?CSS 鍚屾簮鍊硷紙棰滆壊/鍦嗚/瑙︽帶锛?(0.2711ms)
+鉁?02.寰俊 WXSS 浠嶄粎浣跨敤 page 椤跺眰閫夋嫨鍣紙闃?:root 涓嶅吋瀹癸級 (0.2742ms)
+鉁?03.鏍稿績鍖荤枟 / 鏈嶅姟 PNG 鍥炬爣宸插鍑?(0.4849ms)
+鉁?03.搴曢儴 Tab 涓夌瓑瀹?PNG 璧勪骇宸插氨缁?(0.2871ms)
+鉁?03.鍥炬爣鎬婚绠?鈮?400 KB (5.6451ms)
+鉁?04.鏂扮増绫诲瀷涓庨€傞厤鍣ㄧ函鍑€鍑芥暟鍙敤 (161.7054ms)
+鉁?04.棣栭〉浠诲姟鎺掑簭锛氱揣鎬?> 閲嶈 > 鏅€?(14.0872ms)
+鉁?05.涔濅釜鍏叡 UI 缁勪欢鏂囦欢瀛樺湪 (0.4674ms)
+鉁?05.AppStatePanel 鏆撮湶鐘舵€佹満鍥涙€?+ actionLabel (0.2487ms)
+鉁?05.AppBottomSheet 鏆撮湶 v-model 鍙屽悜缁戝畾 (0.1794ms)
+鉁?05.AppFormField 鍖呭惈 label / error / hint 璇箟 (0.1447ms)
+鉁?05.鎵€鏈?UI 缁勪欢鏈€灏忚Е鎺ч珮搴?鈮?48px (1.2455ms)
+鉁?06.搴曢儴瀵艰埅鍥哄畾 3 涓?Tab锛堥椤?/ 鍋ュ悍鏈嶅姟 / 鎴戠殑锛?(0.2428ms)
+鉁?06.tabBar 涓嶅嚭鐜版偓娴?/ 鎶崌 / 涓棿鎸夐挳 (0.1824ms)
+鉁?06.鍋ュ悍鏈嶅姟 Tab 宸插湪 tabBar 椤跺眰锛堜笉鍦?subpackage 鍐咃級 (0.1706ms)
+鉁?07.瀹跺涵鎴愬憳 store 鏆撮湶鎵€鏈夊绾?API (0.2512ms)
+鉁?07.useCurrentMember 鏆撮湶褰撳墠鎴愬憳 + 鍒囨崲鍑芥暟 (0.2285ms)
+鈩?tests 19
+鈩?suites 0
+鈩?pass 19
+鈩?fail 0
+鈩?cancelled 0
+鈩?skipped 0
+鈩?todo 0
+鈩?duration_ms 268.2441

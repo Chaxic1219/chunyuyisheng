@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>春雨主题空状态预览</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #f5f7fb;
+        color: #2f3349;
+        font-family:
+          "PingFang SC",
+          "Microsoft YaHei",
+          system-ui,
+          sans-serif;
+      }
+
+      main {
+        width: min(980px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 40px 0;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      p {
+        margin: 0 0 24px;
+        color: #6b7280;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 16px;
+      }
+
+      .theme {
+        min-height: 230px;
+        padding: 24px;
+        border: 1px solid var(--el-border-color-lighter);
+        border-radius: 8px;
+        background: var(--el-fill-color-blank);
+        box-shadow: 0 10px 30px rgb(31 35 50 / 0.06);
+      }
+
+      .theme.dark {
+        background: #141821;
+      }
+
+      .image {
+        width: 140px;
+        height: 140px;
+        margin: 4px auto 16px;
+      }
+
+      .label {
+        text-align: center;
+        color: var(--el-text-color-regular);
+        font-size: 14px;
+      }
+
+      .light {
+        --el-color-primary: #5d87ff;
+        --el-text-color-primary: #2f3349;
+        --el-text-color-regular: #606266;
+        --el-fill-color-blank: #ffffff;
+        --el-fill-color-extra-light: #f7f8fa;
+        --el-fill-color-lighter: #f2f3f5;
+        --el-fill-color-light: #ebeef5;
+        --el-border-color-lighter: #e4e7ed;
+        --el-border-color-extra-light: #ebeef5;
+      }
+
+      .green {
+        --el-color-primary: #18a058;
+        --el-text-color-primary: #263238;
+        --el-text-color-regular: #50615a;
+        --el-fill-color-blank: #ffffff;
+        --el-fill-color-extra-light: #f5faf7;
+        --el-fill-color-lighter: #edf7f1;
+        --el-fill-color-light: #e2f1e8;
+        --el-border-color-lighter: #d8eadf;
+        --el-border-color-extra-light: #e6f2eb;
+      }
+
+      .violet {
+        --el-color-primary: #7c6cff;
+        --el-text-color-primary: #322f4a;
+        --el-text-color-regular: #625f78;
+        --el-fill-color-blank: #ffffff;
+        --el-fill-color-extra-light: #f8f7ff;
+        --el-fill-color-lighter: #f1efff;
+        --el-fill-color-light: #e9e6ff;
+        --el-border-color-lighter: #dfdcfb;
+        --el-border-color-extra-light: #ebe8ff;
+      }
+
+      .dark {
+        --el-color-primary: #79bbff;
+        --el-text-color-primary: #d8deea;
+        --el-text-color-regular: #a8b1c2;
+        --el-fill-color-blank: #1b202b;
+        --el-fill-color-extra-light: #252b37;
+        --el-fill-color-lighter: #303846;
+        --el-fill-color-light: #3b4556;
+        --el-border-color-lighter: #394252;
+        --el-border-color-extra-light: #323a48;
+        --empty-shadow-opacity: 0.18;
+        --empty-accent-opacity: 0.24;
+        --empty-bubble-opacity: 0.18;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>春雨主题空状态图片</h1>
+      <p>同一份 SVG，颜色来自系统主题变量。</p>
+
+      <section class="grid">
+        <article class="theme light">
+          <div class="image">
+            <svg class="chunyu-empty-image" viewBox="0 0 160 160" role="img" aria-label="暂无内容">
+              <use href="#chunyu-empty-symbol" />
+            </svg>
+          </div>
+          <div class="label">默认蓝色主题</div>
+        </article>
+
+        <article class="theme green">
+          <div class="image">
+            <svg class="chunyu-empty-image" viewBox="0 0 160 160" role="img" aria-label="暂无内容">
+              <use href="#chunyu-empty-symbol" />
+            </svg>
+          </div>
+          <div class="label">医疗绿色主题</div>
+        </article>
+
+        <article class="theme violet">
+          <div class="image">
+            <svg class="chunyu-empty-image" viewBox="0 0 160 160" role="img" aria-label="暂无内容">
+              <use href="#chunyu-empty-symbol" />
+            </svg>
+          </div>
+          <div class="label">辅助主题色</div>
+        </article>
+
+        <article class="theme dark">
+          <div class="image">
+            <svg class="chunyu-empty-image" viewBox="0 0 160 160" role="img" aria-label="暂无内容">
+              <use href="#chunyu-empty-symbol" />
+            </svg>
+          </div>
+          <div class="label">深色模式</div>
+        </article>
+      </section>
+    </main>
+
+    <svg width="0" height="0" aria-hidden="true" style="position: absolute">
+      <defs>
+        <symbol id="chunyu-empty-symbol" viewBox="0 0 160 160">
+          <style>
+            .chunyu-empty-image {
+              color: var(--el-color-primary, #5d87ff);
+              overflow: visible;
+            }
+            .shadow {
+              fill: var(--el-text-color-primary, #2f3349);
+              opacity: var(--empty-shadow-opacity, 0.06);
+            }
+            .back,
+            .paper {
+              fill: var(--el-fill-color-lighter, #f2f3f5);
+            }
+            .side {
+              fill: var(--el-fill-color-light, #ebeef5);
+            }
+            .side-light,
+            .paper-fold {
+              fill: var(--el-fill-color-extra-light, #f7f8fa);
+            }
+            .front {
+              fill: var(--el-fill-color-blank, #ffffff);
+              stroke: var(--el-border-color-extra-light, #e9edf3);
+              stroke-width: 1;
+            }
+            .paper {
+              stroke: var(--el-border-color-lighter, #ebeef5);
+              stroke-width: 1;
+            }
+            .line,
+            .cross,
+            .bubble,
+            .dot {
+              fill: currentColor;
+              opacity: var(--empty-accent-opacity, 0.16);
+            }
+            .bubble {
+              opacity: var(--empty-bubble-opacity, 0.11);
+            }
+            .paper-fold {
+              stroke: var(--el-border-color-lighter, #ebeef5);
+              stroke-width: 1;
+            }
+          </style>
+          <ellipse class="shadow" cx="80" cy="136" rx="58" ry="7" />
+          <path class="back" d="M36 88h88l-14 44H50L36 88Z" />
+          <path class="side" d="M36 88 58 62h44l22 26H36Z" />
+          <path class="side-light" d="M58 62h44l22 26H80L58 62Z" />
+          <path class="front" d="M48 86h64v48H48V86Z" />
+          <path class="paper" d="M63 34h42l18 18v44H63V34Z" />
+          <path class="paper-fold" d="M105 34v18h18" />
+          <rect class="line" x="76" y="62" width="30" height="5" rx="2.5" />
+          <rect class="line" x="76" y="75" width="22" height="5" rx="2.5" />
+          <path class="cross" d="M51 58h11V47h10v11h11v10H72v11H62V68H51V58Z" />
+          <path
+            class="bubble"
+            d="M100 71h27c6 0 11 5 11 11v15c0 6-5 11-11 11h-12l-12 10v-10h-3c-6 0-11-5-11-11V82c0-6 5-11 11-11Z"
+          />
+          <circle class="dot" cx="107" cy="90" r="3" />
+          <circle class="dot" cx="118" cy="90" r="3" />
+          <circle class="dot" cx="129" cy="90" r="3" />
+        </symbol>
+      </defs>
+    </svg>
+  </body>
+</html>

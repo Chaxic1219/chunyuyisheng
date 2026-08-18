@@ -1,0 +1,142 @@
+/* 医患通 · 全局样式（绿色医疗主题） */
+page {
+  min-height: 100%;
+  background: #fafbfc;
+  color: #2a3547;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-size: 32rpx;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+view,
+text,
+button,
+input,
+textarea,
+image {
+  box-sizing: border-box;
+}
+
+button::after {
+  border: 0;
+}
+
+/* 页面容器 */
+.page {
+  min-height: 100vh;
+  padding: 24rpx;
+  background: #fafbfc;
+}
+
+/* 卡片 */
+.card {
+  margin-bottom: 24rpx;
+  padding: 28rpx 32rpx;
+  border: 1px solid #e5eaf2;
+  border-radius: 24rpx;
+  background: #ffffff;
+  box-shadow: 0 2rpx 12rpx rgba(23, 32, 28, 0.04);
+}
+
+.card-title {
+  display: block;
+  color: #17201c;
+  font-size: 38rpx;
+  font-weight: 700;
+}
+
+.card-sub {
+  display: block;
+  margin-top: 8rpx;
+  color: #6a756f;
+  font-size: 28rpx;
+}
+
+/* 表单 */
+.form-label {
+  display: block;
+  margin: 20rpx 0 8rpx;
+  color: #17201c;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.form-input,
+.form-textarea {
+  width: 100%;
+  padding: 20rpx 24rpx;
+  border: 1px solid #dce3dd;
+  border-radius: 16rpx;
+  background: #fafcfa;
+  font-size: 30rpx;
+}
+
+.form-textarea {
+  min-height: 160rpx;
+}
+
+/* 主按钮 */
+.btn-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 96rpx;
+  border-radius: 48rpx;
+  background: #176b52;
+  color: #ffffff;
+  font-size: 32rpx;
+  font-weight: 700;
+  line-height: 96rpx;
+}
+
+.btn-primary[disabled] {
+  background: #9dc4b6;
+  color: #ffffff;
+}
+
+.btn-primary::after {
+  border: 0;
+}
+
+.btn-soft {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 88rpx;
+  border-radius: 44rpx;
+  background: #eef4f0;
+  color: #176b52;
+  font-size: 30rpx;
+  font-weight: 600;
+}
+
+/* 空态 */
+.empty {
+  padding: 120rpx 40rpx;
+  text-align: center;
+  color: #9aa7ad;
+  font-size: 28rpx;
+}
+
+/* 金额 */
+.amount {
+  color: #c0392b;
+  font-weight: 700;
+}
+
+/* 勾选行 */
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 16rpx;
+  font-size: 26rpx;
+  color: #4a5568;
+  line-height: 1.5;
+}
+
+.check-row checkbox {
+  transform: scale(0.8);
+  margin-right: 8rpx;
+}

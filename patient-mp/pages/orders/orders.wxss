@@ -1,0 +1,67 @@
+.head {
+  padding: 16rpx 8rpx 32rpx;
+}
+
+.head-title {
+  font-size: 44rpx;
+  font-weight: 800;
+  color: #17201c;
+}
+
+.order-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16rpx;
+}
+
+.order-title {
+  flex: 1;
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #17201c;
+}
+
+.order-status {
+  font-size: 24rpx;
+  color: #c0392b;
+}
+
+.st-ok {
+  color: #176b52;
+}
+
+.order-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12rpx;
+  font-size: 25rpx;
+}
+
+.order-label {
+  color: #8a938d;
+}
+
+.order-value {
+  color: #4a5568;
+}
+
+.order-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 20rpx;
+  padding-top: 16rpx;
+  border-top: 1px solid #eef1f3;
+}
+
+.order-pay {
+  color: #176b52;
+  font-size: 27rpx;
+  font-weight: 600;
+}
+
+.empty-btn {
+  margin: 40rpx auto 0;
+  width: 320rpx;
+}
