@@ -2113,6 +2113,68 @@ function publishScriptsConfig(doctorId, cfg){
     qiwe.saveConfig({ enabled:true, autoSend:true, allowGroup:false, selfUserId:"self-user-1", testToId:"self-user-1" });
   }
 
+  // ===== 私聊入站：testToId 仅含群 ID 时，患者→助手 DM 仍放行（群白名单不挡私聊） =====
+  {
+    const ROOM_ONLY = "room-dm-whitelist-only";
+    qiwe.saveConfig({ enabled:true, autoSend:true, allowGroup:false, selfUserId:"self-user-1", testToId:ROOM_ONLY, doctorId:active.id });
+    const dmOk = (await bridge.handleCallbackBody({ data:[{
+      guid:"test-guid-123456", cmd:15000, msgType:2,
+      userId:"self-user-1", senderId:"patient-dm-new", receiverId:"self-user-1",
+      senderName:"新加好友患者", msgUniqueIdentifier:"qiwe-dm-inbound-" + Date.now(), msgData:{ content:"101" }
+    }] })).results[0] || {};
+    ok(dmOk.skipped !== "outside_test_scope", "私聊入站：testToId 仅含群 ID、患者→助手 DM → 不因 outside_test_scope 丢弃");
+    ok(dmOk.targetType === "qiwe_dm" || dmOk.sent === true || dmOk.reviewOnly === true || !!dmOk.replyText,
+      "私聊入站：患者→助手 DM 进入正常回复/草稿管线（非 outside_test_scope 早退）");
+    const dmForge = (await bridge.handleCallbackBody({ data:[{
+      guid:"test-guid-123456", cmd:15000, msgType:2,
+      userId:"self-user-1", senderId:"patient-9", receiverId:"patient-8",
+      senderName:"越界私聊", msgUniqueIdentifier:"qiwe-dm-forge-" + Date.now(), msgData:{ content:"101" }
+    }] })).results[0] || {};
+    ok(dmForge.skipped === "outside_test_scope", "私聊入站反例：非助手收件方的 DM → outside_test_scope 仍拦截");
+    qiwe.saveConfig({ enabled:true, autoSend:true, allowGroup:true, selfUserId:"self-user-1", testToId:ROOM_ONLY, doctorId:active.id });
+    const grpStill = (await bridge.handleCallbackBody({ data:[{
+      guid:"test-guid-123456", cmd:15000, msgType:2,
+      userId:"self-user-1", senderId:"np-grp", receiverId:"self-user-1", fromRoomId:"room-not-listed",
+      senderName:"越界群", msgUniqueIdentifier:"qiwe-dm-grp-still-" + Date.now(), msgData:{ content:"101" }
+    }] })).results[0] || {};
+    ok(grpStill.skipped === "outside_test_scope", "私聊入站：群白名单逻辑不变，未列入群仍 outside_test_scope");
+    qiwe.saveConfig({ enabled:true, autoSend:true, allowGroup:false, selfUserId:"self-user-1", testToId:ROOM_ONLY, doctorId:active.id });
+    const dmImg = (await bridge.handleCallbackBody({ data:[{
+      guid:"test-guid-123456", cmd:15000, msgType:3,
+      userId:"self-user-1", senderId:"patient-dm-img", receiverId:"self-user-1", senderName:"私聊发图",
+      msgUniqueIdentifier:"qiwe-dm-img-" + Date.now(), msgData:{ mediaId:"img-dm" }
+    }] })).results[0] || {};
+    ok(dmImg.skipped !== "outside_test_scope" && dmImg.reviewOnly === true && dmImg.nonText === true,
+      "私聊入站：testToId 仅含群 ID、患者→助手非文字 → idAllowedStrict 同样放行，落转人工草稿");
+    qiwe.saveConfig({ enabled:true, autoSend:true, allowGroup:false, selfUserId:"self-user-1", testToId:"self-user-1", doctorId:active.id });
+  }
+
+  // ===== 私聊身份：mpAi 通用医助（非具体医生助理人设） =====
+  {
+    const mpAiMod = require("./modules/mpAi");
+    const origChat = mpAiMod.chat;
+    mpAiMod.chat = async()=>({ reply:{ text:"我是医生团队的医助，可以帮您解答健康与就医相关问题。" } });
+    delete require.cache[require.resolve("./modules/qiwe/dm_assistant.js")];
+    qiwe.saveConfig({ enabled:true, autoSend:true, allowGroup:false, selfUserId:"self-user-1", testToId:"self-user-1", doctorId:active.id });
+    const realText = qiwe.sendText;
+    qiwe.sendText = async()=>({ code:0, msg:"ok" });
+    try{
+      const dmPersona = (await bridge.handleCallbackBody({ data:[{
+        guid:"test-guid-123456", cmd:15000, msgType:2,
+        userId:"self-user-1", senderId:"patient-persona", receiverId:"self-user-1",
+        senderName:"私聊测身份", msgUniqueIdentifier:"qiwe-dm-persona-" + Date.now(),
+        msgData:{ content:"你是谁" }
+      }] })).results[0] || {};
+      ok(dmPersona.source === "qiwe_dm" && dmPersona.sent === true, "私聊身份：走 qiwe_dm 通用医助且可自动发送");
+      ok(/医助/.test(String(dmPersona.replyPreview || "")) && !/吕|主任/.test(String(dmPersona.replyPreview || "")),
+        "私聊身份：回复为通用医助口径、不含具体医生名");
+    }finally{
+      qiwe.sendText = realText;
+      mpAiMod.chat = origChat;
+      delete require.cache[require.resolve("./modules/qiwe/dm_assistant.js")];
+    }
+  }
+
   // ===== 图片/文件/视频等非文字消息「降级兜底」：识别非文字→落 pending 转人工，绝不自动发；安全闸不漏 =====
   // 不碰 qiweapi 图片字段/媒体接口（未知不猜），粗粒度 !isText 兜底。msgType=3 = 非 0/2(文本)/16(语音)/78(卡片)，msgData 无 appId+pagePath → isWeapp=false。
   {
@@ -2387,9 +2449,11 @@ function publishScriptsConfig(doctorId, cfg){
       insMsg.run(otherDoctor.id, null, "他医可见群患者", "patient-scope-e", "qiwe", "inbound", "他医群消息", 2, "L2", "needs_human", null, null, visRoom, "pending", null, new Date().toISOString());
 
       const scope = messagesAdmin.buildQiweTriageScope(active.id);
-      const scopedRows = db.prepare(`SELECT id,text FROM message_log WHERE doctor_id=? ${scope.sql} ORDER BY id`).all(active.id, ...scope.params);
+      const { messageLogTriageDoctorWhere, MSGLOG_VISIBLE_IN_TRIAGE } = require("./qiwe_scope.js");
+      const scopedRows = db.prepare(`SELECT id,text FROM message_log WHERE ${messageLogTriageDoctorWhere()} ${MSGLOG_VISIBLE_IN_TRIAGE} ${scope.sql} ORDER BY id`).all(active.id, ...scope.params);
       const scopedTexts = scopedRows.map(r=>r.text);
       ok(scopedTexts.includes("当前医生私聊"), "分诊收口：当前 QiWe 医生私聊仍可见");
+      ok(scopedTexts.includes("他医私聊"), "分诊收口：企微私聊全医生共享可见");
       ok(scopedTexts.includes("可见群消息"), "分诊收口：当前 QiWe 医生的可见企微群消息仍可见");
       ok(!scopedTexts.includes("隐藏群消息"), "分诊收口：qiwe_hidden=1 的旧群消息不进分诊台");
       ok(!scopedTexts.includes("他医群消息"), "分诊收口：别的医生 QiWe 群消息不进当前分诊台");

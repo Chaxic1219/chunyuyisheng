@@ -365,6 +365,11 @@ function registerMpAuthRoutes(route, ctx) {
           foodContactAllergies: food,
           drugAllergies: drug,
           diseaseHistory: hist,
+          bloodType: fields.bloodType || "",
+          heightCm: fields.heightCm || "",
+          weightKg: fields.weightKg || "",
+          bmi: fields.bmi || patientProfile.computeBmi(fields.heightCm, fields.weightKg),
+          healthNotes: fields.healthNotes || "",
         },
         /* 已登录本人：供建档问卷预填（含明文手机号；身份证号已下线不再回填） */
         formPrefill: {
@@ -377,6 +382,10 @@ function registerMpAuthRoutes(route, ctx) {
           foodContactAllergies: food,
           drugAllergies: drug,
           diseaseHistory: hist,
+          bloodType: fields.bloodType || "",
+          heightCm: fields.heightCm || "",
+          weightKg: fields.weightKg || "",
+          healthNotes: fields.healthNotes || "",
         },
       });
     } catch (e) {
@@ -385,6 +394,40 @@ function registerMpAuthRoutes(route, ctx) {
       json(res, mapped.status, { error: mapped.error });
     }
   });
+
+  function resolvePatientIdentity(sess) {
+    let doctorId = sess.doctor_id != null ? +sess.doctor_id : 0;
+    let patientId = sess.patient_id != null ? +sess.patient_id : 0;
+    const personId = +sess.person_id;
+    if ((!doctorId || !patientId) && personId) {
+      const row = db
+        .prepare(
+          `SELECT id, doctor_id FROM patients
+           WHERE person_id=? AND (archived_at IS NULL OR trim(archived_at)='')
+           ORDER BY updated_at DESC, id DESC LIMIT 1`
+        )
+        .get(personId);
+      if (row) {
+        if (!doctorId) doctorId = +row.doctor_id || 0;
+        if (!patientId) patientId = +row.id || 0;
+      }
+    }
+    return { personId, doctorId, patientId };
+  }
+
+  function loadOwnedHealthRecord(personId, ref) {
+    const phr = require("../patient_health_records.js");
+    const recordId = phr.parseRecordRef(ref);
+    if (!recordId) return null;
+    return db
+      .prepare(
+        `SELECT phr.*, d.name AS source_doctor_name
+         FROM patient_health_records phr
+         LEFT JOIN doctors d ON d.id = phr.doctor_id
+         WHERE phr.id=? AND phr.person_id=?`
+      )
+      .get(recordId, personId);
+  }
 
   /** 患者侧健康记录：按 person_id 读取（与后台档案同源） */
   route("GET", /^\/api\/mp\/health-records$/, (req, res, m, q) => {
@@ -431,6 +474,94 @@ function registerMpAuthRoutes(route, ctx) {
     } catch (e) {
       const mapped = authError(e, "server_error", 500);
       logInternalError("health-records", mapped, e);
+      json(res, mapped.status, { error: mapped.error });
+    }
+  });
+
+  route("GET", /^\/api\/mp\/health-records\/([^/]+)$/, (req, res, m) => {
+    try {
+      if (!db) return json(res, 500, { error: "unavailable" });
+      const token = bearerToken(req);
+      if (!token) return json(res, 401, { error: "unauthorized" });
+      const sess = mpAuth.requireBoundSession(token);
+      const phr = require("../patient_health_records.js");
+      const row = loadOwnedHealthRecord(+sess.person_id, decodeURIComponent(m[1] || ""));
+      if (!row) return json(res, 404, { error: "记录不存在" });
+      json(res, 200, { ok: true, item: phr.mapHealthRecordRow(row) });
+    } catch (e) {
+      const mapped = authError(e, "server_error", 500);
+      logInternalError("health-records-detail", mapped, e);
+      json(res, mapped.status, { error: mapped.error });
+    }
+  });
+
+  route("POST", /^\/api\/mp\/health-records$/, async (req, res) => {
+    try {
+      if (!db) return json(res, 500, { error: "unavailable" });
+      const token = bearerToken(req);
+      if (!token) return json(res, 401, { error: "unauthorized" });
+      const sess = mpAuth.requireBoundSession(token);
+      const phr = require("../patient_health_records.js");
+      const b = await parseBody(req, MESSAGE_MAX_BODY || 1e6);
+      const identity = resolvePatientIdentity(sess);
+      if (!identity.personId) return json(res, 401, { error: "person_required" });
+      if (!identity.doctorId || !identity.patientId) {
+        return json(res, 400, { error: "请先完善档案并选择服务医生后再补充健康记录" });
+      }
+      const category = String(b.category || "").trim();
+      if (!phr.HEALTH_RECORD_CATEGORY_KEYS.has(category)) {
+        return json(res, 400, { error: "category 非法" });
+      }
+      const title = String(b.title == null ? "" : b.title).trim().slice(0, 200);
+      if (!title) return json(res, 400, { error: "请填写记录标题" });
+      const summary = String(b.summary == null ? "" : b.summary).trim().slice(0, 4000);
+      const recordedAt = String(b.recordedAt == null ? "" : b.recordedAt).trim().slice(0, 40);
+      const extra = {
+        origin: "manual",
+        status: "pending",
+        ...(b.extra && typeof b.extra === "object" ? b.extra : {}),
+      };
+      const attachments = [];
+      if (Array.isArray(b.attachments)) {
+        for (const item of b.attachments.slice(0, 6)) {
+          if (!item || typeof item !== "object") continue;
+          const dataUrl = String(item.dataUrl || item.url || "").trim();
+          if (dataUrl.length > 2_500_000) continue;
+          attachments.push({
+            type: String(item.type || "image").slice(0, 20),
+            name: String(item.name || "attachment").slice(0, 120),
+            mime: String(item.mime || "image/jpeg").slice(0, 80),
+            dataUrl: dataUrl || undefined,
+            url: item.url && !dataUrl ? String(item.url).slice(0, 500) : undefined,
+          });
+        }
+      }
+      const now = new Date().toISOString();
+      const info = db
+        .prepare(
+          `INSERT INTO patient_health_records
+          (doctor_id,patient_id,person_id,category,title,summary,recorded_at,extra,attachments,created_by,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          identity.doctorId,
+          identity.patientId,
+          identity.personId,
+          category,
+          title,
+          summary,
+          recordedAt || now.slice(0, 10),
+          JSON.stringify(extra),
+          JSON.stringify(attachments),
+          "patient",
+          now,
+          now
+        );
+      const row = db.prepare("SELECT * FROM patient_health_records WHERE id=?").get(info.lastInsertRowid);
+      json(res, 200, { ok: true, item: phr.mapHealthRecordRow(row) });
+    } catch (e) {
+      const mapped = authError(e, "server_error", 500);
+      logInternalError("health-records-create", mapped, e);
       json(res, mapped.status, { error: mapped.error });
     }
   });

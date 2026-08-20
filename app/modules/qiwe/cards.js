@@ -239,6 +239,7 @@ function templateNativeWeappAllowed(code, template){
 function replyAutoSendable(reply){
   const src = reply && reply.source;
   if(src === "keyword_rule" || src === "ai_intent") return true;
+  if(src === "mp_ai" || src === "qiwe_dm") return true;
   if(src === "code_fast_path") return !!(reply.triage && reply.triage.canAutoSend !== false);
   if(src === "dialogue_agent") return !!(reply.triage && reply.triage.canAutoSend === true && reply.triage.sendPolicy !== "review");
   if(src === "service_ack" || src === "triage_service_ack") return true; // 安全模板自动真发

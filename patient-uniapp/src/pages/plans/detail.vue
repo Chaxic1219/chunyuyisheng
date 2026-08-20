@@ -6,6 +6,7 @@ import { useConsultationStore } from "../../stores/consultation";
 import { useHealthAssetsStore } from "../../stores/healthAssets";
 import { useHomeStore } from "../../stores/home";
 import { useAppStore } from "../../stores/app";
+import { mpVisual } from "../../utils/mediaSrc";
 import type { PlanDetailData } from "../../types/v32";
 
 const healthAssets = useHealthAssetsStore();
@@ -15,12 +16,12 @@ const appStore = useAppStore();
 const data = computed(() => healthAssets.plan);
 const actingId = ref("");
 
-const ICON_MED = "/static/service-ui/medication.png";
-const ICON_CHECK = "/static/service-ui/checklist.png";
-const ICON_WALK = "/static/service-ui/follow-up.png";
-const ICON_TARGET = "/static/service-ui/plan.png";
-const ICON_PILL = "/static/service-ui/pill.png";
-const ICON_CHAT = "/static/service-ui/chat.png";
+const ICON_MED = mpVisual("service-ui/medication.png");
+const ICON_CHECK = mpVisual("service-ui/checklist.png");
+const ICON_WALK = mpVisual("service-ui/follow-up.png");
+const ICON_TARGET = mpVisual("service-ui/plan.png");
+const ICON_PILL = mpVisual("service-ui/pill.png");
+const ICON_CHAT = mpVisual("service-ui/chat.png");
 
 onMounted(async () => {
   await healthAssets.loadPlan();

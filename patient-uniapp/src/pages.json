@@ -11,7 +11,7 @@
     {
       "path": "pages/consult/index",
       "style": {
-        "navigationBarTitleText": "在线咨询",
+        "navigationBarTitleText": "春雨慧问",
         "navigationBarBackgroundColor": "#F0F3F5",
         "disableScroll": true
       }
@@ -46,7 +46,22 @@
         {
           "path": "index",
           "style": {
-            "navigationBarTitleText": "健康档案",
+            "navigationBarTitleText": "检查健康档案",
+            "navigationBarBackgroundColor": "#E8F5F1",
+            "navigationBarTextStyle": "black"
+          }
+        },
+        {
+          "path": "detail",
+          "style": {
+            "navigationBarTitleText": "记录详情",
+            "navigationBarBackgroundColor": "#F0F3F5"
+          }
+        },
+        {
+          "path": "add",
+          "style": {
+            "navigationBarTitleText": "补充健康记录",
             "navigationBarBackgroundColor": "#F0F3F5"
           }
         }
@@ -266,7 +281,8 @@
           "path": "profile",
           "style": {
             "navigationBarTitleText": "我的档案",
-            "navigationBarBackgroundColor": "#F0F3F5"
+            "navigationBarBackgroundColor": "#E8F5F1",
+            "navigationBarTextStyle": "black"
           }
         },
         {

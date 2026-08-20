@@ -6,6 +6,7 @@ import { submitPostoperativeProfile } from "../../api/servicePackage";
 import { uploadVoucher } from "../../api/patient";
 import { useAppStore } from "../../stores/app";
 import { useAuthStore } from "../../stores/auth";
+import { mpVisual } from "../../utils/mediaSrc";
 
 const appStore = useAppStore();
 const auth = useAuthStore();
@@ -23,12 +24,12 @@ const form = ref({
 
 const SYMPTOM_TAGS = ["疼痛", "肿胀", "活动受限", "睡眠受影响"] as const;
 
-const ICON_SURGERY = "/static/service-ui/surgery.png";
-const ICON_HEART = "/static/service-ui/health-heart.png";
-const ICON_REPORT = "/static/service-ui/report.png";
-const ICON_UPLOAD = "/static/service-ui/upload-cloud.png";
-const ICON_SHIELD = "/static/service-ui/shield.png";
-const ICON_HELP = "/static/service-ui/help.png";
+const ICON_SURGERY = mpVisual("service-ui/surgery.png");
+const ICON_HEART = mpVisual("service-ui/health-heart.png");
+const ICON_REPORT = mpVisual("service-ui/report.png");
+const ICON_UPLOAD = mpVisual("service-ui/upload-cloud.png");
+const ICON_SHIELD = mpVisual("service-ui/shield.png");
+const ICON_HELP = mpVisual("service-ui/help.png");
 
 const dateLabel = computed(() => {
   const raw = form.value.surgeryDate;

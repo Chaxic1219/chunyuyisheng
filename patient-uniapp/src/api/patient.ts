@@ -19,6 +19,40 @@ import { API_BASE, CONSULT_USE_REAL, USE_MOCK } from "./config";
 import { mockBootstrap } from "./mock/bootstrap";
 import { mockArchive, mockHealthCategories, mockHealthRecords } from "./mock/archive";
 
+export interface HealthRecordDetail extends HealthRecord {
+  sourceDoctorName?: string;
+  attachments?: Array<{ type?: string; name?: string; mime?: string; dataUrl?: string; url?: string }>;
+  extra?: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+  createdBy?: string;
+}
+
+export function parseHealthRecordRef(ref: string | number): number {
+  if (typeof ref === "number" && ref > 0) return ref;
+  const s = String(ref || "").trim();
+  if (/^\d+$/.test(s)) return Number(s);
+  const m = s.match(/-(\d+)$/);
+  return m ? Number(m[1]) : 0;
+}
+
+function mapHealthRecordDetail(row: Record<string, unknown>): HealthRecordDetail {
+  return {
+    id: Number(row.id) || 0,
+    category: String(row.category || ""),
+    categoryLabel: String(row.categoryLabel || row.category || ""),
+    title: String(row.title || ""),
+    summary: String(row.summary || ""),
+    recordedAt: String(row.recordedAt || ""),
+    sourceDoctorName: String(row.sourceDoctorName || ""),
+    attachments: Array.isArray(row.attachments) ? row.attachments : [],
+    extra: row.extra && typeof row.extra === "object" ? (row.extra as Record<string, unknown>) : {},
+    createdAt: String(row.createdAt || ""),
+    updatedAt: String(row.updatedAt || ""),
+    createdBy: String(row.createdBy || ""),
+  };
+}
+
 function delay(ms = 280) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -33,7 +67,7 @@ function scrubMpBootstrap(data: BootstrapData): BootstrapData {
     let s = input;
     if (doctorName) {
       s = s.split(`${doctorName}医生团队`).join("春雨医患通");
-      s = s.split(`${doctorName}医生`).join("春雨健康助手");
+      s = s.split(`${doctorName}医生`).join("春雨医患通");
       s = s.split(doctorName).join("春雨医患通");
     }
     s = s.split("仅医生团队可见").join("仅用于为您提供服务");
@@ -193,7 +227,7 @@ export async function sendMessage(opts: {
       reply: {
         id: `a-${Date.now()}`,
         role: "assistant",
-        text: "当前智能服务暂不可用，请稍后重试。",
+        text: "当前在线服务暂不可用，请稍后重试。",
       },
     };
   }
@@ -496,6 +530,10 @@ export interface PatientProfile {
   foodContactAllergies: string;
   drugAllergies: string;
   diseaseHistory: string;
+  bloodType?: string;
+  heightCm?: string;
+  weightKg?: string;
+  healthNotes?: string;
   updatedAt: string;
 }
 
@@ -634,6 +672,10 @@ function archiveFromPrefill(prefill: ArchiveFormPrefill, patient?: { name?: stri
           性别: String(prefill.gender || "未填写"),
           出生日期: String(prefill.birthDate || "未填写"),
           手机号: phone || "未填写",
+          血型: String(prefill.bloodType || "未填写"),
+          身高: prefill.heightCm ? `${prefill.heightCm} cm` : "未填写",
+          体重: prefill.weightKg ? `${prefill.weightKg} kg` : "未填写",
+          健康备注: String(prefill.healthNotes || "未填写"),
           所患疾病: String(prefill.disease || "未填写"),
           是否妊娠哺乳: String(prefill.pregnancyStatus || "未填写"),
           食物接触物过敏: checkboxSummary(allergyToFormJson(prefill.foodContactAllergies)),
@@ -667,6 +709,10 @@ export async function getMyArchive(profileKey = PROFILE_KEY): Promise<PatientArc
         性别: local.gender || "未填写",
         出生日期: local.birthDate || "未填写",
         手机号: local.phone,
+        血型: local.bloodType || "未填写",
+        身高: local.heightCm || "未填写",
+        体重: local.weightKg || "未填写",
+        健康备注: local.healthNotes || "未填写",
         所患疾病: local.disease || "未填写",
         是否妊娠哺乳: local.pregnancyStatus || "未填写",
         食物接触物过敏: local.foodContactAllergies || "无",
@@ -709,6 +755,11 @@ export async function getMyArchive(profileKey = PROFILE_KEY): Promise<PatientArc
       性别: String(p.gender || "未填写"),
       出生日期: String(p.birthDate || "未填写"),
       手机号: String(p.phoneMasked || ""),
+      血型: String(profile.bloodType || "未填写"),
+      身高: profile.heightCm ? `${profile.heightCm} cm` : "未填写",
+      体重: profile.weightKg ? `${profile.weightKg} kg` : "未填写",
+      BMI: String(profile.bmi || "未填写"),
+      健康备注: String(profile.healthNotes || "未填写"),
       所患疾病: String(profile.disease || "未填写"),
       是否妊娠哺乳: String(profile.pregnancyStatus || "未填写"),
       食物接触物过敏: formatAllergy(profile.foodContactAllergies),
@@ -729,6 +780,10 @@ export type ArchiveFormPrefill = {
   foodContactAllergies?: { values: string[]; other?: string };
   drugAllergies?: { values: string[]; other?: string };
   diseaseHistory?: { values: string[]; other?: string };
+  bloodType?: string;
+  heightCm?: string;
+  weightKg?: string;
+  healthNotes?: string;
 };
 
 export type FormInitialValue = string | { values: string[]; other?: string };
@@ -770,6 +825,10 @@ export async function fetchArchiveFormPrefill(): Promise<Record<string, FormInit
     if (p.foodContactAllergies) out.foodContactAllergies = p.foodContactAllergies;
     if (p.drugAllergies) out.drugAllergies = p.drugAllergies;
     if (p.diseaseHistory) out.diseaseHistory = p.diseaseHistory;
+    if (p.bloodType) out.bloodType = String(p.bloodType);
+    if (p.heightCm) out.heightCm = String(p.heightCm);
+    if (p.weightKg) out.weightKg = String(p.weightKg);
+    if (p.healthNotes) out.healthNotes = String(p.healthNotes);
     /* 联络表中文 key 兼容 */
     if (out.name) out["姓名"] = out.name;
     if (out.gender) out["性别"] = out.gender;
@@ -780,6 +839,10 @@ export async function fetchArchiveFormPrefill(): Promise<Record<string, FormInit
     if (out.foodContactAllergies) out["食物、接触物过敏"] = out.foodContactAllergies;
     if (out.drugAllergies) out["药物过敏"] = out.drugAllergies;
     if (out.diseaseHistory) out["疾病史"] = out.diseaseHistory;
+    if (out.bloodType) out["血型"] = out.bloodType;
+    if (out.heightCm) out["身高"] = out.heightCm;
+    if (out.weightKg) out["体重"] = out.weightKg;
+    if (out.healthNotes) out["健康备注"] = out.healthNotes;
     return out;
   } catch {
     return null;
@@ -906,4 +969,87 @@ export async function getMyHealthRecords(category?: string): Promise<HealthRecor
   } catch {
     return [];
   }
+}
+
+export async function getMyHealthRecord(ref: string | number): Promise<HealthRecordDetail | null> {
+  const recordId = parseHealthRecordRef(ref);
+  if (!recordId) return null;
+  if (USE_MOCK) {
+    await delay();
+    const row = mockHealthRecords.find((r) => r.id === recordId);
+    return row
+      ? {
+          ...row,
+          sourceDoctorName: "春雨医生团队",
+          attachments: [],
+          extra: { status: "confirmed" },
+        }
+      : null;
+  }
+  const t = getMpToken();
+  if (!t) return null;
+  try {
+    const res = await uni.request({
+      url: `${API_BASE}/api/mp/health-records/${encodeURIComponent(String(ref))}`,
+      method: "GET",
+      header: { Authorization: `Bearer ${t}` },
+    });
+    const data = parseRequestData(res.data);
+    if ((res.statusCode || 0) >= 400 || data.error) {
+      throw new Error(data.error || `加载失败（${res.statusCode || 0}）`);
+    }
+    const item = data.item && typeof data.item === "object" ? data.item : null;
+    return item ? mapHealthRecordDetail(item as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function createMyHealthRecord(payload: {
+  category: string;
+  title: string;
+  summary?: string;
+  recordedAt?: string;
+  imagePaths?: string[];
+}): Promise<HealthRecordDetail> {
+  if (USE_MOCK) {
+    await delay();
+    const meta = mockHealthCategories.find((c) => c.key === payload.category);
+    const nextId = Math.max(0, ...mockHealthRecords.map((r) => r.id)) + 1;
+    const row: HealthRecordDetail = {
+      id: nextId,
+      category: payload.category,
+      categoryLabel: meta?.label || payload.category,
+      title: payload.title,
+      summary: payload.summary || "",
+      recordedAt: payload.recordedAt || new Date().toISOString().slice(0, 10),
+      extra: { status: "pending", origin: "manual" },
+      attachments: [],
+    };
+    mockHealthRecords.unshift(row);
+    return row;
+  }
+  const t = getMpToken();
+  if (!t) throw new Error("请先登录");
+  const attachments = await buildAttachments(payload.imagePaths);
+  const res = await uni.request({
+    url: `${API_BASE}/api/mp/health-records`,
+    method: "POST",
+    header: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
+    data: {
+      category: payload.category,
+      title: payload.title,
+      summary: payload.summary || "",
+      recordedAt: payload.recordedAt || "",
+      attachments,
+      extra: { origin: "manual", status: "pending" },
+    },
+  });
+  const data = parseRequestData(res.data);
+  if ((res.statusCode || 0) >= 400 || data.error) {
+    throw new Error(data.error || `提交失败（${res.statusCode || 0}）`);
+  }
+  const item = data.item && typeof data.item === "object" ? data.item : null;
+  if (!item) throw new Error("提交失败");
+  return mapHealthRecordDetail(item as Record<string, unknown>);
 }

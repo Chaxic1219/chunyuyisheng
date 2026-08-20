@@ -8,8 +8,17 @@
 const {
   MSGLOG_VISIBLE_IN_TRIAGE,
   buildQiweTriageScope,
-  messageLogDisplayScope
+  messageLogDisplayScope,
+  messageLogTriageDoctorWhere,
+  messageLogChannelFilterSql,
+  isQiweDmRow
 } = require("../qiwe_scope.js");
+
+function triageSharedDmAccess(s, msg){
+  if(!s || !msg || !isQiweDmRow(msg)) return false;
+  const sc = adminScope(s);
+  return sc === null || sc.size > 0;
+}
 
 function registerMessagesAdminRoutes(route, ctx){
   const {
@@ -40,12 +49,13 @@ route("GET", /^\/api\/admin\/messages$/, (req,res,m,q)=>{
   const level = q.level ? +q.level : null;
   const status = q.status || null;
   const patientId = q.patientId || null;
+  const channel = q.channel || null;
   const limit = Math.min(+(q.limit||50), 200);
   const offset = +(q.offset||0);
 
   const qiweScope = buildQiweTriageScope(did);
-  // 屏蔽企业微信主体账号（显示名含「 @企业名」，如「医生助手 @春雨家庭医生」）
-  let where = "WHERE doctor_id=? " + MSGLOG_VISIBLE_IN_TRIAGE + " " + qiweScope.sql
+  let where = "WHERE " + messageLogTriageDoctorWhere() + " " + MSGLOG_VISIBLE_IN_TRIAGE + " " + qiweScope.sql
+    + messageLogChannelFilterSql(channel)
     + " AND IFNULL(patient_name,'') NOT LIKE '% @%'";
   const params = [did, ...qiweScope.params];
   if(level){ where += " AND level=?"; params.push(level); }
@@ -56,9 +66,9 @@ route("GET", /^\/api\/admin\/messages$/, (req,res,m,q)=>{
   const rows = db.prepare("SELECT * FROM message_log "+where+" ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?").all(...params);
   const total = db.prepare("SELECT count(*) as c FROM message_log "+where).get(...params.slice(0,-2));
   
-  // 待处理计数：仅业务群可见消息（同样屏蔽企业主体号）
   const pending = db.prepare(
-    "SELECT count(*) as c FROM message_log WHERE doctor_id=? AND reply_status='pending' " + MSGLOG_VISIBLE_IN_TRIAGE + " " + qiweScope.sql
+    "SELECT count(*) as c FROM message_log WHERE " + messageLogTriageDoctorWhere() + " AND reply_status='pending' " + MSGLOG_VISIBLE_IN_TRIAGE + " " + qiweScope.sql
+    + messageLogChannelFilterSql(channel)
     + " AND IFNULL(patient_name,'') NOT LIKE '% @%'"
   ).get(did, ...qiweScope.params);
   // 与患者档案同口径：用社群微信名·企微覆盖冻结占位「企微患者」，并回填缺失 patient_id
@@ -93,7 +103,7 @@ route("GET", /^\/api\/admin\/messages\/patient\/([^\/]+)$/, (req,res,m,q)=>{
   if(patient && +patient.doctor_id !== did) return json(res,403,{error:"无该医生数据的访问权限"});
   const pid = patient ? String(patient.id) : key;
   const qiweScope = buildQiweTriageScope(did);
-  const rows = db.prepare("SELECT * FROM message_log WHERE doctor_id=? AND (patient_id=? OR sender_id=?) " + MSGLOG_VISIBLE_IN_TRIAGE + " " + qiweScope.sql + " ORDER BY created_at DESC LIMIT 50").all(did, pid, lookupKey, ...qiweScope.params);
+  const rows = db.prepare("SELECT * FROM message_log WHERE " + messageLogTriageDoctorWhere() + " AND (patient_id=? OR sender_id=?) " + MSGLOG_VISIBLE_IN_TRIAGE + " " + qiweScope.sql + " ORDER BY created_at DESC LIMIT 50").all(did, pid, lookupKey, ...qiweScope.params);
   json(res,200,{ messages: rows.map(r => hydrateAdminMessageRow(did, r)) });
 });
 
@@ -135,7 +145,7 @@ route("GET", /^\/api\/admin\/messages\/patient\/(.+)\/profile$/, (req,res,m,q)=>
   const stats = db.prepare(`SELECT count(*) as total,
     sum(case when reply_status='pending' then 1 else 0 end) as pending,
     min(created_at) as first_msg, max(created_at) as last_msg
-    FROM message_log WHERE doctor_id=? AND (patient_id=? OR sender_id=?) ` + displayScope.sql).get(did, pid, lookupKey, ...displayScope.params);
+    FROM message_log WHERE ${messageLogTriageDoctorWhere()} AND (patient_id=? OR sender_id=?) ` + displayScope.sql).get(did, pid, lookupKey, ...displayScope.params);
   const recentSessions = patient
     ? db.prepare(`SELECT id, status, risk_level, patient_name, created_at,
         (SELECT text FROM triage_messages WHERE session_id=triage_sessions.id AND role='patient' ORDER BY id DESC LIMIT 1) AS last_patient_text
@@ -247,9 +257,11 @@ route("POST", /^\/api\/admin\/messages\/(\d+)\/send$/, async (req,res,m)=>{
 route("GET", /^\/api\/admin\/messages\/patient\/(.+)\/pending$/, (req,res,m,q)=>{
   const did = +q.doctorId;
   const s=gate(req,res,did); if(!s) return;
-  const patientId = decodeURIComponent(m[1]);
+  const key = decodeURIComponent(m[1]);
+  const { patient, lookupKey } = resolvePatientRecord(key, did);
+  const pid = patient ? String(patient.id) : lookupKey;
   const qiweScope = buildQiweTriageScope(did);
-  const rows = db.prepare("SELECT * FROM message_log WHERE doctor_id=? AND patient_id=? AND reply_status='pending' " + MSGLOG_VISIBLE_IN_TRIAGE + " " + qiweScope.sql + " ORDER BY created_at ASC").all(did, patientId, ...qiweScope.params);
+  const rows = db.prepare("SELECT * FROM message_log WHERE " + messageLogTriageDoctorWhere() + " AND (patient_id=? OR sender_id=?) AND reply_status='pending' " + MSGLOG_VISIBLE_IN_TRIAGE + " " + qiweScope.sql + " ORDER BY created_at ASC").all(did, pid, lookupKey, ...qiweScope.params);
   json(res,200,{ messages:rows.map(r => hydrateAdminMessageRow(did, r)), count:rows.length });
 });
 
@@ -260,10 +272,10 @@ route("POST", /^\/api\/admin\/messages\/batch-resolve$/, async (req,res)=>{
   if(!b.ids || !Array.isArray(b.ids) || !b.ids.length) return json(res,400,{error:"ids 必填"});
   const ids = b.ids.map(Number).filter(Boolean);
   for(const id of ids){
-    const did = rowDoctorId("message_log", id);
-    if(did == null) return json(res,404,{error:"消息不存在"});
-    if(!allowDoctor(s0, did)) return json(res,403,{error:"无该医生数据的访问权限"});
-    if(!requireAdminAction(req,res,s0,"triage.note_status",{doctorId:did},"无该消息处理权限")) return;
+    const msg = db.prepare("SELECT doctor_id, channel, group_id FROM message_log WHERE id=?").get(id);
+    if(!msg) return json(res,404,{error:"消息不存在"});
+    if(!allowDoctor(s0, msg.doctor_id) && !triageSharedDmAccess(s0, msg)) return json(res,403,{error:"无该医生数据的访问权限"});
+    if(!requireAdminAction(req,res,s0,"triage.note_status",{doctorId:msg.doctor_id},"无该消息处理权限")) return;
   }
   const status = b.status || "resolved";
   const stmt = db.prepare("UPDATE message_log SET reply_status=? WHERE id=?");
@@ -275,10 +287,10 @@ route("POST", /^\/api\/admin\/messages\/batch-resolve$/, async (req,res)=>{
 route("DELETE", /^\/api\/admin\/messages\/(\d+)$/, (req,res,m)=>{
   const s=authed(req); if(!s) return json(res,401,{error:"未登录"});
   const id = +m[1];
-  const did = rowDoctorId("message_log", id);
-  if(did == null) return json(res,404,{error:"消息不存在"});
-  if(!allowDoctor(s, did)) return json(res,403,{error:"无该医生数据的访问权限"});
-  if(!requireAdminAction(req,res,s,"triage.note_status",{doctorId:did},"无该消息删除权限")) return;
+  const msg = db.prepare("SELECT doctor_id, channel, group_id FROM message_log WHERE id=?").get(id);
+  if(!msg) return json(res,404,{error:"消息不存在"});
+  if(!allowDoctor(s, msg.doctor_id) && !triageSharedDmAccess(s, msg)) return json(res,403,{error:"无该医生数据的访问权限"});
+  if(!requireAdminAction(req,res,s,"triage.note_status",{doctorId:msg.doctor_id},"无该消息删除权限")) return;
   db.prepare("DELETE FROM message_log WHERE id=?").run(id);
   json(res,200,{ok:true, id});
 });

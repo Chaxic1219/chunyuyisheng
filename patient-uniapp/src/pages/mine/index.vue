@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { onShareAppMessage, onShow } from "@dcloudio/uni-app";
 import AppIcon from "../../components/AppIcon.vue";
-import { getMpToken, mpUpdateAvatar } from "../../api/auth";
+import { getMpToken } from "../../api/auth";
 import { getLocalProfile, getMyArchive, type PatientProfile } from "../../api/patient";
 import { getServiceAssets } from "../../api/servicePackage";
 import { useAppStore } from "../../stores/app";
@@ -10,7 +10,16 @@ import { useAuthStore } from "../../stores/auth";
 import { useHealthAssetsStore } from "../../stores/healthAssets";
 import { ensureLogin, openArchiveProfile } from "../../utils/ensureLogin";
 import { resolvePatientDisplayName } from "../../utils/displayName";
+import {
+  mpAvatarCacheKey,
+  mpAvatarPendingKey,
+  persistChosenMpAvatar,
+  readMpAvatarCache,
+  resolveMpAvatarSrc,
+  syncPendingMpAvatar,
+} from "../../utils/mpAvatar";
 import { buildStorageScope, scopedStorageKey } from "../../utils/storageScope";
+import { mpVisual } from "../../utils/mediaSrc";
 import { syncCustomTabBar } from "../../utils/syncTabBar";
 
 const store = useAppStore();
@@ -19,8 +28,7 @@ const healthAssets = useHealthAssetsStore();
 const profile = ref<PatientProfile | null>(null);
 const archiveName = ref("");
 const localAvatar = ref("");
-const AVATAR_CACHE_KEY = "mpAvatarUrl";
-const AVATAR_PENDING_KEY = "mpAvatarPending";
+const mineLeafBg = mpVisual("mine-leaf-bg.webp");
 const syncingAvatar = ref(false);
 const headerPadTop = ref(12);
 const couponCount = ref(0);
@@ -37,28 +45,16 @@ const profileCacheKey = computed(() =>
     })
   )
 );
-const avatarCacheKey = computed(() =>
-  scopedStorageKey(
-    AVATAR_CACHE_KEY,
-    buildStorageScope({
-      doctorId: store.doctor?.id,
-      patientId: auth.patientId,
-      personId: auth.personId,
-      token: getMpToken(),
-    })
-  )
+const avatarScope = computed(() =>
+  buildStorageScope({
+    doctorId: store.doctor?.id,
+    patientId: auth.patientId,
+    personId: auth.personId,
+    token: getMpToken(),
+  })
 );
-const avatarPendingKey = computed(() =>
-  scopedStorageKey(
-    AVATAR_PENDING_KEY,
-    buildStorageScope({
-      doctorId: store.doctor?.id,
-      patientId: auth.patientId,
-      personId: auth.personId,
-      token: getMpToken(),
-    })
-  )
-);
+const avatarCacheKey = computed(() => mpAvatarCacheKey(avatarScope.value));
+const avatarPendingKey = computed(() => mpAvatarPendingKey(avatarScope.value));
 
 const displayName = computed(() =>
   resolvePatientDisplayName({
@@ -71,13 +67,7 @@ const displayName = computed(() =>
 );
 const profileCardLabel = computed(() => displayName.value || "微信用户");
 const phoneStatus = computed(() => (auth.phoneBound ? "已绑定手机号" : "请绑定手机号"));
-const avatarSrc = computed(() => {
-  const raw = auth.avatarUrl || localAvatar.value || "";
-  const value = String(raw || "").trim();
-  if (!value) return "";
-  if (value.startsWith("http://")) return `https://${value.slice("http://".length)}`;
-  return value;
-});
+const avatarSrc = computed(() => resolveMpAvatarSrc(auth.avatarUrl, localAvatar.value));
 
 const familyCount = computed(() => {
   const family = healthAssets.family as null | {
@@ -218,7 +208,7 @@ onShow(async () => {
   void healthAssets.loadFamily();
   void loadServiceSummary();
   profile.value = getLocalProfile(profileCacheKey.value);
-  localAvatar.value = String(uni.getStorageSync(avatarCacheKey.value) || "");
+  localAvatar.value = readMpAvatarCache(avatarCacheKey.value);
   if (!getMpToken()) {
     archiveName.value = "";
     return;
@@ -261,55 +251,16 @@ function openMenu(url: string) {
   void goWithLogin(url);
 }
 
-function readFileAsDataUrl(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    try {
-      const fs = uni.getFileSystemManager();
-      fs.readFile({
-        filePath,
-        encoding: "base64",
-        success: (res) => {
-          const base64 = String((res as any).data || "").trim();
-          if (!base64) return reject(new Error("empty_avatar_file"));
-          resolve(`data:image/png;base64,${base64}`);
-        },
-        fail: reject,
-      });
-    } catch (e) {
-      reject(e);
-    }
-  });
-}
-
-function loadPendingAvatarData(): string {
-  return String(uni.getStorageSync(avatarPendingKey.value) || "").trim();
-}
-
-function savePendingAvatarData(dataUrl: string) {
-  uni.setStorageSync(avatarPendingKey.value, dataUrl);
-}
-
-function clearPendingAvatarData() {
-  uni.removeStorageSync(avatarPendingKey.value);
-}
-
-async function syncAvatarData(avatarDataUrl: string) {
-  const data = await mpUpdateAvatar(avatarDataUrl);
-  auth.applyMe(data);
-  if (auth.avatarUrl) {
-    localAvatar.value = auth.avatarUrl;
-    uni.setStorageSync(avatarCacheKey.value, auth.avatarUrl);
-  }
-  clearPendingAvatarData();
-}
-
 async function syncPendingAvatar() {
   if (syncingAvatar.value || !getMpToken()) return;
-  const pending = loadPendingAvatarData();
-  if (!pending) return;
   syncingAvatar.value = true;
   try {
-    await syncAvatarData(pending);
+    await syncPendingMpAvatar({
+      cacheKey: avatarCacheKey.value,
+      pendingKey: avatarPendingKey.value,
+      applyMe: auth.applyMe,
+    });
+    localAvatar.value = readMpAvatarCache(avatarCacheKey.value) || localAvatar.value;
   } catch (e) {
     console.warn("[mine] pending avatar sync failed", e);
   } finally {
@@ -317,18 +268,21 @@ async function syncPendingAvatar() {
   }
 }
 
-async function onChooseAvatar(ev: any) {
+async function onChooseAvatar(ev: { detail?: { avatarUrl?: string } }) {
   const rawPath = ev?.detail?.avatarUrl || "";
   if (!rawPath) {
     uni.showToast({ title: "未获取到头像", icon: "none" });
     return;
   }
   localAvatar.value = rawPath;
-  uni.setStorageSync(avatarCacheKey.value, rawPath);
   try {
-    const avatarDataUrl = await readFileAsDataUrl(rawPath);
-    savePendingAvatarData(avatarDataUrl);
-    await syncAvatarData(avatarDataUrl);
+    await persistChosenMpAvatar({
+      filePath: rawPath,
+      cacheKey: avatarCacheKey.value,
+      pendingKey: avatarPendingKey.value,
+      applyMe: auth.applyMe,
+    });
+    localAvatar.value = resolveMpAvatarSrc(auth.avatarUrl, rawPath);
     uni.showToast({ title: "头像已更新", icon: "none" });
   } catch (e) {
     console.warn("[mine] avatar sync failed", e);
@@ -341,7 +295,7 @@ async function onChooseAvatar(ev: any) {
   <view class="page" :class="{ elder: store.elderMode }">
     <image
       class="mine-bg"
-      src="/static/visual/mine-leaf-bg.webp"
+      :src="mineLeafBg"
       mode="aspectFill"
       :lazy-load="false"
     />

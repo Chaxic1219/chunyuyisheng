@@ -179,12 +179,14 @@ const CONTEXTUAL_BODY_RE = /^(?:上腹|下腹|肚脐|肚皮|肚子|胃部|心口
 const CONTEXTUAL_BODY_ANY_RE = /(?:上腹|下腹|肚脐|肚皮|肚子|胃|心口|胸口|腰|左|右|侧|全腹|小腹|中腹)/;
 const CONTEXTUAL_SYMPTOM_WORD_RE = /疼|痛|胀|闷|痒|麻|酸|乏力|没劲|恶心|吐|泻|烧|晕|慌|抽|硬|肿|坠|紧|吃|喝|睡|拉/;
 const CONTEXTUAL_DURATION_RE = /^(?:\d+|[一二三四五六七八九十两半个]+)(?:天|周|个月|月|小时|分钟|年左右?)(?:了|左右)?$/;
-const CONTEXTUAL_SYMPTOM_SHORT_RE = /发烧|发热|恶心|呕吐|拉肚子|腹泻|便秘|出血|头晕|乏力|瘙痒|止痒/;
+const CONTEXTUAL_SYMPTOM_SHORT_RE = /发烧|发热|恶心|呕吐|拉肚子|腹泻|便秘|出血|头晕|乏力|瘙痒|止痒|频繁|尿频|尿急/;
+const CONTEXTUAL_RHYTHM_RE = /^(?:一阵一阵|时好时坏|间断|偶尔|经常|有时|持续|一直|越来越)/;
+const CONTEXTUAL_ENTRY_ASK_RE = /^(?:入口|联系(?:方式|入口)?).{0,8}(?:在哪|哪里|怎么)|^怎么联系(?:医生|团队)/;
 
 /* 运维/技术/群务口语：与问诊上下文无逻辑关系 → 应判 L6 静默（即便仍在 health_chat 会话中） */
 const OPS_CHITCHAT_RE = /(?:配置|部署|上线|测试|调试|搞定|弄完|弄好了|可以了|发完了|采完了|更新完|重启|验图|验一下|后台|服务器|接口|回调|token|patch|seed|脚本|代码|bug|修复完|改完|覆盖完|贴图|封面|采集|好了没|行不行|能用吗|生效了吗|看到了吗)/i;
 const UNRELATED_SOCIAL_RE = /(?:天气|股票|电影|游戏|吃饭了吗|下班|周末去哪|旅游|八卦)/i;
-const MEDICAL_CONTINUATION_RE = /疼|痛|药|症状|不舒服|难受|加重|减轻|发烧|发热|恶心|呕吐|拉肚子|腹泻|头晕|心慌|胸闷|报告|检查|化验|指标|饮食|忌口|术后|复查|医生|挂号|咨询|怎么办|咋办|还有|另外|顺便|对了.{0,8}(?:疼|痛|药|不舒服)/;
+const MEDICAL_CONTINUATION_RE = /疼|痛|药|症状|不舒服|难受|加重|减轻|发烧|发热|恶心|呕吐|拉肚子|腹泻|头晕|心慌|胸闷|报告|检查|化验|指标|饮食|忌口|术后|复查|医生|挂号|咨询|怎么办|咋办|还有|另外|顺便|对了.{0,8}(?:疼|痛|药|不舒服)|一阵|频繁|尿频|尿急|上厕/;
 const IDENTITY_ASK_RE = /你是谁|你叫什么|你是什么|什么身份|介绍一下你(?:自己)?|你是(?:不是)?(?:机器人|ai|AI)|你能(?:干|做)什么/i;
 
 function loadConversationContext(input){
@@ -233,7 +235,10 @@ function isContextualMedicalReply(text, session){
   if(CONTEXTUAL_DURATION_RE.test(compact)) return true;
   if(/^(?:有|没有|会|不会|是|不是|还好|有点|轻微|加重|减轻了?|是的?|对的?|嗯嗯?)$/.test(compact)) return true;
   if(CONTEXTUAL_SYMPTOM_SHORT_RE.test(raw) && compact.length <= 24) return true;
-  if(/^(?:大概|约|差不多|一直|最近|今天|昨天|前天)/.test(compact)) return true;
+  if(CONTEXTUAL_RHYTHM_RE.test(compact) && compact.length <= 20) return true;
+  if(CONTEXTUAL_ENTRY_ASK_RE.test(raw)) return true;
+  if(/频繁|次数|偏多|增多|多/.test(raw) && /上厕|小便|大便|尿|便|夜起|起夜|排便/.test(raw) && compact.length <= 32) return true;
+  if(/^(?:大概|约|差不多|一直|最近|今天|昨天|前天)/.test(compact) && !UNRELATED_SOCIAL_RE.test(raw)) return true;
   // 活跃医疗会话中，含部位词或症状/生活词（吃/睡/疼/胀等）→ 视为医疗续聊
   // （防「肚脐下面一点」「是的，吃了饭更明显」等被误判闲聊；运维/社会闲聊除外）
   if(isActiveMedicalSession(session)
@@ -274,7 +279,7 @@ function isUnrelatedChitchat(text, session){
   if(/(?:配置|部署|上线|测试|调试|封面|贴图|采集|重启).{0,8}(?:完|好|了|完毕|ok)/i.test(raw)) return true;
   if(/^(?:应该?)?(?:都|已经)?(?:配|设|弄|搞|整|改|调|测|发|采|更|覆)(?:置|完|好了|完了|完毕|ok)+$/i.test(compact)) return true;
   if(compact.length <= 16 && /(?:完|好|了|完毕|ok)$/i.test(compact) && !MEDICAL_CONTINUATION_RE.test(raw)) return true;
-  return compact.length <= 48;
+  return false;
 }
 
 function hasConversationMedicalContext(input){
@@ -303,9 +308,10 @@ function isDiseaseConsultAsk(text){
   const hasBodySignal = /(?:病|症|炎|疼|痛|烧|咳|泻|吐|晕|闷|慌|疹|凉|感|痒|肿|叮|咬|蜇|包)(?:了|吗|呢|啊|咋|怎么|如何|怎么办|咋办)?/.test(t);
   const hasHelpSeek = /怎么办|咋办|怎么(?:办|处理|治|看|弄|止)|严重吗|要不要紧|是不是|会不会|想(?:止|消|治|看)|止痒|止痛|消肿|消炎|有没有.*(?:药|办法|方法)|该怎么/.test(t);
   if(hasBodySignal && hasHelpSeek) return true;
-  // 部位 + 不适自述（无「怎么办」也算问病）：「我肚子有点疼」「有点尿急」
-  const hasBodyPart = /肚子|胃|腹|头|胸|腰|背|嗓子|喉咙|牙|眼睛|耳朵|鼻子|腿|脚|手|关节|小便|大便|尿|便/.test(t);
-  const hasDiscomfort = /疼|痛|胀|闷|慌|烧|咳|痒|肿|急|频|酸|麻|恶心|难受|不舒服|不适/.test(t);
+  // 部位 + 不适自述（无「怎么办」也算问病）：「我肚子有点疼」「有点尿急」「上厕所比较频繁」
+  const hasBodyPart = /肚子|胃|腹|头|胸|腰|背|嗓子|喉咙|牙|眼睛|耳朵|鼻子|腿|脚|手|关节|小便|大便|尿|便|上厕|厕所/.test(t);
+  const hasDiscomfort = /疼|痛|胀|闷|慌|烧|咳|痒|肿|急|频|酸|麻|恶心|难受|不舒服|不适|多/.test(t);
+  if(/上厕|尿频|尿急|起夜|夜尿|排便次数|大便次数/.test(t) && /频繁|次数|多|增加|偏多|增多/.test(t)) return true;
   return hasBodyPart && hasDiscomfort;
 }
 

@@ -70,6 +70,14 @@ function createPayments(db, ordersApi, couponsApi, fulfillmentApi) {
     if (fulfillmentApi && typeof fulfillmentApi.processOrder === "function") {
       fulfillmentApi.processOrder(orderId);
     }
+    const order = ordersApi.getById(orderId);
+    if (order) {
+      void require("../../mp_subscribe.js")
+        .sendOrderPaidNotice(db, order)
+        .catch((e) => {
+          console.warn("[mp_subscribe] order paid notice failed:", e.message || e);
+        });
+    }
     return latestForOrder(orderId);
   }
 

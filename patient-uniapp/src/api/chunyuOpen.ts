@@ -67,7 +67,7 @@ export function resolveChunyuWxEnvVersion(jump: ChunyuJump): "develop" | "trial"
   return "release";
 }
 
-const CHUNYU_WX_APPID = "wx214b7e2bcde837d6";
+export const CHUNYU_WX_APPID = "wx214b7e2bcde837d6";
 
 const CHUNYU_WEBVIEW = "/pages/services/benefit-webview";
 

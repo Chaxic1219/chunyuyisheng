@@ -1,20 +1,21 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import type { AssistantRole } from "../types/v32";
+import { mpVisual } from "../utils/mediaSrc";
 
 export const useConsultationStore = defineStore("consultation-v32", () => {
   const role = ref<AssistantRole>("waiting");
   const entryContext = ref("");
   const quickTopics = [
-    { label: "看报告", text: "帮我看看这份报告", iconSrc: "/static/consult-ui/calendar-alt.png" },
-    { label: "问用药", text: "我的药快用完了，应该怎么办", iconSrc: "/static/consult-ui/medication.png" },
-    { label: "安排复诊", text: "帮我安排复诊", iconSrc: "/static/consult-ui/follow-up.png" },
+    { label: "看报告", text: "帮我看看这份报告", iconSrc: mpVisual("consult-ui/calendar-alt.png") },
+    { label: "问用药", text: "我的药快用完了，应该怎么办", iconSrc: mpVisual("consult-ui/medication.png") },
+    { label: "安排复诊", text: "帮我安排复诊", iconSrc: mpVisual("consult-ui/follow-up.png") },
   ];
 
   const roleMeta = computed(() => {
     if (role.value === "life") {
       return {
-        title: "生活管家",
+        title: "服务咨询",
         sub: "预约、订单、权益和服务进度",
         icon: "consult-doctor",
         color: "#936015",
@@ -32,8 +33,8 @@ export const useConsultationStore = defineStore("consultation-v32", () => {
     }
     if (role.value === "health") {
       return {
-        title: "健康助手",
-        sub: "AI 辅助，不是医生",
+        title: "健康咨询",
+        sub: "仅供参考，不作为诊断依据",
         icon: "health-assistant",
         color: "#176B52",
         soft: "#E5F3EC",
@@ -51,9 +52,9 @@ export const useConsultationStore = defineStore("consultation-v32", () => {
   const contextLine = computed(() => {
     if (entryContext.value) return entryContext.value;
     if (role.value === "life") return "可带入：服务订单、预约需求、权益和售后问题";
-    if (role.value === "handoff") return "本次会先确认用药安全，再请求你授权共享给生活管家";
+    if (role.value === "handoff") return "本次会先确认用药安全，再请求你授权共享必要信息以便继续办理";
     if (role.value === "health") return "可带入：健康计划、用药、检查报告和最近记录";
-    return "直接描述问题，系统会自动匹配健康助手或生活管家";
+    return "直接描述你的健康或就医问题";
   });
 
   function classifyIntent(value: string): AssistantRole {

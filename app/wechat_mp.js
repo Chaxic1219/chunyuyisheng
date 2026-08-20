@@ -98,10 +98,34 @@ async function getPhoneNumberByCode(phoneCode) {
   return { phone: String(phone).trim() };
 }
 
+async function sendSubscribeMessage({ touser, templateId, page, data, miniprogramState }) {
+  if (stubMode()) {
+    return { errcode: 0, errmsg: "ok", stub: true };
+  }
+  const token = await getAccessToken();
+  const url = `https://api.weixin.qq.com/cgi-bin/message/subscribe/send?access_token=${encodeURIComponent(token)}`;
+  const res = await postJson(url, {
+    touser: String(touser || ""),
+    template_id: String(templateId || ""),
+    page: page ? String(page) : "",
+    miniprogram_state:
+      miniprogramState || process.env.WECHAT_MP_SUBSCRIBE_STATE || "formal",
+    lang: "zh_CN",
+    data: data || {},
+  });
+  if (res.errcode && res.errcode !== 0) {
+    const err = new Error(res.errmsg || "subscribe_send_failed");
+    err.errcode = res.errcode;
+    throw err;
+  }
+  return res;
+}
+
 module.exports = {
   stubMode,
   code2Session,
   getPhoneNumberByCode,
+  sendSubscribeMessage,
   getJson,
   postJson,
   getAccessToken

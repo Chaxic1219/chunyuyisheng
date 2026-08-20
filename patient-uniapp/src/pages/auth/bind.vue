@@ -4,7 +4,6 @@
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { onLoad } from "@dcloudio/uni-app";
-import AppIcon from "../../components/AppIcon.vue";
 import { getMpToken, mpBindPhone } from "../../api/auth";
 import { useAuthStore } from "../../stores/auth";
 import { useAppStore } from "../../stores/app";
@@ -12,6 +11,7 @@ import { resolveDoctorAffiliation } from "../../utils/doctorAffiliation";
 import { isExplicitSignedOut } from "../../utils/signedOut";
 import { createSubmissionGuard } from "../../utils/submissionGuard";
 import { createTimerRegistry } from "../../utils/timerRegistry";
+import { mpVisual } from "../../utils/mediaSrc";
 
 const auth = useAuthStore();
 const app = useAppStore();
@@ -19,7 +19,8 @@ const app = useAppStore();
 const returnUrl = ref("/pages/mine/index");
 const rebind = ref(false);
 const needsResumeLogin = ref(false);
-const agreed = ref(true);
+// 协议必须由用户主动勾选，禁止默认同意
+const agreed = ref(false);
 const busy = ref(false);
 const completed = ref(false);
 const timers = createTimerRegistry();
@@ -28,9 +29,9 @@ const bindGuard = createSubmissionGuard((state) => {
   completed.value = state.completed;
 });
 
-const ICON_SHIELD = "/static/service-ui/shield.png";
-const ICON_HEART = "/static/service-ui/health-heart.png";
-const ICON_CHECK = "/static/service-ui/check.png";
+const ICON_SHIELD = mpVisual("service-ui/shield.png");
+const ICON_HEART = mpVisual("service-ui/health-heart.png");
+const ICON_CHECK = mpVisual("service-ui/check.png");
 
 const pageTitle = computed(() => {
   if (needsResumeLogin.value) return "重新登录";
@@ -178,7 +179,7 @@ async function onWxPhone(e: any) {
     await afterSuccess();
   } catch (err: any) {
     if (err?.code === "auth_recovery_failed") bindGuard.complete();
-    uni.showToast({ title: err?.message || "微信绑定失败，请重试", icon: "none" });
+    uni.showToast({ title: err?.message || "绑定失败，请重试", icon: "none" });
   } finally {
     bindGuard.finish();
   }
@@ -201,7 +202,7 @@ onUnmounted(() => {
     <view class="hero">
       <view class="hero__copy">
         <text class="hero__title">安全保存你的健康信息</text>
-        <text class="hero__sub">绑定后可在不同设备查看档案、计划和服务进度</text>
+        <text class="hero__sub">勾选协议后，可使用手机号快捷登录并查看档案、计划和服务进度</text>
       </view>
       <view class="hero__art">
         <image class="hero__shield" :src="ICON_SHIELD" mode="aspectFit" />
@@ -224,8 +225,7 @@ onUnmounted(() => {
         :disabled="busy || completed"
         @click="onResumeLogin"
       >
-        <AppIcon name="wechat" :size="20" tone="inverse" />
-        <text>使用微信登录</text>
+        <text>继续登录</text>
       </button>
 
       <button
@@ -233,14 +233,13 @@ onUnmounted(() => {
         class="btn btn--wechat"
         open-type="getPhoneNumber"
         :loading="busy"
-        :disabled="busy || completed || !agreed"
+        :disabled="busy || completed"
         @getphonenumber="onWxPhone"
       >
-        <AppIcon name="wechat" :size="20" tone="inverse" />
-        <text>{{ rebind ? "微信手机号一键更换" : "微信手机号一键绑定" }}</text>
+        <text>{{ rebind ? "手机号快捷换绑" : "手机号快捷登录" }}</text>
       </button>
 
-      <text class="action__tip">仅支持微信官方授权取号，不再使用短信验证码</text>
+      <text class="action__tip">请先阅读并勾选下方协议，再使用手机号快捷登录完成绑定</text>
     </view>
 
     <view class="agree pressable" @click="agreed = !agreed">

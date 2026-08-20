@@ -47,6 +47,26 @@ ok(groupGate.isUnrelatedChitchat("另外还有点头晕", session) === false,
   "问诊续轮症状补充仍相关");
 ok(groupGate.isUnrelatedChitchat("今天天气不错", null) === true,
   "纯天气仍无关闲聊");
+ok(groupGate.isUnrelatedChitchat("一阵一阵的", session) === false,
+  "问诊中的「一阵一阵的」不过闲聊门控");
+ok(groupGate.isContextualMedicalReply("入口在哪", session) === true,
+  "回应助手引导的「入口在哪」算医疗续聊");
+
+console.log("== mpAi 私聊门控 ==");
+const { isMedicalConsultAllowed } = require("./modules/mpAi/gate.js");
+const dmHistory = [
+  { role: "user", text: "我头疼" },
+  { role: "assistant", text: "请问是持续还是一阵一阵？" },
+  { role: "user", text: "我太阳穴涨疼" },
+];
+ok(isMedicalConsultAllowed({ text: "一阵一阵的", history: dmHistory }).allowed === true,
+  "私聊续答「一阵一阵的」放行");
+ok(isMedicalConsultAllowed({ text: "入口在哪", history: dmHistory }).allowed === true,
+  "私聊追问入口放行");
+ok(isMedicalConsultAllowed({ text: "今天天气怎么样", history: dmHistory }).allowed === false,
+  "私聊中纯天气仍拦截");
+ok(isMedicalConsultAllowed({ text: "我最近上厕所比较频繁", history: [] }).allowed === true,
+  "独立尿频自述放行");
 
 console.log("== 回复分条 ==");
 {

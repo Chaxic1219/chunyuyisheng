@@ -70,5 +70,20 @@ let blocked = false;
 try { applyProfilePut(patient, { phone: "13700137000" }); } catch (e) { blocked = /不可修改/.test(e.message); }
 ok(blocked, "已验证手机号 → 拒绝修改");
 
+const extraEmpty = patientProfile.extraProfileFields({
+  bloodType: "",
+  heightCm: "",
+  weightKg: "",
+  healthNotes: "",
+});
+ok(Object.keys(extraEmpty).length === 0, "空扩展字段不覆盖已有档案");
+const extraFilled = patientProfile.extraProfileFields({
+  bloodType: "O型",
+  heightCm: "168",
+  weightKg: "55",
+  healthNotes: "备注",
+});
+ok(extraFilled.bloodType === "O型" && extraFilled.bmi === "19.5" && extraFilled.healthNotes === "备注", "身高体重计算 BMI");
+
 console.log("\n" + (fails.length ? "FAIL " + fails.length : "PASS " + n));
 process.exit(fails.length ? 1 : 0);

@@ -375,7 +375,7 @@ test("旧接口兼容且新增接口默认读取 getDb", async () => {
 
 test("SCENE_IDS has the fixed public order", () => {
   assert.deepStrictEqual(llm.SCENE_IDS, [
-    "triage", "agent_draft", "science_reminder", "mp_ai", "health_probe"
+    "triage", "agent_draft", "science_reminder", "mp_ai", "qiwe_dm", "health_probe"
   ]);
 });
 

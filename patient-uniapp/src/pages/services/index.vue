@@ -19,7 +19,7 @@ import { useServiceAssetsStore } from "../../stores/serviceAssets";
 import { useAppStore } from "../../stores/app";
 import { useAuthStore } from "../../stores/auth";
 import { ensureLogin } from "../../utils/ensureLogin";
-import { safeLocalImageSrc } from "../../utils/mediaSrc";
+import { mpVisual, safeLocalImageSrc } from "../../utils/mediaSrc";
 
 type DoctorOption = {
   doctorId: number;
@@ -115,31 +115,31 @@ const needCategories = [
     key: "rehab",
     title: "术后康复",
     desc: "科学康复指导，促进身体恢复",
-    iconSrc: "/static/service-ui/rehab.png",
+    iconSrc: mpVisual("service-ui/rehab.png"),
   },
   {
     key: "chronic",
     title: "慢病管理",
     desc: "长期健康管理，稳定控制指标",
-    iconSrc: "/static/service-ui/chronic.png",
+    iconSrc: mpVisual("service-ui/chronic.png"),
   },
   {
     key: "med",
     title: "用药指导",
     desc: "合理用药建议，减少用药风险",
-    iconSrc: "/static/service-ui/medication.png",
+    iconSrc: mpVisual("service-ui/medication.png"),
   },
   {
     key: "nutrition",
     title: "营养调理",
     desc: "个性化营养方案，改善饮食结构",
-    iconSrc: "/static/service-ui/nutrition.png",
+    iconSrc: mpVisual("service-ui/nutrition.png"),
   },
 ] as const;
 
-const ICON_DOCTOR = "/static/service-ui/doctor.png";
-const ICON_CHECKLIST = "/static/service-ui/checklist.png";
-const ICON_HEART = "/static/service-ui/health-heart.png";
+const ICON_DOCTOR = mpVisual("service-ui/doctor.png");
+const ICON_CHECKLIST = mpVisual("service-ui/checklist.png");
+const ICON_HEART = mpVisual("service-ui/health-heart.png");
 
 function serviceProgressPercent(inst: ServiceInstance | null | undefined): number {
   if (!inst) return 0;
@@ -659,17 +659,19 @@ function doctorSubline(option: DoctorOption) {
 }
 .doctor-card__avatar {
   display: flex;
-  width: 44px;
-  height: 44px;
+  width: 52px;
+  height: 52px;
   flex: 0 0 auto;
+  overflow: hidden;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: #e8f5ee;
+  background: transparent;
 }
 .doctor-card__avatar-img {
-  width: 26px;
-  height: 26px;
+  width: 52px;
+  height: 52px;
+  background: transparent;
 }
 .doctor-card__copy {
   min-width: 0;
@@ -859,19 +861,20 @@ function doctorSubline(option: DoctorOption) {
 }
 .need-card {
   display: flex;
-  min-height: 88px;
+  min-height: 96px;
   padding: 12px;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
   border-radius: 14px;
   background: #fff;
   box-shadow: 0 2px 8px rgba(15, 61, 46, 0.04);
 }
 .need-card__icon {
-  width: 28px;
-  height: 28px;
+  width: 44px;
+  height: 44px;
   flex: 0 0 auto;
-  margin-top: 2px;
+  margin-top: 0;
+  background: transparent;
 }
 .need-card__copy {
   min-width: 0;

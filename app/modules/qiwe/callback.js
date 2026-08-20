@@ -25,6 +25,30 @@ const {
 const { attachInboundImagePreview } = media;
 const { prepareDelivery, deliverReplyToQiwe, joinWelcomeTextFromResponses } = delivery;
 
+function replyPlainText(reply){
+  const responses = reply && reply.responses;
+  if(!Array.isArray(responses)) return "";
+  const parts = responses.filter(r => r && r.type === "text").map(r => String(r.text || "").trim()).filter(Boolean);
+  if(parts.length <= 1) return parts[0] || "";
+  return parts.join("\n\n");
+}
+
+function patchLatestQiweDmOutbound(doctorId, senderId, sentText, draftText){
+  if(!senderId) return;
+  const out = String(sentText || draftText || "").trim().slice(0, 2400);
+  if(!out) return;
+  try{
+    db.prepare(`UPDATE message_log SET reply_sent=COALESCE(NULLIF(trim(reply_sent),''), ?),
+      ai_draft=COALESCE(NULLIF(trim(ai_draft),''), ?),
+      reply_status=CASE WHEN reply_status='pending' THEN 'sent' ELSE reply_status END,
+      action_taken=CASE WHEN action_taken IS NULL OR trim(action_taken)='' THEN 'auto_replied' ELSE action_taken END
+      WHERE id=(
+        SELECT id FROM message_log WHERE sender_id=? AND channel='qiwe' AND direction='inbound'
+          AND (group_id IS NULL OR trim(group_id)='') ORDER BY id DESC LIMIT 1
+      )`).run(out, out, String(senderId));
+  }catch(e){ console.error("[qiwe] patchLatestQiweDmOutbound:", e && e.message); }
+}
+
 function weappCaptureSkip(evt, cfg){
   if(!cfg || !cfg.enabled) return "disabled";
   if(!cfg.token || !cfg.guid) return "not_configured";
@@ -648,45 +672,60 @@ async function processEvent(raw, cfg){
   }catch(e){}
   const patientName = patientLogName(doctorId, patientId, senderDisplay, evt.senderId || evt.replyToId || "", { isGroup: !!evt.isGroup });
 
-  // Dialogue Agent（本地开关）：群/单聊文本优先走新回话核；失败 fail-closed 回落旧 buildPatientReply。
-  // H5 不走本分支。AGENT_DRY_RUN 默认开 → 下方投递仍受 cfg.autoSend / qiwe.DRY_RUN 约束，并带 reply.dryRun 标记。
+  // 群：Dialogue Agent → 回落 buildPatientReply（医生团队人设）。
+  // 私聊：走 mpAi 通用医疗助手（与小程序同口径，不绑定具体医生助理人设）。
   let reply = null;
-  try{
-    const agent = require("../../agent/index.js");
-    if(agent.agentEnabled()){
-      reply = await agent.runTurn({
+  if(!evt.isGroup){
+    try{
+      const { buildQiweDmAssistantReply } = require("./dm_assistant.js");
+      reply = await buildQiweDmAssistantReply({
+        doctorId,
+        text:evt.text,
+        senderId:evt.senderId || evt.replyToId || ""
+      });
+    }catch(e){
+      console.error("[qiwe] 私聊 mpAi 失败：", e && e.message);
+      reply = null;
+    }
+  }else{
+    try{
+      const agent = require("../../agent/index.js");
+      if(agent.agentEnabled()){
+        reply = await agent.runTurn({
+          doctorId,
+          text:evt.text,
+          patientName,
+          suppressPatientName:true,
+          isGroup:true,
+          patientKey:"qiwe:" + (evt.senderId || evt.replyToId || "unknown"),
+          patientId
+        });
+        if(reply && agent.agentDryRun()){
+          reply.dryRun = true;
+          reply.autoSent = false;
+        }
+      }
+    }catch(e){
+      console.error("[qiwe] dialogue agent 失败，回落 buildPatientReply：", e && e.message);
+      reply = null;
+    }
+    if(!reply){
+      reply = await buildPatientReply({
         doctorId,
         text:evt.text,
         patientName,
-        suppressPatientName:!!evt.isGroup,
-        isGroup:!!evt.isGroup,
-        patientKey:"qiwe:" + (evt.senderId || evt.replyToId || "unknown"),
-        patientId
+        suppressPatientName:true,
+        isGroup:true,
+        patientKey:"qiwe:" + (evt.senderId || evt.replyToId || "unknown")
       });
-      if(reply && agent.agentDryRun()){
-        reply.dryRun = true;
-        reply.autoSent = false;
-      }
     }
-  }catch(e){
-    console.error("[qiwe] dialogue agent 失败，回落 buildPatientReply：", e && e.message);
-    reply = null;
-  }
-  if(!reply){
-    reply = await buildPatientReply({
-      doctorId,
-      text:evt.text,
-      patientName,
-      suppressPatientName:!!evt.isGroup,
-      isGroup:!!evt.isGroup,   // 群/DM 显式标志（甲方 2026-07-03 群内脱敏裁定：低危 LLM 档案摘要只注入 DM 场景）
-      patientKey:"qiwe:" + (evt.senderId || evt.replyToId || "unknown")
-    });
   }
 
   const isKeywordRule = reply && (reply.source === "keyword_rule" || reply.source === "ai_intent");
   const shouldAutoDeliver = agentReplyShouldAutoDeliver(cfg, reply);
   const autoSent = shouldAutoDeliver;
   const triageRisk = reply && reply.triage ? reply.triage : null;
+  const outboundPreview = replyPlainText(reply);
   logInboundMessage({
     doctorId,
     patientId,
@@ -697,7 +736,7 @@ async function processEvent(raw, cfg){
     text: evt.text || "",
     sourceMessageId: communityRecord && communityRecord.messageId,
     isKeywordRule,
-    aiDraft: reply && reply.aiDraftText ? reply.aiDraftText : (reply && reply.draft) || null,
+    aiDraft: outboundPreview || (reply && reply.aiDraftText ? reply.aiDraftText : (reply && reply.draft) || null),
     triageSessionId: reply && reply.sessionId ? reply.sessionId : null,
     autoSent,
     riskLevel: triageRisk && triageRisk.riskLevel,
@@ -813,6 +852,9 @@ const deliveryPlan = prepareDelivery(doctorId, reply, patientName, { isGroup:!!e
     }, { via: "qiwe_autosend_audit" });
   }catch(e){
     console.error("[qiwe] autoSend 后写出站队列失败（回复可能已发出）：", e && e.message);
+  }
+  if(!evt.isGroup && sendResult.sent){
+    patchLatestQiweDmOutbound(doctorId, evt.senderId, sendResult.replyText || deliveryPlan.replyText, outboundPreview);
   }
   return {
     ok:true,

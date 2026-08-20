@@ -6,11 +6,13 @@ const DISEASE_HISTORY_OPTIONS = ["无", "高血压", "过敏性疾病", "哮喘"
 const PREGNANCY_OPTIONS = ["否", "备孕期", "怀孕中", "哺乳期"];
 const PROFILE_SOURCES = new Set(["patient", "assistant", "extract", "system"]);
 
+const BLOOD_TYPE_OPTIONS = ["A型", "B型", "AB型", "O型", "不详"];
+
 const PROFILE_FIELD_KEYS = new Set([
   // 2026-08-13：身份证号已从采集面下线（不写不采）；历史库行可读但不在此集合
   "disease", "pregnancyStatus",
   "foodContactAllergies", "drugAllergies", "diseaseHistory",
-  // 后台扩展槽（患者联络表不可见）
+  "bloodType", "healthNotes",
   "heightCm", "weightKg", "bmi", "waistCm",
   "smoking", "drinking", "familyHistory", "personalHabits"
 ]);
@@ -101,7 +103,11 @@ const PAYLOAD_ALIASES = {
   foodContactAllergies: ["foodContactAllergies", "食物、接触物过敏"],
   drugAllergies: ["drugAllergies", "药物过敏"],
   diseaseHistory: ["diseaseHistory", "疾病史"],
-  outpatientVoucherUrl: ["outpatientVoucherUrl", "outpatientVoucher", "请上传门诊凭证"]
+  outpatientVoucherUrl: ["outpatientVoucherUrl", "outpatientVoucher", "请上传门诊凭证"],
+  bloodType: ["bloodType", "血型"],
+  heightCm: ["heightCm", "身高", "身高(cm)"],
+  weightKg: ["weightKg", "体重", "体重(kg)"],
+  healthNotes: ["healthNotes", "健康备注"]
 };
 
 function checkboxGroupMeta(options) {
@@ -251,8 +257,27 @@ function extractProfileFromPayload(payload) {
     diseaseHistory: parseCheckboxPayload(pickPayloadValue(p, "diseaseHistory")),
     outpatientVoucherUrl: pickPayloadValue(p, "outpatientVoucherUrl") != null
       ? String(pickPayloadValue(p, "outpatientVoucherUrl")).trim()
-      : ""
+      : "",
+    bloodType: pickPayloadValue(p, "bloodType") != null ? String(pickPayloadValue(p, "bloodType")).trim() : "",
+    heightCm: pickPayloadValue(p, "heightCm") != null ? String(pickPayloadValue(p, "heightCm")).trim() : "",
+    weightKg: pickPayloadValue(p, "weightKg") != null ? String(pickPayloadValue(p, "weightKg")).trim() : "",
+    healthNotes: pickPayloadValue(p, "healthNotes") != null ? String(pickPayloadValue(p, "healthNotes")).trim() : ""
   };
+}
+
+function extraProfileFields(extracted) {
+  const ex = extracted && typeof extracted === "object" ? extracted : {};
+  const heightCm = String(ex.heightCm || "").trim();
+  const weightKg = String(ex.weightKg || "").trim();
+  const bloodType = String(ex.bloodType || "").trim();
+  const healthNotes = String(ex.healthNotes || "").trim();
+  const out = {};
+  if (bloodType) out.bloodType = bloodType;
+  if (heightCm) out.heightCm = heightCm;
+  if (weightKg) out.weightKg = weightKg;
+  if (healthNotes) out.healthNotes = healthNotes;
+  if (heightCm && weightKg) out.bmi = computeBmi(heightCm, weightKg);
+  return out;
 }
 
 function validateContactProfile(extracted) {
@@ -283,6 +308,16 @@ function validateContactProfile(extracted) {
   const voucherUrl = String(e.outpatientVoucherUrl || "").trim();
   if (voucherUrl && !/^\/api\/patient\/voucher\/[A-Za-z0-9_-]+$/.test(voucherUrl)) {
     errors.push("invalid_voucher_url");
+  }
+  const blood = String(e.bloodType || "").trim();
+  if (blood && !BLOOD_TYPE_OPTIONS.includes(blood)) errors.push("请选择有效血型");
+  for (const key of ["heightCm", "weightKg"]) {
+    const raw = String(e[key] || "").trim();
+    if (!raw) continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0 || n > 500) {
+      errors.push(key === "heightCm" ? "身高数值无效" : "体重数值无效");
+    }
   }
 
   return errors;
@@ -452,6 +487,7 @@ module.exports = {
   DRUG_ALLERGY_OPTIONS,
   DISEASE_HISTORY_OPTIONS,
   PREGNANCY_OPTIONS,
+  BLOOD_TYPE_OPTIONS,
   SMOKING_OPTIONS,
   DRINKING_OPTIONS,
   ADMIN_ONLY_FIELDS,
@@ -466,6 +502,7 @@ module.exports = {
   encodeFieldValue,
   decodeFieldValue,
   extractProfileFromPayload,
+  extraProfileFields,
   validateContactProfile,
   computeBmi,
   emptyAdminExtension,

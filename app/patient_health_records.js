@@ -18,6 +18,14 @@ function healthRecordCategoryMeta(key) {
   return HEALTH_RECORD_CATEGORIES.find((c) => c.key === key) || null;
 }
 
+function parseRecordRef(ref) {
+  const s = String(ref || "").trim();
+  if (!s) return 0;
+  if (/^\d+$/.test(s)) return +s;
+  const m = s.match(/-(\d+)$/);
+  return m ? +m[1] : 0;
+}
+
 function mapHealthRecordRow(r) {
   let extra = {};
   let attachments = [];
@@ -55,5 +63,15 @@ module.exports = {
   HEALTH_RECORD_CATEGORIES,
   HEALTH_RECORD_CATEGORY_KEYS,
   healthRecordCategoryMeta,
+  parseRecordRef,
   mapHealthRecordRow
 };
+
+if (require.main === module) {
+  const assert = require("assert");
+  assert.strictEqual(parseRecordRef("12"), 12);
+  assert.strictEqual(parseRecordRef("med-12"), 12);
+  assert.strictEqual(parseRecordRef("record-3"), 3);
+  assert.strictEqual(parseRecordRef(""), 0);
+  console.log("patient_health_records self-check ok");
+}

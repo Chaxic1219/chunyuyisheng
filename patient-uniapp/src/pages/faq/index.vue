@@ -19,7 +19,7 @@ function toggle(index: number) {
       <view class="faq-intro__icon radius bg-blue light"><AppIcon name="help-center" :size="34" /></view>
       <view>
         <text class="faq-intro__title">常见问题</text>
-        <text class="faq-intro__copy">关于春雨健康助手、服务时效与隐私保护的说明</text>
+        <text class="faq-intro__copy">关于在线咨询、服务时效与隐私保护的说明</text>
       </view>
     </view>
 

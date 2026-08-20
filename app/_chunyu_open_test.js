@@ -155,4 +155,20 @@ test("已有 jump_wxapp path 时不覆盖", () => {
   assert.equal(j.wxPath, "pages/open_login/index?token=a&session_id=b");
 });
 
+test("parseContentText 提取医生文字", () => {
+  const raw = "[{\"text\": \"请多休息\", \"type\": \"text\"}]";
+  assert.equal(open.parseContentText(raw), "请多休息");
+});
+
+test("chunyuPassword 稳定可复现", () => {
+  const env = { CHUNYU_PARTNER_KEY: "k1" };
+  assert.equal(open.chunyuPassword("p9", env), open.chunyuPassword("p9", env));
+  assert.match(open.chunyuPassword("p9", env), /^[a-f0-9]{16}$/);
+});
+
+test("isProblemClosed 识别关闭态", () => {
+  assert.equal(open.isProblemClosed("c"), true);
+  assert.equal(open.isProblemClosed("a"), false);
+});
+
 console.log("all chunyu_open tests passed");

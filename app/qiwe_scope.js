@@ -4,7 +4,7 @@
  * QiWe 展示作用域（与 AI 分诊台同口径）：
  * - 所有入档医生自动生效，不依赖 qiwe_configs.doctorId 二次绑定
  * - 按所选医生过滤；企微群消息再要求当前账号可见（qiwe_hidden=0）
- * - 企微私聊：按消息所属医生显示
+ * - 企微私聊：分诊台全医生共享可见（群消息仍按 doctor_id + 可见群）
  */
 
 function _alias(tableAlias){
@@ -43,6 +43,42 @@ AND NOT (
 }
 
 const MSGLOG_VISIBLE_IN_TRIAGE = msgLogVisibleInTriage("message_log");
+
+const QIWE_CHANNELS = "('qiwe','wecom','wework','qiwei')";
+
+function isQiweChannelSql(tableAlias){
+  const t = _alias(tableAlias);
+  return `lower(IFNULL(${t}.channel,'')) IN ${QIWE_CHANNELS}`;
+}
+
+/** 企微私聊行（channel 为企微且 group_id 为空）。 */
+function isQiweDmSql(tableAlias){
+  const t = _alias(tableAlias);
+  return `(${isQiweChannelSql(t)} AND (${t}.group_id IS NULL OR trim(${t}.group_id) = ''))`;
+}
+
+function isQiweDmRow(row){
+  if(!row) return false;
+  const ch = String(row.channel || "").toLowerCase();
+  if(!["qiwe","wecom","wework","qiwei"].includes(ch)) return false;
+  const gid = row.group_id;
+  return gid == null || !String(gid).trim();
+}
+
+/** 分诊列表 doctor 维度：群消息归所属医生；企微私聊跨医生共享。 */
+function messageLogTriageDoctorWhere(tableAlias){
+  const t = _alias(tableAlias);
+  return `(${t}.doctor_id = ? OR ${isQiweDmSql(t)})`;
+}
+
+/** 分诊台渠道筛选：dm=仅私聊，group=仅群聊。 */
+function messageLogChannelFilterSql(channel, tableAlias){
+  const t = _alias(tableAlias);
+  const c = String(channel || "").trim().toLowerCase();
+  if(c === "dm") return ` AND ${isQiweDmSql(t)}`;
+  if(c === "group") return ` AND ${t}.group_id IS NOT NULL AND trim(${t}.group_id) != ''`;
+  return "";
+}
 
 /**
  * 企微可见作用域 SQL 片段。
@@ -99,6 +135,11 @@ AND NOT EXISTS (
 module.exports = {
   MSGLOG_VISIBLE_IN_TRIAGE,
   msgLogVisibleInTriage,
+  isQiweChannelSql,
+  isQiweDmSql,
+  isQiweDmRow,
+  messageLogTriageDoctorWhere,
+  messageLogChannelFilterSql,
   buildQiweTriageScope,
   messageLogDisplayScope,
   GROUP_QIWE_VISIBLE,

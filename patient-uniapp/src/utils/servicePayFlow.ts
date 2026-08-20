@@ -3,6 +3,7 @@ import {
   payServiceOrder,
   type WechatPrepay,
 } from "../api/servicePackage";
+import { requestOrderPaidSubscribe } from "./subscribeMessage";
 
 function sleep(ms: number) {
   return new Promise<void>((resolve) => {
@@ -55,6 +56,7 @@ async function pollUntilPaid(orderId: number, initialOrderStatus?: string): Prom
 export async function runServiceOrderPay(
   orderId: number
 ): Promise<{ paid: boolean; provider: string }> {
+  const subscribePromise = requestOrderPaidSubscribe();
   const pay = await payServiceOrder(orderId);
   const provider = String(pay.provider || pay.payment?.provider || "");
 

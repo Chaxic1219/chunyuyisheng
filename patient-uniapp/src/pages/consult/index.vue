@@ -4,13 +4,20 @@ import { onHide, onShareAppMessage, onShow } from "@dcloudio/uni-app";
 import { storeToRefs } from "pinia";
 import type { ChatMessage } from "@chunyu/patient-design/types";
 import AppIcon from "../../components/AppIcon.vue";
-import { postMpAiChat } from "../../api/aiChat";
+import {
+  formatDoctorPrice,
+  openChunyuDoctorPage,
+  postChunyuConsultRecommend,
+  postChunyuConsultReset,
+  postChunyuConsultSend,
+  type ChunyuRecommendDoctor,
+} from "../../api/chunyuConsult";
 import { ApiError, getMpToken } from "../../api/auth";
 import { useAppStore } from "../../stores/app";
 import { useAuthStore } from "../../stores/auth";
 import { useConsultationStore } from "../../stores/consultation";
+import { mpVisual } from "../../utils/mediaSrc";
 import {
-  CONTEXT_TURNS,
   clearMpAiTranscript,
   createMpAiSessionId,
   createMpAiIdentitySnapshot,
@@ -30,13 +37,18 @@ import { failAiSendStage, markAiSendStage } from "../../utils/aiSendStage";
 import { clearScopedStorage } from "../../utils/storageScope";
 import { syncCustomTabBar } from "../../utils/syncTabBar";
 import { createMpVoiceInput } from "../../utils/mpVoiceInput";
-import { launchChunyu } from "../../api/chunyuOpen";
 import type { AssistantRole } from "../../types/v32";
+
+type ConsultCardType = "report-guide" | "report-actions" | "photo-guide" | "photo-actions";
+type ConsultMessage = ChatMessage & {
+  cardType?: ConsultCardType;
+  showDisclaimer?: boolean;
+};
 
 const store = useAppStore();
 const auth = useAuthStore();
 const consultation = useConsultationStore();
-const { role: assistantRole, contextLine } = storeToRefs(consultation);
+const { role: assistantRole } = storeToRefs(consultation);
 const text = ref("");
 const sending = ref(false);
 const failedPayload = ref<{
@@ -46,18 +58,24 @@ const failedPayload = ref<{
 /** 待发送图片（data URL，最多 3 张，单张 ≤4MB） */
 const pendingImages = ref<string[]>([]);
 const sessionId = ref("");
-const messages = ref<ChatMessage[]>([]);
-const quickTopics = consultation.quickTopics;
+const messages = ref<ConsultMessage[]>([]);
+const attachExpanded = ref(false);
 const aiScope = computed(() => String(auth.storageScopeId || "").trim());
 let sendSeq = 0;
 let sendPending = false;
 /** 隐藏/卸载/清空会话时递增，用于作废仍在 await 的 onSend */
 let sendGate = 0;
 const aiRuntime = createMpAiRuntimeIsolation(createMpAiSessionId);
-const SEND_TIMEOUT_MS = 45000;
+const SEND_TIMEOUT_MS = 120000;
 const CONSULT_RETURN_URL = "/pages/consult/index";
-const lastMessageId = computed(() => `m-${messages.value[messages.value.length - 1]?.id || "welcome"}`);
+const lastMessageId = computed(() => {
+  if (messages.value.length) return `m-${messages.value[messages.value.length - 1]?.id}`;
+  return "scroll-spacer";
+});
 const canSend = computed(() => Boolean(text.value.trim()) || pendingImages.value.length > 0);
+const recommendedDoctors = ref<ChunyuRecommendDoctor[]>([]);
+const recommendLoading = ref(false);
+const lastUserAsk = ref("");
 const voiceRecording = ref(false);
 const voicePartial = ref("");
 const voiceInput = createMpVoiceInput({
@@ -92,17 +110,17 @@ function resetSendingState() {
   bumpSendGate();
 }
 
-function welcomeMessage(): ChatMessage {
-  return {
-    id: "welcome",
-    role: "assistant",
-    text: "",
-  };
+function resetToWelcome() {
+  typewriterToken += 1;
+  messages.value = [];
+  recommendedDoctors.value = [];
+  lastUserAsk.value = "";
+  attachExpanded.value = false;
 }
 
-const WELCOME_TEXT = "你好，我可以帮你梳理症状、报告和复诊安排。";
-const ICON_SHIELD = "/static/consult-ui/shield.png";
-const ICON_DOCTOR = "/static/consult-ui/doctor.png";
+const AI_DISCLAIMER = "AI生成仅供参考，不能代替医生诊断，如需治疗请咨询专业医生";
+const ICON_SHIELD = mpVisual("consult-ui/shield.png");
+const ICON_DOCTOR = mpVisual("consult-ui/doctor.png");
 const TYPEWRITER_MS = 28;
 let typewriterToken = 0;
 
@@ -143,18 +161,22 @@ function persistCurrentTranscript() {
 function hydrateMessagesForScope(scope: string) {
   typewriterToken += 1;
   if (isOpaqueMpAiStorageScope(scope)) {
-    const rows = loadMpAiTranscript(scope);
+    const rows = loadMpAiTranscript(scope) as ConsultMessage[];
     if (rows.length) {
-      messages.value = rows.map((row) => ({
-        id: row.id,
-        role: row.role,
-        text: row.text,
-      }));
+      messages.value = rows
+        .filter((row) => row.id !== "welcome")
+        .map((row) => ({
+          id: row.id,
+          role: row.role,
+          text: row.text,
+          attachments: row.attachments,
+          cardType: row.cardType,
+          showDisclaimer: row.showDisclaimer,
+        }));
       return;
     }
   }
-  messages.value = [welcomeMessage()];
-  void typewriterSet("welcome", WELCOME_TEXT);
+  messages.value = [];
 }
 
 async function appendAssistant(textValue: string) {
@@ -187,10 +209,8 @@ onShow(() => {
     }
     const scope = aiScope.value;
     if (!isOpaqueMpAiStorageScope(scope) || sendPending || sending.value) return;
-    const onlyWelcome =
-      messages.value.length === 0 ||
-      (messages.value.length === 1 && messages.value[0]?.id === "welcome");
-    if (!onlyWelcome) return;
+    const onlyEmpty = messages.value.length === 0;
+    if (!onlyEmpty) return;
     const rows = loadMpAiTranscript(scope);
     if (rows.length) hydrateMessagesForScope(scope);
   })();
@@ -200,12 +220,6 @@ onShareAppMessage(() => ({
   title: "春雨健康患者端",
   path: store.buildSharePath("/pages/consult/index"),
 }));
-
-function resetToWelcome() {
-  typewriterToken += 1;
-  messages.value = [welcomeMessage()];
-  void typewriterSet("welcome", WELCOME_TEXT);
-}
 
 watch(aiScope, (next, prev) => {
   if (next === prev) return;
@@ -269,6 +283,14 @@ function onClearChat() {
           () => {
             if (scope) clearMpAiTranscript(scope);
           },
+          () => {
+            const token = getMpToken();
+            if (token) void postChunyuConsultReset(token).catch(() => {});
+          },
+          () => {
+            recommendedDoctors.value = [];
+            lastUserAsk.value = "";
+          },
         ],
       });
       uni.showToast({ title: "已清空", icon: "success" });
@@ -301,9 +323,9 @@ function notifyAiIdentityChanged() {
 function requestAiConsentModal(): Promise<"confirm" | "cancel" | "fail"> {
   return new Promise((resolve) => {
     uni.showModal({
-      title: "AI 服务提示",
+      title: "服务提示",
       content:
-        "你的健康问题会发送至当前配置的 AI 服务进行处理。请不要填写非必要的姓名、证件号、联系方式等身份信息。",
+        "你的健康问题会发送至在线服务系统进行处理。请不要填写非必要的姓名、证件号、联系方式等身份信息。",
       // 微信 confirmText/cancelText 最多 4 个字符，超长会 fail 且不弹窗
       confirmText: "同意",
       cancelText: "暂不",
@@ -328,7 +350,7 @@ async function ensureAiConsentByScope(
       failAiSendStage("consent_ready", "同意弹窗打开失败，请重试");
     } else {
       markAiSendStage("blocked", { reason: "consent_cancel" });
-      uni.showToast({ title: "需同意后才能使用 AI 咨询", icon: "none" });
+      uni.showToast({ title: "需同意后才能继续咨询", icon: "none" });
     }
     return false;
   }
@@ -352,19 +374,6 @@ function redirectToBind() {
     url,
     fail: () => uni.navigateTo({ url }),
   });
-}
-
-function buildHistoryForApi(excludeText?: string) {
-  const rows = messages.value
-    .filter((m) => m.id !== "welcome" && m.text && (m.role === "user" || m.role === "assistant"))
-    .map((m) => ({
-      role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
-      text: String(m.text).slice(0, 500),
-    }));
-  const trimmed = excludeText
-    ? rows.filter((r, idx) => !(idx === rows.length - 1 && r.role === "user" && r.text === excludeText))
-    : rows;
-  return trimmed.slice(-CONTEXT_TURNS);
 }
 
 async function requestHealthReply(
@@ -391,24 +400,26 @@ async function requestHealthReply(
       notifyAiIdentityChanged();
       return;
     }
+    const consultText = payload.text.trim();
     markAiSendStage("request_started", {
       role: payload.role,
       doctorId: snapshot.doctorId,
     });
-    const { reply } = await postMpAiChat({
-      doctorId: String(snapshot.doctorId),
-      text: payload.text,
+    if (consultText) lastUserAsk.value = consultText;
+    const { reply, pending, recommendations } = await postChunyuConsultSend({
+      text: consultText,
       images: payload.images,
-      sessionId: sessionId.value,
-      history: buildHistoryForApi(payload.text),
-      assistantRole: payload.role === "life" ? "life" : "health",
-      pageContext: contextLine.value || undefined,
       authToken: snapshot.token,
     });
+    if (recommendations?.length) recommendedDoctors.value = recommendations;
     markAiSendStage("request_done");
     if (seq !== sendSeq || !isCurrentAiSnapshot(snapshot)) return;
     const id = String(reply?.id || `a-${Date.now()}`);
     const fullText = String(reply?.text || "");
+    if (pending && !fullText) {
+      if (seq === sendSeq) sending.value = false;
+      return;
+    }
     messages.value.push({
       ...reply,
       id,
@@ -433,7 +444,8 @@ async function requestHealthReply(
       uni.showToast({ title: "请求过于频繁，请稍后再试", icon: "none" });
     } else {
       failedPayload.value = { payload, snapshot };
-      const msg = err instanceof ApiError ? err.message : "发送失败，请稍后重试";
+      // 5xx 统一会显示“服务暂时不可用”，这里补上 code 方便定位（如 chunyu_upstream / chunyu_login_failed / chunyu_create_failed）。
+      const msg = err instanceof ApiError ? `${err.message}(${err.code})` : "发送失败，请稍后重试";
       uni.showToast({ title: msg.slice(0, 40), icon: "none" });
     }
   } finally {
@@ -459,7 +471,7 @@ async function requestReply(
   }
   if (payload.role === "handoff") {
     await appendAssistant(
-      "这个需求同时包含健康判断和服务办理。我会先由健康助手确认用药或风险边界，再请你确认是否把必要信息共享给生活管家继续办理。"
+      "这个需求同时涉及健康相关和服务办理。我会先确认用药或风险边界，再请你确认是否共享必要信息以便继续办理。"
     );
     return;
   }
@@ -597,10 +609,158 @@ async function onSend() {
   }
 }
 
-function sendQuickTopic(topic: string) {
+function toggleAttachMenu() {
+  attachExpanded.value = !attachExpanded.value;
+}
+
+function copyMessageText(value: string) {
+  const t = String(value || "").trim();
+  if (!t) return;
+  uni.setClipboardData({ data: t });
+}
+
+function pushGuideCards(mode: "report" | "photo") {
+  const stamp = Date.now();
+  if (mode === "report") {
+    messages.value.push({
+      id: `card-rg-${stamp}`,
+      role: "assistant",
+      text: "",
+      cardType: "report-guide",
+    });
+    messages.value.push({
+      id: `card-ra-${stamp}`,
+      role: "assistant",
+      text: "",
+      cardType: "report-actions",
+    });
+  } else {
+    messages.value.push({
+      id: `card-pg-${stamp}`,
+      role: "assistant",
+      text: "",
+      cardType: "photo-guide",
+    });
+    messages.value.push({
+      id: `card-pa-${stamp}`,
+      role: "assistant",
+      text: "",
+      cardType: "photo-actions",
+    });
+  }
+}
+
+async function onQuickAction(kind: "report" | "recommend" | "photo") {
   if (sending.value) return;
-  text.value = topic;
-  void onSend();
+  attachExpanded.value = false;
+  const label = kind === "report" ? "报告解读" : kind === "recommend" ? "推荐医生" : "拍图诊断";
+  messages.value.push({ id: `u-${Date.now()}`, role: "user", text: label });
+  persistCurrentTranscript();
+  if (kind === "report") {
+    pushGuideCards("report");
+    persistCurrentTranscript();
+    return;
+  }
+  if (kind === "photo") {
+    pushGuideCards("photo");
+    persistCurrentTranscript();
+    return;
+  }
+  messages.value.push({
+    id: `a-${Date.now()}`,
+    role: "assistant",
+    text: "您好，我可以通过您描述病症、科室、城市等信息，为您推荐符合条件的医生。",
+    showDisclaimer: true,
+  });
+  persistCurrentTranscript();
+  lastUserAsk.value = "我想咨询健康问题，请推荐合适的医生";
+  await refreshRecommendations();
+}
+
+function readImageFile(filePath: string, onOk: (dataUrl: string) => void) {
+  try {
+    const fs = uni.getFileSystemManager();
+    fs.readFile({
+      filePath,
+      encoding: "base64",
+      success: (readRes) => {
+        const b64 = String(readRes.data || "");
+        const bytes = Math.floor((b64.length * 3) / 4);
+        if (bytes > 4 * 1024 * 1024) {
+          uni.showToast({ title: "图片不能超过 4MB", icon: "none" });
+          return;
+        }
+        const lower = String(filePath).toLowerCase();
+        let mime = "image/jpeg";
+        if (lower.endsWith(".png")) mime = "image/png";
+        else if (lower.endsWith(".webp")) mime = "image/webp";
+        onOk(`data:${mime};base64,${b64}`);
+      },
+      fail: () => uni.showToast({ title: "图片读取失败", icon: "none" }),
+    });
+  } catch {
+    uni.showToast({ title: "图片读取失败", icon: "none" });
+  }
+}
+
+function chooseConsultImage(sourceType: ("album" | "camera")[], autoSendText?: string) {
+  if (pendingImages.value.length >= 3) {
+    uni.showToast({ title: "最多上传 3 张图片", icon: "none" });
+    return;
+  }
+  uni.chooseImage({
+    count: 1,
+    sizeType: ["compressed"],
+    sourceType,
+    success: (chooseRes) => {
+      const filePath = chooseRes.tempFilePaths && chooseRes.tempFilePaths[0];
+      if (!filePath) return;
+      readImageFile(filePath, (dataUrl) => {
+        pendingImages.value = [...pendingImages.value, dataUrl].slice(0, 3);
+        if (autoSendText) {
+          text.value = autoSendText;
+          void onSend();
+        }
+      });
+    },
+  });
+}
+
+function onTakePhoto(intent: "report" | "photo" | "general") {
+  attachExpanded.value = false;
+  const hint =
+    intent === "report"
+      ? "请协助解读这份检查报告，并给出健康建议。"
+      : intent === "photo"
+        ? "请根据图片帮我分析症状，并给出就医建议。"
+        : "";
+  chooseConsultImage(["camera"], hint || undefined);
+}
+
+function onPickAlbum(intent: "report" | "photo" | "general") {
+  attachExpanded.value = false;
+  const hint =
+    intent === "report"
+      ? "请协助解读这份检查报告，并给出健康建议。"
+      : intent === "photo"
+        ? "请根据图片帮我分析症状，并给出就医建议。"
+        : "";
+  chooseConsultImage(["album"], hint || undefined);
+}
+
+function onUploadPdf() {
+  attachExpanded.value = false;
+  uni.chooseMessageFile({
+    count: 1,
+    type: "file",
+    extension: ["pdf"],
+    success: () => {
+      uni.showToast({ title: "PDF 请转为清晰照片上传", icon: "none", duration: 2500 });
+    },
+    fail: () => {
+      uni.showToast({ title: "暂未选择文件", icon: "none" });
+    },
+  });
 }
 
 function applyVoiceResult(result: string) {
@@ -627,55 +787,7 @@ async function onVoiceToggle() {
 }
 
 function onAttachTap() {
-  uni.showActionSheet({
-    itemList: ["上传检查报告", "上传用药照片", "打开健康档案"],
-    success: (res) => {
-      if (res.tapIndex === 2) {
-        uni.navigateTo({ url: "/pages/records/index" });
-        return;
-      }
-      if (pendingImages.value.length >= 3) {
-        uni.showToast({ title: "最多上传 3 张图片", icon: "none" });
-        return;
-      }
-      uni.chooseImage({
-        count: 1,
-        sizeType: ["compressed"],
-        success: (chooseRes) => {
-          const filePath = chooseRes.tempFilePaths && chooseRes.tempFilePaths[0];
-          if (!filePath) return;
-          // 读取为 base64 data URL，前端校验大小与格式
-          try {
-            const fs = uni.getFileSystemManager();
-            fs.readFile({
-              filePath,
-              encoding: "base64",
-              success: (readRes) => {
-                const b64 = String(readRes.data || "");
-                const bytes = Math.floor((b64.length * 3) / 4);
-                if (bytes > 4 * 1024 * 1024) {
-                  uni.showToast({ title: "图片不能超过 4MB", icon: "none" });
-                  return;
-                }
-                const lower = String(filePath).toLowerCase();
-                let mime = "image/jpeg";
-                if (lower.endsWith(".png")) mime = "image/png";
-                else if (lower.endsWith(".webp")) mime = "image/webp";
-                else if (lower.endsWith(".gif")) mime = "image/gif";
-                pendingImages.value = [...pendingImages.value, `data:${mime};base64,${b64}`].slice(0, 3);
-                uni.showToast({ title: "图片已添加，可继续描述或直接发送", icon: "none" });
-              },
-              fail: () => {
-                uni.showToast({ title: "图片读取失败，请重试", icon: "none" });
-              },
-            });
-          } catch (e) {
-            uni.showToast({ title: "图片读取失败，请重试", icon: "none" });
-          }
-        },
-      });
-    },
-  });
+  toggleAttachMenu();
 }
 
 function removePendingImage(index: number) {
@@ -703,17 +815,34 @@ function retryFailed() {
   void requestReply(failedPayload.value.payload, failedPayload.value.snapshot);
 }
 
-async function openRealDoctor(kind: "graph" | "video" | "phone") {
-  const ok = await ensureLogin(CONSULT_RETURN_URL);
-  if (!ok) return;
-  await launchChunyu(kind, {
-    text: text.value.trim() || undefined,
-  });
+async function refreshRecommendations() {
+  const token = getMpToken();
+  const ask = lastUserAsk.value.trim() || messages.value.find((m) => m.role === "user")?.text?.trim() || "";
+  if (!token || !ask) {
+    uni.showToast({ title: "请先发送一条咨询", icon: "none" });
+    return;
+  }
+  recommendLoading.value = true;
+  try {
+    recommendedDoctors.value = await postChunyuConsultRecommend(token, ask);
+    if (!recommendedDoctors.value.length) {
+      uni.showToast({ title: "暂无匹配医生", icon: "none" });
+    }
+  } catch {
+    uni.showToast({ title: "获取推荐失败", icon: "none" });
+  } finally {
+    recommendLoading.value = false;
+  }
+}
+
+function onOpenRecommendDoctor(doctor: ChunyuRecommendDoctor) {
+  if (!doctor?.id) return;
+  void openChunyuDoctorPage(doctor.id);
 }
 </script>
 
 <template>
-  <view class="page" :class="{ elder: store.elderMode }">
+  <view class="page huiwen" :class="{ elder: store.elderMode }">
     <view class="safety-bar">
       <image class="safety-bar__icon" :src="ICON_SHIELD" mode="aspectFit" />
       <text class="safety-bar__text">如有急症，请立即线下就医</text>
@@ -723,11 +852,6 @@ async function openRealDoctor(kind: "graph" | "video" | "phone") {
     </view>
 
     <scroll-view scroll-y class="conversation" :scroll-into-view="lastMessageId">
-      <view v-if="assistantRole === 'handoff'" class="consent-card">
-        <text class="consent-card__title">需要共享必要上下文</text>
-        <text class="consent-card__desc">例如药品名称、当前用法、剩余数量和服务需求。共享前会再次确认。</text>
-      </view>
-
       <view
         v-for="message in messages"
         :id="`m-${message.id}`"
@@ -735,132 +859,232 @@ async function openRealDoctor(kind: "graph" | "video" | "phone") {
         class="message-row"
         :class="[`message-row--${message.role}`]"
       >
-        <view v-if="message.role !== 'user'" class="message-avatar">
-          <image class="message-avatar__img" :src="ICON_DOCTOR" mode="aspectFit" />
-        </view>
-        <view class="message-bubble">
-          <view class="message-bubble__content" :class="message.role === 'user' ? 'is-user' : 'is-assistant'">
-            <view v-if="message.attachments?.length" class="message-bubble__images">
-              <image
-                v-for="(img, idx) in message.attachments"
-                :key="idx"
-                class="message-bubble__img"
-                :src="img"
-                mode="aspectFill"
-                @tap="previewImage(img, message.attachments)"
-              />
+        <view v-if="message.cardType === 'report-guide'" class="guide-card">
+          <text class="guide-card__text">
+            请上传单张边框完整、图文清晰的检查报告图片或10M以内的体检报告文件。我将提供专业的医学解读，并且给出针对性健康建议
+          </text>
+          <view class="guide-card__tips">
+            <view class="guide-tip">
+              <AppIcon name="health-record" :size="26" tone="muted" />
+              <text class="guide-tip__title">平整放置</text>
             </view>
-            <text v-if="message.text" class="message-bubble__text">{{ message.text }}</text>
+            <view class="guide-tip">
+              <AppIcon name="camera" :size="26" tone="muted" />
+              <text class="guide-tip__title">完整拍摄</text>
+            </view>
           </view>
         </view>
+
+        <view v-else-if="message.cardType === 'report-actions'" class="action-card">
+          <text class="action-card__title">AI报告解读</text>
+          <view class="action-row pressable" aria-role="button" @click="onTakePhoto('report')">
+            <view class="action-row__left">
+              <AppIcon name="camera" :size="20" tone="primary" />
+              <text class="action-row__label">拍照</text>
+            </view>
+            <text class="action-row__btn">去拍照</text>
+          </view>
+          <view class="action-row pressable" aria-role="button" @click="onPickAlbum('report')">
+            <view class="action-row__left">
+              <AppIcon name="attachment" :size="20" tone="primary" />
+              <text class="action-row__label">上传照片</text>
+            </view>
+            <text class="action-row__btn">去上传</text>
+          </view>
+          <view class="action-row pressable" aria-role="button" @click="onUploadPdf">
+            <view class="action-row__left">
+              <AppIcon name="upload-record" :size="20" tone="primary" />
+              <text class="action-row__label">上传PDF文件</text>
+            </view>
+            <text class="action-row__btn">去上传</text>
+          </view>
+        </view>
+
+        <view v-else-if="message.cardType === 'photo-guide'" class="guide-card">
+          <text class="guide-card__text">
+            请上传单张拍摄清晰的身体部位图片，如皮肤患处、舌苔照片等，拍摄时需关闭美颜，保证患处位于画面中央。我将辅助您定位问题，并给出针对性建议。
+          </text>
+          <view class="guide-card__tips">
+            <view class="guide-tip">
+              <AppIcon name="camera" :size="26" tone="muted" />
+              <text class="guide-tip__title">清晰拍摄患处</text>
+            </view>
+            <view class="guide-tip">
+              <AppIcon name="attachment" :size="26" tone="muted" />
+              <text class="guide-tip__title">患处画面位于中央</text>
+            </view>
+          </view>
+        </view>
+
+        <view v-else-if="message.cardType === 'photo-actions'" class="action-card">
+          <text class="action-card__title">拍图诊断</text>
+          <view class="action-row pressable" aria-role="button" @click="onTakePhoto('photo')">
+            <view class="action-row__left">
+              <AppIcon name="camera" :size="20" tone="primary" />
+              <text class="action-row__label">拍照</text>
+            </view>
+            <text class="action-row__btn">去拍照</text>
+          </view>
+          <view class="action-row pressable" aria-role="button" @click="onPickAlbum('photo')">
+            <view class="action-row__left">
+              <AppIcon name="attachment" :size="20" tone="primary" />
+              <text class="action-row__label">上传照片</text>
+            </view>
+            <text class="action-row__btn">去上传</text>
+          </view>
+        </view>
+
+        <template v-else>
+          <view v-if="message.role !== 'user'" class="message-avatar">
+            <image class="message-avatar__img" :src="ICON_DOCTOR" mode="aspectFill" />
+          </view>
+          <view class="message-bubble">
+            <view class="message-bubble__content" :class="message.role === 'user' ? 'is-user' : 'is-assistant'">
+              <view v-if="message.attachments?.length" class="message-bubble__images">
+                <image
+                  v-for="(img, idx) in message.attachments"
+                  :key="idx"
+                  class="message-bubble__img"
+                  :src="img"
+                  mode="aspectFill"
+                  @tap="previewImage(img, message.attachments)"
+                />
+              </view>
+              <text v-if="message.text" class="message-bubble__text">{{ message.text }}</text>
+              <view v-if="message.showDisclaimer" class="message-bubble__footer">
+                <text class="message-bubble__disclaimer">{{ AI_DISCLAIMER }}</text>
+                <view class="message-bubble__tools">
+                  <text class="tool-icon pressable" @tap="copyMessageText(message.text)">复制</text>
+                </view>
+              </view>
+            </view>
+          </view>
+        </template>
       </view>
 
-      <view v-if="messages.length <= 1" class="quick-topics">
+      <scroll-view v-if="recommendedDoctors.length" scroll-x class="doctor-scroll" enable-flex>
         <view
-          v-for="topic in quickTopics"
-          :key="topic.label"
-          class="quick-topic pressable"
+          v-for="doc in recommendedDoctors"
+          :key="doc.id"
+          class="doctor-card pressable"
           aria-role="button"
-          @click="sendQuickTopic(topic.text)"
+          @click="onOpenRecommendDoctor(doc)"
         >
-          <image class="quick-topic__icon" :src="topic.iconSrc" mode="aspectFit" />
-          <text class="quick-topic__label">{{ topic.label }}</text>
+          <image class="doctor-card__avatar" :src="doc.image || ICON_DOCTOR" mode="aspectFill" />
+          <view class="doctor-card__body">
+            <view class="doctor-card__name-row">
+              <text class="doctor-card__name">{{ doc.name }}</text>
+              <text v-if="doc.isActive" class="doctor-card__online">在线</text>
+            </view>
+            <text class="doctor-card__meta">{{ doc.title }} · {{ doc.clinic }}</text>
+            <text class="doctor-card__hospital">{{ doc.hospitalGrade }} {{ doc.hospital }}</text>
+            <text class="doctor-card__good">{{ doc.goodAt }}</text>
+            <view class="doctor-card__foot">
+              <text class="doctor-card__price">{{ formatDoctorPrice(doc.priceFen) }}</text>
+              <text class="doctor-card__action">去春雨咨询</text>
+            </view>
+          </view>
         </view>
-      </view>
+      </scroll-view>
 
       <view v-if="sending" class="sending-state">
-        <text class="sending-state__dot">●</text>
-        <text> 正在等待健康助手回复…</text>
+        <AppIcon name="status-loading" :size="14" tone="primary" state="loading" />
+        <text>医生接诊中，请稍候…</text>
       </view>
       <view
         v-if="failedPayload"
-        class="failed-state"
+        class="failed-state pressable"
         aria-role="button"
-        aria-label="发送失败，点击重试"
         @click="retryFailed"
       >
         <AppIcon name="status-error" :size="24" tone="danger" />
         <view>
-          <text class="failed-state__title">回复请求发送失败</text>
-          <text class="failed-state__sub">您的消息已保留，点击这里重试</text>
+          <text class="failed-state__title">发送失败</text>
+          <text class="failed-state__sub">点击重试</text>
         </view>
         <AppIcon name="action-refresh" :size="18" tone="primary" />
       </view>
-      <view class="scroll-spacer" />
+      <view id="scroll-spacer" class="scroll-spacer" />
     </scroll-view>
 
-      <view class="real-doctor">
-        <text class="real-doctor__label">需要执业医生接诊</text>
-        <view class="real-doctor__row">
-          <view class="real-doctor__btn pressable" aria-role="button" @click="openRealDoctor('graph')">图文问诊</view>
-          <view class="real-doctor__btn pressable" aria-role="button" @click="openRealDoctor('video')">视频问诊</view>
-          <view class="real-doctor__btn pressable" aria-role="button" @click="openRealDoctor('phone')">电话问诊</view>
+    <view class="bottom-bar">
+      <view class="quick-bar">
+        <view class="quick-pill pressable" aria-role="button" @click="onQuickAction('report')">
+          <view class="quick-pill__icon">
+            <AppIcon name="health-record" :size="22" tone="primary" />
+          </view>
+          <text class="quick-pill__text">报告解读</text>
+        </view>
+        <view class="quick-pill pressable" aria-role="button" @click="onQuickAction('recommend')">
+          <view class="quick-pill__icon">
+            <AppIcon name="consult-doctor" :size="22" tone="primary" />
+          </view>
+          <text class="quick-pill__text">{{ recommendLoading ? "加载中" : "推荐医生" }}</text>
+        </view>
+        <view class="quick-pill pressable" aria-role="button" @click="onQuickAction('photo')">
+          <view class="quick-pill__icon">
+            <AppIcon name="camera" :size="22" tone="primary" />
+          </view>
+          <text class="quick-pill__text">拍图诊断</text>
         </view>
       </view>
 
-      <view class="composer-wrap">
-      <view v-if="voiceRecording" class="voice-recording" aria-live="polite">
-        <view class="voice-recording__panel">
-          <view class="voice-recording__pulse" aria-hidden="true" />
-          <text class="voice-recording__title">正在聆听</text>
-          <text class="voice-recording__hint">{{ voicePartial || "再次点击麦克风结束，识别结果将填入输入框" }}</text>
+      <view v-if="attachExpanded" class="attach-grid">
+        <view class="attach-item pressable" aria-role="button" @click="onTakePhoto('general')">
+          <view class="attach-item__icon"><AppIcon name="camera" :size="28" tone="primary" /></view>
+          <text>拍照</text>
+        </view>
+        <view class="attach-item pressable" aria-role="button" @click="onPickAlbum('general')">
+          <view class="attach-item__icon"><AppIcon name="attachment" :size="28" tone="primary" /></view>
+          <text>上传照片</text>
+        </view>
+        <view class="attach-item pressable" aria-role="button" @click="onUploadPdf">
+          <view class="attach-item__icon"><AppIcon name="upload-record" :size="28" tone="primary" /></view>
+          <text>上传文件</text>
         </view>
       </view>
+
       <view v-if="pendingImages.length" class="composer-previews">
         <view v-for="(img, idx) in pendingImages" :key="idx" class="composer-preview">
           <image class="composer-preview__img" :src="img" mode="aspectFill" @tap="previewImage(img, pendingImages)" />
-          <view class="composer-preview__remove pressable" aria-role="button" aria-label="移除图片" @click="removePendingImage(idx)">
-            <text>×</text>
+          <view class="composer-preview__remove pressable" @click="removePendingImage(idx)">
+            <AppIcon name="action-close" :size="14" tone="inverse" />
           </view>
         </view>
-        <text class="composer-previews__hint">发送后将随消息提交给 AI 识别</text>
       </view>
-      <view class="composer">
+
+      <view v-if="voiceRecording" class="voice-hint" aria-live="polite">
+        <text>{{ voicePartial || "正在聆听，再次点击结束" }}</text>
+      </view>
+
+      <view class="input-bar">
+        <view
+          class="input-bar__voice pressable"
+          :class="{ 'input-bar__voice--active': voiceRecording }"
+          aria-role="button"
+          @tap.stop="onVoiceToggle"
+        >
+          <view class="composer__mic" aria-hidden="true" />
+        </view>
         <input
           v-model="text"
-          class="composer__input"
+          class="input-bar__field"
           confirm-type="send"
-          placeholder="描述你的健康问题"
-          aria-label="描述你的健康问题"
+          placeholder="请描述一下你想咨询的健康问题～"
           :disabled="sending"
           @confirm="onSend"
         />
-        <view class="composer__actions">
-          <view
-            class="composer__action pressable"
-            :class="{ 'composer__action--recording': voiceRecording }"
-            aria-role="button"
-            :aria-label="voiceRecording ? '结束录音' : '开始语音输入'"
-            @tap.stop="onVoiceToggle"
-          >
-            <view class="composer__mic" aria-hidden="true" />
-          </view>
-          <view
-            class="composer__action pressable"
-            aria-role="button"
-            aria-label="上传资料"
-            @click="onAttachTap"
-          >
-            <AppIcon name="attachment" :size="20" tone="primary" />
-          </view>
-          <button
-            class="composer__action composer__action--send pressable"
-            :class="{
-              'composer__action--send-ready': canSend,
-              'composer__action--disabled': sending,
-            }"
-            :disabled="sending"
-            hover-class="composer__action--active"
-            aria-label="发送消息"
-            @tap.stop="onSend"
-          >
-            <AppIcon name="action-send" :size="18" tone="inverse" :state="sending ? 'loading' : 'idle'" />
-          </button>
+        <view class="input-bar__plus pressable" aria-role="button" @tap.stop="onAttachTap">
+          <AppIcon :name="attachExpanded ? 'action-close' : 'action-add'" :size="26" tone="primary" />
         </view>
-      </view>
-      <view class="composer-hint">
-        <view class="composer-hint__line" />
-        <text class="composer-hint__text">点击麦克风开始/结束录音；上拉可查看更多资料上传方式</text>
+        <view
+          class="input-bar__send pressable"
+          :class="{ 'input-bar__send--ready': canSend && !sending }"
+          aria-role="button"
+          @tap.stop="onSend"
+        >
+          <AppIcon name="action-send" :size="22" :tone="canSend && !sending ? 'inverse' : 'muted'" :state="sending ? 'loading' : 'idle'" />
+        </view>
       </view>
     </view>
   </view>
@@ -876,7 +1100,221 @@ async function openRealDoctor(kind: "graph" | "video" | "phone") {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #f5f7f6;
+}
+.elder.page {
+  bottom: calc(82px + env(safe-area-inset-bottom));
+}
+.page.huiwen {
+  background: #f3f4f6;
+}
+.guide-card,
+.action-card {
+  width: 100%;
+  background: #fff;
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+}
+.guide-card__text {
+  font-size: 14px;
+  line-height: 1.65;
+  color: #374151;
+}
+.guide-card__tips {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.guide-tip {
+  flex: 1;
+  min-height: 88px;
+  border-radius: 10px;
+  background: #f3f4f6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 8px;
+}
+.action-row__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.guide-tip__title {
+  font-size: 12px;
+  color: #6b7280;
+}
+.action-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+  margin-bottom: 10px;
+}
+.action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-top: 1px solid #f0f0f0;
+}
+.action-row__label {
+  font-size: 14px;
+  color: #374151;
+}
+.action-row__btn {
+  font-size: 13px;
+  color: #fff;
+  background: #2dbe8f;
+  padding: 6px 14px;
+  border-radius: 999px;
+}
+.message-bubble__content.is-user {
+  background: #2dbe8f;
+  color: #fff;
+}
+.message-bubble__footer {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f0f0f0;
+}
+.message-bubble__disclaimer {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.5;
+}
+.message-bubble__tools {
+  margin-top: 8px;
+}
+.tool-icon {
+  font-size: 12px;
+  color: #6b7280;
+}
+.bottom-bar {
+  flex: 0 0 auto;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  background: #f3f4f6;
+}
+.quick-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.quick-pill {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 46px;
+  background: #fff;
+  border-radius: 999px;
+  padding: 0 12px;
+  color: #374151;
+}
+.quick-pill__icon {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.quick-pill__text {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+.attach-grid {
+  display: flex;
+  gap: 12px;
+  padding: 12px 8px;
+  margin-bottom: 8px;
+  background: #fff;
+  border-radius: 14px;
+}
+.attach-item {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  color: #4b5563;
+}
+.attach-item__icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 6px;
+  border-radius: 14px;
+  background: #f3f4f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.input-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border-radius: 24px;
+  padding: 6px 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+.input-bar__voice {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #f3f4f6;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.input-bar__voice--active {
+  background: #fff0f0;
+}
+.input-bar__voice--active .composer__mic,
+.input-bar__voice--active .composer__mic::before,
+.input-bar__voice--active .composer__mic::after {
+  border-color: #d64545;
+  background: #d64545;
+}
+.input-bar__field {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  height: 44px;
+}
+.input-bar__plus,
+.input-bar__send {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #f3f4f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.input-bar__send--ready {
+  background: linear-gradient(145deg, #0a6843 0%, #0d7a4f 100%);
+  box-shadow: 0 4px 10px rgba(10, 104, 67, 0.22);
+}
+.voice-hint {
+  font-size: 12px;
+  color: #6b7280;
+  text-align: center;
+  margin-bottom: 6px;
+}
+.message-row--user {
+  justify-content: flex-end;
+}
+.message-row--user .message-bubble {
+  max-width: 78%;
+}
+.message-row--user .message-bubble__content.is-user {
+  border-radius: 16px 16px 4px 16px;
 }
 .elder.page {
   bottom: calc(82px + env(safe-area-inset-bottom));
@@ -909,6 +1347,18 @@ async function openRealDoctor(kind: "graph" | "video" | "phone") {
   padding: 2px 4px;
   color: #6a756f;
   font-size: 12px;
+}
+.ai-notice {
+  margin: 8px 14px 0;
+  padding: 8px 10px;
+  border: 1px solid #f1dfb9;
+  border-radius: 10px;
+  background: #fff7e6;
+}
+.ai-notice__text {
+  color: #9a6700;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .conversation {
@@ -989,6 +1439,16 @@ async function openRealDoctor(kind: "graph" | "video" | "phone") {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.message-bubble__tag {
+  display: inline-flex;
+  margin-bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e8f2ff;
+  color: #2e5da8;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .message-bubble__images {
   display: flex;
   flex-wrap: wrap;
@@ -1034,12 +1494,12 @@ async function openRealDoctor(kind: "graph" | "video" | "phone") {
 }
 
 .sending-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 4px 50px 16px;
   color: #6a756f;
   font-size: var(--font-secondary, 16px);
-}
-.sending-state__dot {
-  color: #176b52;
 }
 .failed-state {
   display: flex;
@@ -1075,27 +1535,123 @@ async function openRealDoctor(kind: "graph" | "video" | "phone") {
   padding: 8px 14px 10px;
   background: #f5f7f6;
 }
-.real-doctor {
+.service-panel {
   padding: 8px 14px 0;
   background: #f5f7f6;
 }
-.real-doctor__label {
-  display: block;
-  font-size: 12px;
-  color: #7a8699;
-  margin-bottom: 6px;
+.service-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
-.real-doctor__row {
+.service-panel__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f3a45;
+}
+.service-panel__badge {
+  font-size: 11px;
+  color: #1a6b4a;
+  background: #e8f5ee;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.service-panel__chips {
   display: flex;
   gap: 8px;
+  margin-bottom: 10px;
 }
-.real-doctor__btn {
+.service-chip {
   flex: 1;
   text-align: center;
   font-size: 13px;
   line-height: 32px;
   border-radius: 16px;
   background: #eef6f2;
+  color: #1a6b4a;
+}
+.service-chip--primary {
+  background: #1a6b4a;
+  color: #fff;
+}
+.service-panel__hint {
+  padding: 8px 0 4px;
+}
+.service-panel__hint text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #7a8699;
+}
+.doctor-scroll {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  padding-bottom: 8px;
+  white-space: nowrap;
+}
+.doctor-card {
+  display: inline-flex;
+  width: 248px;
+  flex: 0 0 auto;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(26, 43, 58, 0.06);
+}
+.doctor-card__avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  flex: 0 0 auto;
+  background: #eef2f5;
+}
+.doctor-card__body {
+  flex: 1;
+  min-width: 0;
+}
+.doctor-card__name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.doctor-card__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2a37;
+}
+.doctor-card__online {
+  font-size: 10px;
+  color: #1a6b4a;
+  background: #e8f5ee;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.doctor-card__meta,
+.doctor-card__hospital,
+.doctor-card__good {
+  display: block;
+  font-size: 11px;
+  color: #667085;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doctor-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+.doctor-card__price {
+  font-size: 14px;
+  font-weight: 600;
+  color: #d9480f;
+}
+.doctor-card__action {
+  font-size: 11px;
   color: #1a6b4a;
 }
 .voice-recording {

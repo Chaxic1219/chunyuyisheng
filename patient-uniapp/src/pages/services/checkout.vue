@@ -18,6 +18,7 @@ import {
   type ServiceProduct,
 } from "../../api/servicePackage";
 import { ensureLogin } from "../../utils/ensureLogin";
+import { mpVisual } from "../../utils/mediaSrc";
 import { runServiceOrderPay } from "../../utils/servicePayFlow";
 import {
   formatAddressLine,
@@ -345,10 +346,10 @@ function formatCents(cents: unknown) {
   return Number.isInteger(y) ? `¥${y}` : `¥${y.toFixed(2)}`;
 }
 
-const ICON_HEART = "/static/service-ui/health-heart.png";
-const ICON_USER = "/static/service-ui/user-outline.png";
-const ICON_HELP = "/static/service-ui/help.png";
-const ICON_WECHAT = "/static/service-ui/wechat.png";
+const ICON_HEART = mpVisual("service-ui/health-heart.png");
+const ICON_USER = mpVisual("service-ui/user-outline.png");
+const ICON_HELP = mpVisual("service-ui/help.png");
+const ICON_WECHAT = mpVisual("service-ui/wechat.png");
 
 const subtotalLabel = computed(() => formatCents(subtotalCents.value));
 
@@ -409,15 +410,17 @@ const contactDisplayPhone = computed(() => {
 
 const agreementsOk = computed(() => form.value.agreementAccepted && form.value.privacyAccepted);
 
-function toggleAgreements() {
-  const next = !agreementsOk.value;
-  form.value.agreementAccepted = next;
-  form.value.privacyAccepted = next;
+function toggleAgreementAccepted() {
+  form.value.agreementAccepted = !form.value.agreementAccepted;
 }
 
-function openAgreements() {
+function togglePrivacyAccepted() {
+  form.value.privacyAccepted = !form.value.privacyAccepted;
+}
+
+function openAgreements(type: "user" | "privacy" = "user") {
   uni.navigateTo({
-    url: "/pages/services/agreements",
+    url: `/pages/services/agreements?type=${type}`,
     fail: () => uni.showToast({ title: "可在我的服务中查看协议", icon: "none" }),
   });
 }
@@ -473,8 +476,8 @@ async function submit() {
         receiverName: form.value.receiverName,
         receiverPhone: form.value.receiverPhone,
         receiverAddress: form.value.receiverAddress,
-        agreementAccepted: true,
-        privacyAccepted: true,
+        agreementAccepted: !!form.value.agreementAccepted,
+        privacyAccepted: !!form.value.privacyAccepted,
         idempotencyKey: checkoutIdempotencyKey.value,
         sourceDoctorId: appStore.sourceDoctorId || cartDoctorId.value || undefined,
         sourceGroupId: appStore.sourceGroupId || undefined,
@@ -498,8 +501,8 @@ async function submit() {
       receiverName: form.value.receiverName,
       receiverPhone: form.value.receiverPhone,
       receiverAddress: form.value.receiverAddress,
-      agreementAccepted: true,
-      privacyAccepted: true,
+      agreementAccepted: !!form.value.agreementAccepted,
+      privacyAccepted: !!form.value.privacyAccepted,
       idempotencyKey: checkoutIdempotencyKey.value,
       sourceDoctorId: appStore.sourceDoctorId || undefined,
       sourceGroupId: appStore.sourceGroupId || undefined,
@@ -525,7 +528,7 @@ async function submit() {
       <view v-else class="card order-card">
         <view class="order-card__top">
           <view class="order-card__thumb">
-            <image class="order-card__thumb-img" src="/static/service-ui/health-heart.png" mode="aspectFit" />
+            <image class="order-card__thumb-img" :src="ICON_HEART" mode="aspectFit" />
           </view>
           <view class="order-card__main">
             <view class="order-card__title-row">
@@ -600,14 +603,19 @@ async function submit() {
       </view>
 
       <view class="card agree-card">
-        <view class="agree-card__row pressable" @click="toggleAgreements">
-          <view class="agree-card__box" :class="{ 'agree-card__box--on': agreementsOk }">
-            <text v-if="agreementsOk">✓</text>
+        <view class="agree-card__row pressable" @click="toggleAgreementAccepted">
+          <view class="agree-card__box" :class="{ 'agree-card__box--on': form.agreementAccepted }">
+            <text v-if="form.agreementAccepted">✓</text>
           </view>
           <text class="agree-card__text">我已阅读并同意</text>
-          <text class="agree-card__link" @click.stop="openAgreements">《服务协议》</text>
-          <text class="agree-card__text">与</text>
-          <text class="agree-card__link" @click.stop="openAgreements">《退款规则》</text>
+          <text class="agree-card__link" @click.stop="openAgreements('user')">《服务协议》</text>
+        </view>
+        <view class="agree-card__row pressable" @click="togglePrivacyAccepted">
+          <view class="agree-card__box" :class="{ 'agree-card__box--on': form.privacyAccepted }">
+            <text v-if="form.privacyAccepted">✓</text>
+          </view>
+          <text class="agree-card__text">我已阅读并同意</text>
+          <text class="agree-card__link" @click.stop="openAgreements('privacy')">《隐私政策》</text>
         </view>
         <text class="agree-card__note">健康服务不替代急诊或线下诊疗</text>
       </view>

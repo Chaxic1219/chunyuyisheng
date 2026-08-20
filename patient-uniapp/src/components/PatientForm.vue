@@ -12,6 +12,18 @@ import AppIcon from "./AppIcon.vue";
 
 export type FormInitialValue = string | { values: string[]; other?: string };
 
+export type FormAccordionSection = {
+  id: string;
+  title: string;
+  fieldKeys: string[];
+  defaultOpen?: boolean;
+};
+
+export type FormValidateOptions = {
+  fieldKeys?: string[];
+  requireConsent?: boolean;
+};
+
 const props = withDefaults(
   defineProps<{
     config: FormConfig;
@@ -29,12 +41,34 @@ const props = withDefaults(
     hideIntro?: boolean;
     /** 提交按钮文案（默认「提交申请」） */
     submitLabel?: string;
+    /** 仅渲染指定字段（向导分步）；传 [] 表示不渲染主字段区 */
+    visibleFieldKeys?: string[];
+    /** 手风琴分组（第 3 步健康档案） */
+    accordionSections?: FormAccordionSection[];
+    /** 主字段区之后追加的字段（如步骤 3 门诊凭证） */
+    trailingFieldKeys?: string[];
+    /** 强制刷新字段区 DOM（切换步骤时用） */
+    fieldsRenderKey?: string | number;
+    /** 多选展示：list=原竖条；chip=标签 */
+    checkboxVariant?: "list" | "chip";
+    /** stack=标签在上；row=列表行（标签左值右） */
+    fieldLayout?: "stack" | "row";
+    hideSubmit?: boolean;
+    hideConsent?: boolean;
+    hidePrivacy?: boolean;
+    compact?: boolean;
   }>(),
   {
     archiveMode: "contact",
     smsAvailable: false,
     hideIntro: false,
     submitLabel: "提交申请",
+    checkboxVariant: "list",
+    fieldLayout: "stack",
+    hideSubmit: false,
+    hideConsent: false,
+    hidePrivacy: false,
+    compact: false,
   }
 );
 const emit = defineEmits<{ (e: "submitted", payload: Record<string, string>): void }>();
@@ -95,6 +129,71 @@ function isPhoneField(field: FormField) {
 
 function isFieldReadonly(field: FormField) {
   return phoneFieldLocked.value && isPhoneField(field);
+}
+
+const openSections = reactive<Record<string, boolean>>({});
+
+type FieldGroup = { id?: string; title?: string; fieldKeys: string[]; defaultOpen?: boolean };
+
+const displayGroups = computed((): FieldGroup[] => {
+  if (props.accordionSections?.length) {
+    return props.accordionSections.map((s) => ({
+      id: s.id,
+      title: s.title,
+      fieldKeys: s.fieldKeys,
+      defaultOpen: s.defaultOpen,
+    }));
+  }
+  const keys = props.visibleFieldKeys;
+  if (keys?.length) {
+    return [{ fieldKeys: keys }];
+  }
+  // 向导分步：无 keys 时不回退全量字段（否则会像「直接跳到步骤三」）
+  if (props.hideSubmit) {
+    return [];
+  }
+  return [{ fieldKeys: props.config.fields.map((f) => f.key) }];
+});
+
+const trailingFields = computed(() => {
+  const keys = props.trailingFieldKeys;
+  if (!keys?.length) return [];
+  const set = new Set(keys);
+  return props.config.fields.filter((f) => set.has(f.key));
+});
+
+watch(
+  () => props.accordionSections,
+  (sections) => {
+    sections?.forEach((s) => {
+      if (openSections[s.id] === undefined) openSections[s.id] = !!s.defaultOpen;
+    });
+  },
+  { immediate: true, deep: true }
+);
+
+function fieldsInGroup(group: FieldGroup) {
+  const set = new Set(group.fieldKeys);
+  return props.config.fields.filter((f) => set.has(f.key));
+}
+
+function isGroupOpen(group: FieldGroup) {
+  if (!group.id) return true;
+  return !!openSections[group.id];
+}
+
+function toggleGroup(group: FieldGroup) {
+  if (!group.id) return;
+  openSections[group.id] = !openSections[group.id];
+}
+
+function usesRowLayout(field: FormField) {
+  if (props.fieldLayout !== "row") return false;
+  if (field.type === "textarea") return false;
+  if (field.type === "checkboxGroup") return false;
+  if (field.type === "file" || field.key === "outpatientVoucher") return false;
+  if (field.type === "select" && (field.options || []).length === 2) return false;
+  return true;
 }
 
 function syncBoundPhone() {
@@ -217,6 +316,11 @@ function showCheckboxOther(field: FormField) {
 
 function onPick(key: string, options: string[], event: { detail: { value: number } }) {
   form[key] = options[event.detail.value] || "";
+  clearError(key);
+}
+
+function pickSegment(key: string, value: string) {
+  form[key] = value;
   clearError(key);
 }
 
@@ -568,13 +672,15 @@ function readCheckboxGroup(field: FormField) {
   return { values, other };
 }
 
-function validate() {
+function validate(opts?: FormValidateOptions) {
+  const keyFilter = opts?.fieldKeys?.length ? new Set(opts.fieldKeys) : null;
   Object.keys(errors).forEach((key) => {
     errors[key] = "";
   });
 
   let firstError = "";
   for (const field of props.config.fields) {
+    if (keyFilter && !keyFilter.has(field.key)) continue;
     if (field.type === "checkboxGroup") {
       const group = readCheckboxGroup(field);
       syncCheckboxForm(field);
@@ -607,12 +713,13 @@ function validate() {
     if (!firstError && errors[field.key]) firstError = errors[field.key];
   }
 
-  if (props.config.consent && !agreed.value) {
+  const needConsent = opts?.requireConsent ?? !props.hideConsent;
+  if (needConsent && props.config.consent && !props.hideConsent && !agreed.value) {
     errors.consent = "请阅读并勾选同意说明";
     if (!firstError) firstError = errors.consent;
   }
 
-  if (needsSmsVerification.value) {
+  if (!keyFilter && needsSmsVerification.value) {
     if (!smsCode.value.trim()) {
       errors.smsCode = "请输入短信验证码";
       if (!firstError) firstError = errors.smsCode;
@@ -746,7 +853,7 @@ async function submitInvite(extra?: { confirmMergePatientId?: number; forceCreat
 }
 
 async function onSubmit() {
-  if (submitting.value || submitted.value || !validate()) return;
+  if (submitting.value || submitted.value || !validate({ requireConsent: true })) return;
   if (!effectiveDoctorId.value) {
     submitError.value = "服务信息尚未加载，请稍后重试";
     return;
@@ -803,6 +910,11 @@ onUnmounted(() => {
   if (successTimer) clearTimeout(successTimer);
   if (smsCooldownTimer) clearInterval(smsCooldownTimer);
 });
+
+defineExpose({
+  validate,
+  submit: onSubmit,
+});
 </script>
 
 <template>
@@ -818,118 +930,333 @@ onUnmounted(() => {
       </view>
     </view>
 
-    <view class="patient-form__fields cu-list menu card-menu">
-      <view v-for="field in config.fields" :key="field.key" class="field cu-form-group align-start">
-        <text class="field__label title">
-          {{ field.label }}
-          <text v-if="field.required" class="field__required">*</text>
-        </text>
-
-        <picker
-          v-if="field.type === 'select'"
-          :range="field.options || []"
-          @change="onPick(field.key, field.options || [], $event)"
+    <view
+      class="patient-form__fields cu-list menu card-menu"
+      :key="fieldsRenderKey ?? 'default'"
+      :class="{ 'patient-form__fields--compact': compact, 'patient-form__fields--wizard': accordionSections?.length }"
+    >
+      <template v-for="group in displayGroups" :key="group.id || 'flat'">
+        <view
+          v-if="group.title"
+          class="form-accordion"
+          :class="{ 'is-open': isGroupOpen(group) }"
         >
-          <view class="field__control field__picker radius" :class="{ 'field__control--error': errors[field.key] }">
-            <text :class="{ 'field__placeholder': !form[field.key] }">{{ form[field.key] || "请选择" }}</text>
-            <AppIcon name="nav-chevron-right" :size="18" tone="muted" />
+          <view class="form-accordion__head pressable" @tap="toggleGroup(group)">
+            <text class="form-accordion__title">{{ group.title }}</text>
+            <AppIcon name="nav-chevron-right" :size="16" tone="muted" class="form-accordion__chev" :class="{ 'form-accordion__chev--open': isGroupOpen(group) }" />
           </view>
-        </picker>
-
-        <picker
-          v-else-if="field.type === 'date'"
-          mode="date"
-          :value="form[field.key] || ''"
-          @change="onDatePick(field.key, $event)"
-        >
-          <view class="field__control field__picker radius" :class="{ 'field__control--error': errors[field.key] }">
-            <text :class="{ 'field__placeholder': !form[field.key] }">{{ form[field.key] || "请选择日期" }}</text>
-            <AppIcon name="nav-chevron-right" :size="18" tone="muted" />
-          </view>
-        </picker>
-
-        <view v-else-if="field.type === 'checkboxGroup'" class="field__checkbox-wrap">
-          <checkbox-group
-            :key="`${field.key}-${(checkboxValues[field.key] || []).join('|')}`"
-            class="field__checkbox-group"
-            @change="onCheckboxGroupChange(field, $event)"
-          >
-            <label
-              v-for="opt in field.options || []"
-              :key="opt"
-              class="field__check-item cu-tag radius"
+          <view v-show="isGroupOpen(group)" class="form-accordion__body">
+            <view
+              v-for="field in fieldsInGroup(group)"
+              :key="field.key"
+              class="field cu-form-group align-start"
+              :class="{ 'field--row': usesRowLayout(field) }"
             >
-              <checkbox
-                :value="opt"
-                :checked="isCheckboxChecked(field.key, opt)"
-                color="#456FD8"
+              <text class="field__label title">
+                {{ field.label }}
+                <text v-if="field.required" class="field__required">*</text>
+              </text>
+
+              <view
+                v-if="field.type === 'select' && (field.options || []).length === 2"
+                class="field__segment"
+                :class="{ 'field__control--error': errors[field.key] }"
+              >
+                <view
+                  v-for="opt in field.options"
+                  :key="opt"
+                  class="field__segment-item pressable"
+                  :class="{ 'is-on': form[field.key] === opt }"
+                  @tap="pickSegment(field.key, opt)"
+                >
+                  <text>{{ opt }}</text>
+                </view>
+              </view>
+
+              <picker
+                v-else-if="field.type === 'select'"
+                :range="field.options || []"
+                @change="onPick(field.key, field.options || [], $event)"
+              >
+                <view class="field__control field__picker radius" :class="{ 'field__control--error': errors[field.key] }">
+                  <text :class="{ 'field__placeholder': !form[field.key] }">{{ form[field.key] || "请选择" }}</text>
+                  <AppIcon name="nav-chevron-right" :size="18" tone="muted" />
+                </view>
+              </picker>
+
+              <picker
+                v-else-if="field.type === 'date'"
+                mode="date"
+                :value="form[field.key] || ''"
+                @change="onDatePick(field.key, $event)"
+              >
+                <view class="field__control field__picker radius" :class="{ 'field__control--error': errors[field.key] }">
+                  <text :class="{ 'field__placeholder': !form[field.key] }">{{ form[field.key] || "请选择日期" }}</text>
+                  <AppIcon name="nav-chevron-right" :size="18" tone="muted" />
+                </view>
+              </picker>
+
+              <view v-else-if="field.type === 'checkboxGroup'" class="field__checkbox-wrap">
+                <checkbox-group
+                  :key="`${field.key}-${(checkboxValues[field.key] || []).join('|')}`"
+                  class="field__checkbox-group"
+                  :class="{ 'field__checkbox-group--chip': checkboxVariant === 'chip' }"
+                  @change="onCheckboxGroupChange(field, $event)"
+                >
+                  <label
+                    v-for="opt in field.options || []"
+                    :key="opt"
+                    class="field__check-item cu-tag radius"
+                    :class="{
+                      'field__check-item--chip': checkboxVariant === 'chip',
+                      'is-checked': isCheckboxChecked(field.key, opt),
+                    }"
+                  >
+                    <checkbox
+                      :value="opt"
+                      :checked="isCheckboxChecked(field.key, opt)"
+                      :color="checkboxVariant === 'chip' ? '#2aa876' : '#456FD8'"
+                    />
+                    <text>{{ opt }}</text>
+                  </label>
+                </checkbox-group>
+                <input
+                  v-if="showCheckboxOther(field)"
+                  class="field__control field__other radius"
+                  :class="{ 'field__control--error': errors[field.key] }"
+                  :value="checkboxOthers[field.key] || ''"
+                  placeholder="请说明其他项"
+                  @input="onCheckboxOtherInput(field, $event)"
+                />
+              </view>
+
+              <view
+                v-else-if="field.type === 'file' || field.key === 'outpatientVoucher'"
+                class="field__upload radius"
+                :class="{
+                  'field__control--error': errors[field.key],
+                  'field__upload--filled': !!form[field.key],
+                  'field__upload--busy': uploading[field.key],
+                }"
+                @click="onUploadTap(field)"
+              >
+                <AppIcon
+                  :name="form[field.key] ? 'status-success' : 'upload-record'"
+                  :size="18"
+                  tone="primary"
+                  :state="uploading[field.key] ? 'loading' : 'idle'"
+                />
+                <text v-if="uploading[field.key]">上传中…</text>
+                <text v-else-if="form[field.key]">✓ 已上传 {{ voucherNames[field.key] || "凭证" }}</text>
+                <text v-else>＋ 点击上传（图片或 PDF，≤4MB）</text>
+              </view>
+
+              <textarea
+                v-else-if="field.type === 'textarea'"
+                v-model="form[field.key]"
+                class="field__control field__textarea radius"
+                :class="{ 'field__control--error': errors[field.key] }"
+                :placeholder="field.placeholder || `请输入${field.label}`"
+                :maxlength="500"
+                @input="clearError(field.key)"
               />
-              <text>{{ opt }}</text>
-            </label>
-          </checkbox-group>
-          <input
-            v-if="showCheckboxOther(field)"
-            class="field__control field__other radius"
-            :class="{ 'field__control--error': errors[field.key] }"
-            :value="checkboxOthers[field.key] || ''"
-            placeholder="请说明其他项"
-            @input="onCheckboxOtherInput(field, $event)"
-          />
+
+              <view
+                v-else-if="isFieldReadonly(field)"
+                class="field__control field__control--readonly radius"
+              >
+                <text>{{ form[field.key] || "—" }}</text>
+              </view>
+
+              <input
+                v-else
+                v-model="form[field.key]"
+                class="field__control radius"
+                :class="{ 'field__control--error': errors[field.key] }"
+                :type="field.type === 'phone' || field.type === 'tel' ? 'number' : 'text'"
+                :placeholder="field.placeholder || `请输入${field.label}`"
+                @input="clearError(field.key)"
+              />
+
+              <text v-if="errors[field.key]" class="field-error">{{ errors[field.key] }}</text>
+            </view>
+          </view>
         </view>
 
+        <template v-else>
+          <view
+            v-for="field in fieldsInGroup(group)"
+            :key="field.key"
+            class="field cu-form-group align-start"
+            :class="{ 'field--row': usesRowLayout(field) }"
+          >
+            <text class="field__label title">
+              {{ field.label }}
+              <text v-if="field.required" class="field__required">*</text>
+            </text>
+
+            <view
+              v-if="field.type === 'select' && (field.options || []).length === 2"
+              class="field__segment"
+              :class="{ 'field__control--error': errors[field.key] }"
+            >
+              <view
+                v-for="opt in field.options"
+                :key="opt"
+                class="field__segment-item pressable"
+                :class="{ 'is-on': form[field.key] === opt }"
+                @tap="pickSegment(field.key, opt)"
+              >
+                <text>{{ opt }}</text>
+              </view>
+            </view>
+
+            <picker
+              v-else-if="field.type === 'select'"
+              :range="field.options || []"
+              @change="onPick(field.key, field.options || [], $event)"
+            >
+              <view class="field__control field__picker radius" :class="{ 'field__control--error': errors[field.key] }">
+                <text :class="{ 'field__placeholder': !form[field.key] }">{{ form[field.key] || "请选择" }}</text>
+                <AppIcon name="nav-chevron-right" :size="18" tone="muted" />
+              </view>
+            </picker>
+
+            <picker
+              v-else-if="field.type === 'date'"
+              mode="date"
+              :value="form[field.key] || ''"
+              @change="onDatePick(field.key, $event)"
+            >
+              <view class="field__control field__picker radius" :class="{ 'field__control--error': errors[field.key] }">
+                <text :class="{ 'field__placeholder': !form[field.key] }">{{ form[field.key] || "请选择日期" }}</text>
+                <AppIcon name="nav-chevron-right" :size="18" tone="muted" />
+              </view>
+            </picker>
+
+            <view v-else-if="field.type === 'checkboxGroup'" class="field__checkbox-wrap">
+              <checkbox-group
+                :key="`${field.key}-${(checkboxValues[field.key] || []).join('|')}`"
+                class="field__checkbox-group"
+                :class="{ 'field__checkbox-group--chip': checkboxVariant === 'chip' }"
+                @change="onCheckboxGroupChange(field, $event)"
+              >
+                <label
+                  v-for="opt in field.options || []"
+                  :key="opt"
+                  class="field__check-item cu-tag radius"
+                  :class="{
+                    'field__check-item--chip': checkboxVariant === 'chip',
+                    'is-checked': isCheckboxChecked(field.key, opt),
+                  }"
+                >
+                  <checkbox
+                    :value="opt"
+                    :checked="isCheckboxChecked(field.key, opt)"
+                    :color="checkboxVariant === 'chip' ? '#2aa876' : '#456FD8'"
+                  />
+                  <text>{{ opt }}</text>
+                </label>
+              </checkbox-group>
+              <input
+                v-if="showCheckboxOther(field)"
+                class="field__control field__other radius"
+                :class="{ 'field__control--error': errors[field.key] }"
+                :value="checkboxOthers[field.key] || ''"
+                placeholder="请说明其他项"
+                @input="onCheckboxOtherInput(field, $event)"
+              />
+            </view>
+
+            <view
+              v-else-if="field.type === 'file' || field.key === 'outpatientVoucher'"
+              class="field__upload radius"
+              :class="{
+                'field__control--error': errors[field.key],
+                'field__upload--filled': !!form[field.key],
+                'field__upload--busy': uploading[field.key],
+              }"
+              @click="onUploadTap(field)"
+            >
+              <AppIcon
+                :name="form[field.key] ? 'status-success' : 'upload-record'"
+                :size="18"
+                tone="primary"
+                :state="uploading[field.key] ? 'loading' : 'idle'"
+              />
+              <text v-if="uploading[field.key]">上传中…</text>
+              <text v-else-if="form[field.key]">✓ 已上传 {{ voucherNames[field.key] || "凭证" }}</text>
+              <text v-else>＋ 点击上传（图片或 PDF，≤4MB）</text>
+            </view>
+
+            <textarea
+              v-else-if="field.type === 'textarea'"
+              v-model="form[field.key]"
+              class="field__control field__textarea radius"
+              :class="{ 'field__control--error': errors[field.key] }"
+              :placeholder="field.placeholder || `请输入${field.label}`"
+              :maxlength="500"
+              @input="clearError(field.key)"
+            />
+
+            <view
+              v-else-if="isFieldReadonly(field)"
+              class="field__control field__control--readonly radius"
+            >
+              <text>{{ form[field.key] || "—" }}</text>
+            </view>
+
+            <input
+              v-else
+              v-model="form[field.key]"
+              class="field__control radius"
+              :class="{ 'field__control--error': errors[field.key] }"
+              :type="field.type === 'phone' || field.type === 'tel' ? 'number' : 'text'"
+              :placeholder="field.placeholder || `请输入${field.label}`"
+              @input="clearError(field.key)"
+            />
+
+            <text v-if="errors[field.key]" class="field-error">{{ errors[field.key] }}</text>
+          </view>
+        </template>
+      </template>
+
+      <view v-if="trailingFields.length" class="form-trailing">
         <view
-          v-else-if="field.type === 'file' || field.key === 'outpatientVoucher'"
-          class="field__upload radius bg-blue light"
-          :class="{
-            'field__control--error': errors[field.key],
-            'field__upload--filled': !!form[field.key],
-            'field__upload--busy': uploading[field.key],
-          }"
-          @click="onUploadTap(field)"
+          v-for="field in trailingFields"
+          :key="field.key"
+          class="field cu-form-group align-start"
         >
-          <AppIcon
-            :name="form[field.key] ? 'status-success' : 'upload-record'"
-            :size="18"
-            tone="primary"
-            :state="uploading[field.key] ? 'loading' : 'idle'"
-          />
-          <text v-if="uploading[field.key]">上传中…</text>
-          <text v-else-if="form[field.key]">✓ 已上传 {{ voucherNames[field.key] || "凭证" }}</text>
-          <text v-else>＋ 点击上传（图片或 PDF，≤4MB）</text>
+          <text class="field__label title">{{ field.label }}</text>
+          <view
+            v-if="field.type === 'file' || field.key === 'outpatientVoucher'"
+            class="field__upload radius"
+            :class="{
+              'field__control--error': errors[field.key],
+              'field__upload--filled': !!form[field.key],
+              'field__upload--busy': uploading[field.key],
+            }"
+            @click="onUploadTap(field)"
+          >
+            <AppIcon
+              :name="form[field.key] ? 'status-success' : 'upload-record'"
+              :size="18"
+              tone="primary"
+              :state="uploading[field.key] ? 'loading' : 'idle'"
+            />
+            <text v-if="uploading[field.key]">上传中…</text>
+            <text v-else-if="form[field.key]">✓ 已上传 {{ voucherNames[field.key] || "凭证" }}</text>
+            <text v-else>＋ 点击上传（图片或 PDF，≤4MB）</text>
+          </view>
+          <text v-if="errors[field.key]" class="field-error">{{ errors[field.key] }}</text>
         </view>
-
-        <textarea
-          v-else-if="field.type === 'textarea'"
-          v-model="form[field.key]"
-          class="field__control field__textarea radius"
-          :class="{ 'field__control--error': errors[field.key] }"
-          :placeholder="field.placeholder || `请输入${field.label}`"
-          :maxlength="500"
-          @input="clearError(field.key)"
-        />
-
-        <view
-          v-else-if="isFieldReadonly(field)"
-          class="field__control field__control--readonly radius"
-        >
-          <text>{{ form[field.key] || "—" }}</text>
-        </view>
-
-        <input
-          v-else
-          v-model="form[field.key]"
-          class="field__control radius"
-          :class="{ 'field__control--error': errors[field.key] }"
-          :type="field.type === 'phone' || field.type === 'tel' ? 'number' : 'text'"
-          :placeholder="field.placeholder || `请输入${field.label}`"
-          @input="clearError(field.key)"
-        />
-
-        <text v-if="errors[field.key]" class="field-error">{{ errors[field.key] }}</text>
       </view>
     </view>
 
-    <view v-if="sessionPhoneHint" class="field field--session-hint cu-form-group">
+    <view
+      v-if="sessionPhoneHint && (!visibleFieldKeys?.length || visibleFieldKeys.includes('phone'))"
+      class="field field--session-hint cu-form-group"
+    >
       <text class="field__hint">{{ sessionPhoneHint }}</text>
     </view>
 
@@ -964,13 +1291,13 @@ onUnmounted(() => {
     </view>
 
     <checkbox-group
-      v-if="config.consent"
+      v-if="config.consent && !hideConsent"
       class="patient-form__consent cu-form-group radius pressable"
       :class="{ 'patient-form__consent--error': errors.consent }"
       @change="onConsentChange"
     >
       <label class="patient-form__consent-label">
-        <checkbox value="agreed" :checked="agreed" color="#456FD8" />
+        <checkbox value="agreed" :checked="agreed" color="#2aa876" />
         <view class="patient-form__consent-copy">
           <text class="patient-form__consent-text">我已阅读并同意</text>
           <text class="patient-form__consent-link pressable" @click.stop="openAgreement('user')">《用户协议》</text>
@@ -988,6 +1315,7 @@ onUnmounted(() => {
     </view>
 
     <button
+      v-if="!hideSubmit"
       class="patient-form__submit cu-btn round bg-green shadow pressable"
       :class="{ 'patient-form__submit--disabled': submitting }"
       :disabled="submitting"
@@ -1004,7 +1332,7 @@ onUnmounted(() => {
             : props.submitLabel
       }}</text>
     </button>
-    <view class="patient-form__privacy cu-tag round bg-grey light">
+    <view v-if="!hidePrivacy" class="patient-form__privacy cu-tag round bg-grey light">
       <AppIcon name="account-security" :size="22" tone="primary" />
       <text>信息仅用于本次医疗服务申请与后续服务跟进</text>
     </view>
@@ -1145,6 +1473,30 @@ onUnmounted(() => {
   justify-content: space-between;
 }
 
+.field__segment {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid #cfe6dc;
+  border-radius: 999px;
+  background: #f3faf7;
+}
+
+.field__segment-item {
+  flex: 1;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5f716b;
+  font-size: var(--font-secondary, 16px);
+  font-weight: 700;
+}
+
+.field__segment-item.is-on {
+  background: #2aa876;
+  color: #fff;
+}
+
 .field__placeholder {
   color: var(--text-placeholder, #637188);
 }
@@ -1159,6 +1511,12 @@ onUnmounted(() => {
   gap: var(--sp-2, 8px);
 }
 
+.field__checkbox-group--chip {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .field__check-item {
   display: flex;
   align-items: flex-start;
@@ -1169,6 +1527,160 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 
+.field__check-item--chip {
+  align-items: center;
+  margin: 0;
+  padding: 8px 14px;
+  border: 1px solid #e4ece8;
+  border-radius: 999px;
+  background: #f6faf8;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.field__check-item--chip.is-checked {
+  border-color: #2aa876;
+  background: #e4f6ee;
+  color: #1f8a64;
+  font-weight: 700;
+}
+
+.field__check-item--chip checkbox {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.field--row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid #eef2f0;
+}
+
+.field--row:last-child {
+  border-bottom: 0;
+}
+
+.field--row .field__label {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+  color: #6a756f;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.field--row .field__segment,
+.field--row .field__control,
+.field--row picker {
+  flex: 1 1 52%;
+  max-width: 68%;
+  margin-left: auto;
+}
+
+.field--row .field__control,
+.field--row .field__picker {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: right;
+  justify-content: flex-end;
+}
+
+.field--row .field__control--readonly {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #17201c;
+  font-weight: 600;
+  justify-content: flex-end;
+}
+
+.field--row .field__segment {
+  max-width: 100%;
+  flex: 0 0 100%;
+  margin-top: 10px;
+}
+
+.field--row .field-error {
+  flex: 0 0 100%;
+}
+
+.form-trailing {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #eef2f0;
+}
+
+.form-trailing .field__label {
+  margin-bottom: 10px;
+  color: #17201c;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.patient-form__fields--compact {
+  padding: 0;
+}
+
+.patient-form__fields--wizard {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.form-accordion {
+  margin-bottom: 10px;
+  overflow: hidden;
+  border: 1px solid #e8f0ec;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.form-accordion.is-open {
+  border-color: #cfe6dc;
+  box-shadow: 0 4px 16px rgba(16, 52, 40, 0.04);
+}
+
+.form-accordion__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px;
+}
+
+.form-accordion__title {
+  color: #17201c;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.form-accordion__chev {
+  transition: transform 0.2s ease;
+}
+
+.form-accordion__chev--open {
+  transform: rotate(90deg);
+}
+
+.form-accordion__body {
+  padding: 0 14px 12px;
+  border-top: 1px solid #f0f4f2;
+}
+
+.form-accordion__body .field:first-child {
+  margin-top: 8px;
+}
+
+.form-accordion__body .field + .field {
+  margin-top: 16px;
+}
+
 .field__other {
   margin-top: var(--sp-3, 12px);
 }
@@ -1177,20 +1689,20 @@ onUnmounted(() => {
   width: 100%;
   min-height: var(--touch-target, 44px);
   padding: var(--sp-3, 12px) var(--sp-4, 16px);
-  border: 1px dashed var(--line, #dce4f0);
+  border: 1px dashed #cfe6dc;
   border-radius: var(--r-md, 12px);
-  background: var(--surface-muted, #f7f9fd);
-  color: var(--text-placeholder, #637188);
-  font-size: var(--font-body, 18px);
+  background: #f6faf8;
+  color: #6a756f;
+  font-size: 14px;
   line-height: 1.5;
   text-align: center;
 }
 
 .field__upload--filled {
   border-style: solid;
-  border-color: var(--primary, #5d87ff);
-  background: #f0f4ff;
-  color: var(--primary-deep, #456fd8);
+  border-color: #2aa876;
+  background: #e8f7f0;
+  color: #1f8a64;
   font-weight: 600;
 }
 

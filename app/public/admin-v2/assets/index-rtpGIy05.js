@@ -1,0 +1,1 @@
+import{d as s,n as e,o as a,g as o,v as n}from"./index-CmZsz1Ey.js";const t=s({__name:"index",setup(s){const t=e();return a(()=>{t.replace("/ops/codes")}),(s,e)=>(n(),o("div"))}});export{t as default};

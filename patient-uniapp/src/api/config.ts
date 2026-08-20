@@ -23,3 +23,7 @@ export const PHONE_BIND_MODE: PhoneBindMode = "wechat";
 export function allowsSmsVerification(_smsAvailable: unknown): boolean {
   return false;
 }
+
+/** 订单支付成功订阅消息模板（微信公众平台申请） */
+export const ORDER_PAID_SUBSCRIBE_TMPL_ID =
+  "aWYt8x-Tcv_QGTT6E7awCdAd2tDHZa1Gu7tDZMRgYRQ";

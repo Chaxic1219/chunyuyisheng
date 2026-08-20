@@ -30,15 +30,27 @@ function ok(cond, msg) {
   assert.ok(doctor && doctor.id, "seed 有医生");
 
   const sys = mpAi.buildSystemPrompt();
-  ok(sys.includes("春雨健康小程序助手"), "prompt 独立身份");
-  ok(sys.includes("健康助手"), "默认 health prompt");
-  ok(mpAi.buildSystemPrompt("life").includes("生活管家"), "life prompt");
+  ok(sys.includes("医生团队的医助"), "prompt 黑箱医助人设");
+  ok(!sys.includes("春雨健康小程序助手"), "无旧小程序助手称呼");
+  ok(!sys.includes("当前角色：健康助手"), "无健康助手角色文案");
+  ok(mpAi.buildSystemPrompt("life").includes("预约"), "life prompt 保留就医服务范围");
+
+  ok(!mpAi.isMedicalConsultAllowed({ text: "今天天气不错" }).allowed, "闲聊拒答");
+  ok(mpAi.isMedicalConsultAllowed({ text: "术后饮食要注意什么" }).allowed, "医疗问题放行");
+  ok(mpAi.isMedicalConsultAllowed({ text: "帮我安排复诊" }).allowed, "就医服务放行");
+  ok(
+    mpAi.isMedicalConsultAllowed({
+      text: "三天了",
+      history: [{ role: "user", text: "我肚子有点痛" }],
+    }).allowed,
+    "医疗续轮放行"
+  );
 
   ok(mpAi.resolveConfig() === null, "无 Key 时 resolveConfig 为 null");
 
   let threw = false;
   try {
-    await mpAi.chat({ doctorId: doctor.id, text: "你好" });
+    await mpAi.chat({ doctorId: doctor.id, text: "术后饮食要注意什么" });
   } catch (e) {
     threw = e.code === "not_configured";
   }
@@ -86,6 +98,40 @@ function ok(cond, msg) {
   );
   ok(out.reply && out.reply.role === "assistant" && /清淡饮食/.test(out.reply.text), "mock 上游返回 reply");
   ok(out.sessionId === "sess-1", "回传 sessionId");
+  ok(out.model === "test-model", "内部 chat 仍保留 model 供审计");
+
+  const rejected = await mpAi2.chat({ doctorId: doctor.id, text: "今天天气不错，推荐个电影" });
+  ok(/健康、用药/.test(rejected.reply.text), "非医疗问题固定拒答");
+  ok(!rejected.model, "拒答分支不暴露 model");
+
+  let fetchCalled = false;
+  await mpAi2.chat(
+    { doctorId: doctor.id, text: "今天股票怎么样" },
+    {
+      fetchImpl: async () => {
+        fetchCalled = true;
+        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "不应出现" } }] }), text: async () => "" };
+      },
+    }
+  );
+  ok(!fetchCalled, "非医疗问题不调 LLM");
+
+  const leaked = await mpAi2.chat(
+    { doctorId: doctor.id, text: "我头疼怎么办" },
+    {
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return { choices: [{ message: { content: "我是 AI 助手，建议你休息。" } }] };
+        },
+        async text() {
+          return "";
+        },
+      }),
+    }
+  );
+  ok(!/AI/.test(leaked.reply.text), "泄漏回复被黑箱兜底");
 
   const llmConfig = require("./modules/llm_config.js");
   llmConfig.ensureSchema(db);
@@ -97,7 +143,7 @@ function ok(cond, msg) {
     ON CONFLICT(scene_id) DO UPDATE SET primary_model_id=excluded.primary_model_id,fallback_model_id=NULL,enabled=1`).run(modelId);
   delete process.env.MP_AI_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
-  const routeOnly = await mpAi2.chat({ text:"仅路由" }, { fetchImpl:async url => {
+  const routeOnly = await mpAi2.chat({ text:"报告结果怎么看" }, { fetchImpl:async url => {
     ok(String(url).includes("route-only.test"), "仅配置 mp_ai scene 时顶层 chat 仍请求路由模型");
     return { ok:true, status:200, json:async()=>({ choices:[{ message:{ content:"路由回复" } }] }), text:async()=>"" };
   }});

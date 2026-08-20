@@ -11,7 +11,7 @@ import { useAppStore } from "../../stores/app";
 import { useConsultationStore } from "../../stores/consultation";
 import { addCartItem, getServiceProduct, type SaleSku, type ServiceProduct } from "../../api/servicePackage";
 import { ensureLogin } from "../../utils/ensureLogin";
-import { safeLocalImageSrc } from "../../utils/mediaSrc";
+import { mpVisual, safeLocalImageSrc } from "../../utils/mediaSrc";
 import { launchChunyu } from "../../api/chunyuOpen";
 
 const serviceAssets = useServiceAssetsStore();
@@ -23,18 +23,18 @@ const selectedSku = ref<SaleSku | null>(null);
 const loading = ref(false);
 const favorited = ref(false);
 
-const ICON_HEART = "/static/service-ui/health-heart.png";
-const ICON_DOCTOR = "/static/service-ui/doctor.png";
-const ICON_CHECK = "/static/service-ui/check.png";
-const ICON_WARN = "/static/service-ui/warning.png";
-const ICON_BELL = "/static/service-ui/bell.png";
-const ICON_TREND = "/static/service-ui/trend.png";
-const ICON_CART = "/static/service-ui/cart.png";
-const ICON_CHECKLIST = "/static/service-ui/checklist.png";
-const ICON_SHIELD = "/static/service-ui/shield.png";
-const ICON_USER = "/static/service-ui/user-outline.png";
-const ICON_REPORT = "/static/service-ui/report.png";
-const ICON_BUTLER = "/static/service-ui/butler.png";
+const ICON_HEART = mpVisual("service-ui/health-heart.png");
+const ICON_DOCTOR = mpVisual("service-ui/doctor.png");
+const ICON_CHECK = mpVisual("service-ui/check.png");
+const ICON_WARN = mpVisual("service-ui/warning.png");
+const ICON_BELL = mpVisual("service-ui/bell.png");
+const ICON_TREND = mpVisual("service-ui/trend.png");
+const ICON_CART = mpVisual("service-ui/cart.png");
+const ICON_CHECKLIST = mpVisual("service-ui/checklist.png");
+const ICON_SHIELD = mpVisual("service-ui/shield.png");
+const ICON_USER = mpVisual("service-ui/user-outline.png");
+const ICON_REPORT = mpVisual("service-ui/report.png");
+const ICON_BUTLER = mpVisual("service-ui/butler.png");
 
 const PROCESS_STEPS = [
   { label: "购买", icon: ICON_CART },
@@ -299,7 +299,7 @@ async function openConsultDoctor() {
           <text>问诊费用另计，点击连接春雨执业医生</text>
         </view>
         <view class="consult-link pressable" aria-role="button" @click="consult">
-          <text>有疑问？问问健康助手</text>
+          <text>有疑问？在线咨询</text>
         </view>
         <view class="scroll-spacer" />
       </scroll-view>

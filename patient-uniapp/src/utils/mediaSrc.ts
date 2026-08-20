@@ -210,3 +210,15 @@ export function safeLocalImageSrc(src?: string | null, fallback = ""): string {
   if (value.startsWith("data:image/")) return value;
   return fallback;
 }
+
+/** 大插图走线上 /uploads/mp-visual，避免打进小程序主包 */
+export function mpVisual(rel: string, fallback = ""): string {
+  const name = String(rel || "").replace(/^\/+/, "").replace(/^static\//, "").replace(/^visual\//, "");
+  if (!name || name.includes("..")) return fallback;
+  // ponytail: 线上 mp-visual 可能缺文件导致 404；在 mp-weixin 端优先走小程序自身 static 包内资源。
+  // 升级路径：修复线上 mp-visual 完整供给后，可回到统一走 /uploads/mp-visual。
+  const wxObj = (globalThis as any)?.wx;
+  const isMpWeixin = Boolean(wxObj && typeof wxObj.getSystemInfoSync === "function");
+  const prefix = isMpWeixin ? "/static/mp-visual/" : "/uploads/mp-visual/";
+  return safeLocalImageSrc(`${prefix}${name}`, fallback);
+}

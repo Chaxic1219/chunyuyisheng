@@ -168,6 +168,16 @@ function idAllowedMatch(target, allowed){
   return false;
 }
 
+/* 患者主动私聊助手：receiver=助手账号、sender 非助手本人。testToId 白名单只管群范围，此类 DM 不要求患者 ID 预先入白名单。 */
+function isInboundDmToAssistant(evt, cfg){
+  if(!evt || evt.isGroup || evt.fromRoomId) return false;
+  const selfId = String((cfg && cfg.selfUserId) || "").trim();
+  if(!selfId) return false;
+  const receiverId = String(evt.receiverId || "").trim();
+  const senderId = String(evt.senderId || "").trim();
+  return receiverId === selfId && senderId !== "" && senderId !== selfId;
+}
+
 function idAllowed(evt, cfg){
   const targets = String((cfg && cfg.testToId) || "")
     .split(/[\s,，;；]+/)
@@ -180,6 +190,7 @@ function idAllowed(evt, cfg){
   if(evt.isGroup || evt.fromRoomId){
     return idAllowedMatch(evt.fromRoomId, allowed);
   }
+  if(isInboundDmToAssistant(evt, cfg)) return true;
   return [evt.senderId, evt.receiverId, evt.replyToId, evt.loggedInUserId].some(x=>idAllowedMatch(x, allowed));
 }
 
@@ -197,6 +208,7 @@ function idAllowedStrict(evt, cfg){
   if(evt.isGroup || evt.fromRoomId){
     return idAllowedMatch(evt.fromRoomId, allowed);
   }
+  if(isInboundDmToAssistant(evt, cfg)) return true;
   return [evt.senderId, evt.receiverId, evt.replyToId].some(x=>idAllowedMatch(x, allowed));
 }
 

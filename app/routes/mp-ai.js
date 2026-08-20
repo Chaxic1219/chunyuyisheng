@@ -250,7 +250,10 @@ function registerMpAiRoutes(route, ctx) {
       } catch (e) {
         return json(res, 500, { error: "audit_unavailable" });
       }
-      return json(res, 200, out);
+      return json(res, 200, {
+        reply: out.reply,
+        sessionId: out.sessionId,
+      });
     } catch (e) {
       const mapped = stableAiError(e);
       try {

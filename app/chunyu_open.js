@@ -177,14 +177,156 @@ function getJson(fullUrl) {
   });
 }
 
-async function createFreeProblem(userId, text, meta, env = process.env) {
+function chunyuPassword(userId, env = process.env) {
+  const c = cfg(env);
+  return crypto.createHash("sha256").update(String(c.partnerKey) + ":" + String(userId)).digest("hex").slice(0, 16);
+}
+
+function buildContentJson(text, meta, withMeta, imageUrls) {
+  const items = [];
+  if (withMeta) {
+    items.push({
+      type: "patient_meta",
+      age: (meta && meta.age) || "",
+      sex: (meta && meta.sex) || ""
+    });
+  }
+  const t = String(text || "").trim();
+  if (t) items.push({ type: "text", text: t.slice(0, 4000) });
+  for (const url of (imageUrls || []).slice(0, 3)) {
+    const u = String(url || "").trim();
+    if (/^https:\/\//i.test(u)) items.push({ type: "image", url: u });
+  }
+  if (!items.some((it) => it.type === "text" || it.type === "image")) {
+    items.push({ type: "text", text: "请查看我上传的图片资料" });
+  }
+  return JSON.stringify(items);
+}
+
+function parseContentText(raw) {
+  if (raw == null || raw === "") return "";
+  let arr = raw;
+  if (typeof raw === "string") {
+    try { arr = JSON.parse(raw); } catch (e) { return String(raw); }
+  }
+  if (!Array.isArray(arr)) return String(raw);
+  const parts = [];
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    if (item.type === "text" && item.text) parts.push(String(item.text));
+    else if (item.type === "image") parts.push("[图片]");
+  }
+  return parts.join("\n").trim();
+}
+
+function isProblemClosed(status) {
+  const s = String(status || "").toLowerCase();
+  return s === "c" || s === "p" || s === "closed";
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function syncLogin(userId, env = process.env) {
   const auth = authParams(userId, env);
-  const content = JSON.stringify([
-    { type: "patient_meta", age: (meta && meta.age) || "", sex: (meta && meta.sex) || "" },
-    { type: "text", text: String(text || "").slice(0, 4000) }
-  ]);
+  const body = Object.assign({}, auth, { password: chunyuPassword(userId, env) });
+  const { data } = await requestJson("POST", "/cooperation/server/login", body, env);
+  return data;
+}
+
+async function createFreeProblem(userId, text, meta, imageUrls, env = process.env) {
+  const auth = authParams(userId, env);
+  const content = buildContentJson(text, meta, true, imageUrls);
   const { data } = await requestJson("POST", "/cooperation/server/free_problem/create", Object.assign({}, auth, { content }), env);
   return data;
+}
+
+async function createProblemContent(userId, problemId, text, imageUrls, env = process.env) {
+  const auth = authParams(userId, env);
+  const content = buildContentJson(text, null, false, imageUrls);
+  const { data } = await requestJson("POST", "/cooperation/server/problem_content/create", Object.assign({}, auth, {
+    problem_id: String(problemId),
+    content
+  }), env);
+  return data;
+}
+
+async function getRecommendedDoctors(userId, ask, env = process.env) {
+  const auth = authParams(userId, env);
+  let askText = String(ask || "").trim();
+  if (askText.length < 10) askText = (askText || "健康咨询").slice(0, 10);
+  if (askText.length > 500) askText = askText.slice(0, 500);
+  const body = Object.assign({}, auth, { ask: askText });
+  const { data } = await requestJson("POST", "/cooperation/server/doctor/get_recommended_doctors", body, env);
+  return data;
+}
+
+function doctorPageH5Url(userId, doctorId, env = process.env) {
+  const c = cfg(env);
+  const host = String(c.host || "").replace(/\/$/, "");
+  const inner = host + "/pc/wx_qr_page/?doctor_id=" + encodeURIComponent(String(doctorId || ""))
+    + "&from_type=coop_api&order_type=graph";
+  return signedUrl("/cooperation/saas/login_redirect/", userId, { url: inner }, env);
+}
+
+function doctorMiniProgramJump(userId, doctorId, env = process.env) {
+  const c = cfg(env);
+  const h5Url = doctorPageH5Url(userId, doctorId, env);
+  return {
+    wxAppId: c.wxAppId,
+    wxPath: wxPathFromH5(h5Url, env),
+    h5Url,
+    wxEnvVersion: wxEnvVersion(env)
+  };
+}
+
+async function getProblemDetail(userId, problemId, lastContentId, env = process.env) {
+  const auth = authParams(userId, env);
+  const body = Object.assign({}, auth, { problem_id: String(problemId) });
+  if (lastContentId != null && lastContentId !== "") body.last_content_id = String(lastContentId);
+  const { data } = await requestJson("POST", "/cooperation/server/problem/detail", body, env);
+  return data;
+}
+
+async function pollDoctorReplies(userId, problemId, lastContentId, env = process.env, opts) {
+  const maxWait = (opts && opts.maxWaitMs) || 90000;
+  const interval = (opts && opts.intervalMs) || 2500;
+  const deadline = Date.now() + maxWait;
+  let cursor = Number(lastContentId) || 0;
+  let lastDetail = null;
+  while (Date.now() < deadline) {
+    const detail = await getProblemDetail(userId, problemId, cursor, env);
+    lastDetail = detail;
+    if (Number(detail.error) !== 0) {
+      return { error: detail.error, error_msg: detail.error_msg, detail };
+    }
+    const status = detail.problem && detail.problem.status;
+    const doctorReplies = (detail.content || [])
+      .filter((c) => c && c.type === "d")
+      .map((c) => ({
+        id: c.id,
+        text: parseContentText(c.content),
+        subtype: c.subtype || "",
+        created_time_ms: c.created_time_ms
+      }))
+      .filter((c) => c.text);
+    if (doctorReplies.length) {
+      return { detail, replies: doctorReplies, status, doctor: detail.doctor || null };
+    }
+    if (isProblemClosed(status)) {
+      return { detail, replies: [], status, closed: true, doctor: detail.doctor || null };
+    }
+    const ids = (detail.content || []).map((c) => Number(c.id)).filter((n) => n > 0);
+    if (ids.length) cursor = Math.max(cursor, ...ids);
+    await sleep(interval);
+  }
+  return {
+    pending: true,
+    status: (lastDetail && lastDetail.problem && lastDetail.problem.status) || "a",
+    detail: lastDetail,
+    doctor: lastDetail && lastDetail.doctor ? lastDetail.doctor : null
+  };
 }
 
 async function createExpertAppointment(userId, fields, env = process.env) {
@@ -331,6 +473,7 @@ module.exports = {
   sign,
   nowAtime,
   chunyuUserId,
+  chunyuPassword,
   authParams,
   h5Origin,
   signedUrl,
@@ -341,7 +484,17 @@ module.exports = {
   expertH5Url,
   ordersH5Url,
   jumpWxapp,
+  syncLogin,
+  buildContentJson,
+  parseContentText,
+  isProblemClosed,
   createFreeProblem,
+  createProblemContent,
+  getRecommendedDoctors,
+  doctorPageH5Url,
+  doctorMiniProgramJump,
+  getProblemDetail,
+  pollDoctorReplies,
   createExpertAppointment,
   verifyCallbackSign,
   wxPathFromJump,

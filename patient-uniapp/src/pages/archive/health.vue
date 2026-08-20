@@ -4,12 +4,17 @@ import { onShow } from "@dcloudio/uni-app";
 import type { HealthCategory, HealthRecord } from "@chunyu/patient-design/types";
 import { getMyHealthCategories, getMyHealthRecords } from "../../api/patient";
 import { getMpToken } from "../../api/auth";
-import { V32_VISUAL_ASSETS } from "../../constants/v32Assets";
+import {
+  HEALTH_RECORD_EMPTY,
+  HEALTH_RECORD_HERO,
+  healthRecordCategoryBg,
+  healthRecordCategoryIcon,
+} from "../../constants/healthRecordCategories";
 import { useAppStore } from "../../stores/app";
 import { useAuthStore } from "../../stores/auth";
 import AppButton from "../../components/AppButton.vue";
-import AppEmptyState from "../../components/AppEmptyState.vue";
 import AppIcon from "../../components/AppIcon.vue";
+import { ensureLogin } from "../../utils/ensureLogin";
 
 const store = useAppStore();
 const auth = useAuthStore();
@@ -38,14 +43,11 @@ async function loadRecords() {
 }
 
 onShow(async () => {
-  // 懒登录：浏览健康记录不强制登录；未登录静默空态，进入档案操作时再绑定。
-  // 冷启动缺陷修复（2026-08-05）：phoneBound 是内存态，已登录用户冷启动时为空，
-  // 必须先静默 refreshMe 恢复登录态，否则会误走空态（看不到已归档记录）。
   if (getMpToken() && !auth.phoneBound) {
     try {
       await auth.refreshMe();
     } catch {
-      /* token 失效或网络异常 → 按未登录处理（refreshMe 内部 401 已清 token） */
+      /* token 失效 → 按未登录处理 */
     }
   }
   if (auth.phoneBound && getMpToken()) {
@@ -63,6 +65,7 @@ const filtered = computed(() => {
 });
 
 const activeMeta = computed(() => cats.value.find((category) => category.key === active.value) || null);
+const recordsHeading = computed(() => (activeMeta.value ? activeMeta.value.label : "全部记录"));
 
 function pick(key: string) {
   active.value = active.value === key ? null : key;
@@ -71,112 +74,470 @@ function pick(key: string) {
 function showAll() {
   active.value = null;
 }
+
+function openRecord(record: HealthRecord) {
+  if (!record?.id) return;
+  uni.navigateTo({ url: `/pages/records/detail?id=${encodeURIComponent(String(record.id))}` });
+}
+
+async function addRecord() {
+  const ok = await ensureLogin("/pages/archive/health");
+  if (!ok) return;
+  uni.navigateTo({ url: "/pages/records/add" });
+}
+
+function openArchiveHub() {
+  uni.navigateTo({ url: "/pages/records/index" });
+}
 </script>
 
 <template>
-  <view class="page-shell ambient-bg safe-bottom health-page" :class="{ elder: store.elderMode }">
-    <view v-if="loading" class="state-card page-state">正在整理健康记录…</view>
-    <view v-else-if="error" class="state-card page-state">
+  <view class="health-page" :class="{ elder: store.elderMode }">
+    <view v-if="loading" class="page-state">正在整理健康记录…</view>
+    <view v-else-if="error" class="page-state">
       <AppIcon name="status-error" :size="29" tone="danger" />
       <text>{{ error }}</text>
       <AppButton label="重新加载" icon="action-refresh" size="sm" @tap="loadRecords" />
     </view>
 
     <template v-else>
-      <view class="intro-card cu-card radius shadow">
-        <view class="intro-icon radius bg-blue light"><AppIcon name="health-log" :size="34" /></view>
-        <view class="intro-copy">
-          <text class="intro-eyebrow">个人健康资料</text>
-          <text class="intro-title">按类型快速查找记录</text>
-          <text class="intro-sub">已收录 {{ records.length }} 份记录，资料仅用于为您提供服务</text>
+      <view class="intro-card">
+        <view class="intro-card__copy">
+          <view class="intro-card__eyebrow">
+            <AppIcon name="health-log" :size="18" />
+            <text>个人健康资料</text>
+          </view>
+          <text class="intro-card__title">快速查看健康记录</text>
+          <text class="intro-card__sub">
+            已收录 <text class="intro-card__count">{{ records.length }}</text> 份记录，资料仅用于为您提供服务
+          </text>
         </view>
+        <image class="intro-card__hero" :src="HEALTH_RECORD_HERO" mode="aspectFit" />
       </view>
 
-      <view class="section-bar">
-        <text class="section-heading">记录分类</text>
-        <AppButton v-if="active" label="查看全部" icon="nav-chevron-right" variant="ghost" size="sm" @tap="showAll" />
+      <view class="section-head">
+        <view class="section-head__bar" />
+        <text class="section-head__title">记录分类</text>
+        <text v-if="active" class="section-head__action pressable" @tap="showAll">查看全部</text>
       </view>
 
       <view class="category-grid">
         <view
           v-for="category in cats"
           :key="category.key"
-          class="category-card cu-card radius shadow pressable"
+          class="category-card pressable"
           :class="{ 'category-card--active': active === category.key }"
-          aria-role="button"
-          :aria-label="`${category.label}，${category.count || 0} 份记录`"
-          @click="pick(category.key)"
+          @tap="pick(category.key)"
         >
-          <view class="category-top">
-            <view class="category-icon radius bg-blue light"><AppIcon name="health-record" :size="27" /></view>
-            <text class="category-count">{{ category.count || 0 }}</text>
+          <view
+            class="category-card__icon"
+            :style="{ background: healthRecordCategoryBg(category.key) }"
+          >
+            <image
+              class="category-card__icon-img"
+              :src="healthRecordCategoryIcon(category.key)"
+              mode="aspectFit"
+            />
           </view>
-          <text class="category-label">{{ category.label }}</text>
-          <text class="category-hint">{{ category.hint }}</text>
-          <view class="category-accent" :style="{ background: category.color }" />
+          <view class="category-card__copy">
+            <text class="category-card__label">{{ category.label }}</text>
+            <text class="category-card__hint">{{ category.hint }}</text>
+          </view>
+          <view class="category-card__badge">{{ category.count || 0 }}</view>
         </view>
       </view>
 
-      <view class="section-bar records-heading">
-        <text class="section-heading">{{ activeMeta ? activeMeta.label : "全部记录" }}</text>
-        <text class="section-count">{{ filtered.length }} 份</text>
+      <view class="section-head section-head--records">
+        <view class="section-head__bar" />
+        <text class="section-head__title">{{ recordsHeading }}</text>
+        <text class="section-head__meta">{{ filtered.length }} 份</text>
       </view>
 
       <view v-if="filtered.length" class="record-list">
-        <view v-for="record in filtered" :key="record.id" class="record-card cu-card radius shadow">
-          <view class="record-date">
-            <AppIcon name="follow-up" :size="22" tone="muted" />
-            <text>{{ record.recordedAt }}</text>
+        <view
+          v-for="record in filtered"
+          :key="record.id"
+          class="record-card pressable"
+          @tap="openRecord(record)"
+        >
+          <view class="record-card__head">
+            <AppIcon name="follow-up" :size="18" tone="muted" />
+            <text class="record-card__date">{{ record.recordedAt }}</text>
           </view>
-          <text class="record-title">{{ record.title }}</text>
-          <text class="record-summary">{{ record.summary }}</text>
-          <view class="record-meta">
+          <text class="record-card__title">{{ record.title }}</text>
+          <text v-if="record.summary" class="record-card__summary">{{ record.summary }}</text>
+          <view class="record-card__foot">
             <text>{{ record.categoryLabel }}</text>
-            <AppIcon name="nav-chevron-right" :size="18" tone="muted" />
+            <AppIcon name="nav-chevron-right" :size="16" tone="muted" />
           </view>
         </view>
       </view>
 
-      <AppEmptyState
-        v-else
-        :visual="V32_VISUAL_ASSETS.healthRecordEmpty"
-        title="该分类暂无记录"
-        text="您可以查看其他分类，后续检查资料会持续归档在这里。"
-        action-label="返回全部记录"
-        @action="showAll"
-      />
+      <view v-else class="empty-card">
+        <image class="empty-card__visual" :src="HEALTH_RECORD_EMPTY" mode="aspectFit" />
+        <view class="empty-card__copy">
+          <text class="empty-card__title">该分类暂无记录</text>
+          <text class="empty-card__text">您可以查看其他分类，或补充新的健康记录。</text>
+          <view v-if="active" class="empty-card__btn pressable" @tap="showAll">
+            <text>返回全部记录</text>
+            <AppIcon name="nav-chevron-right" :size="16" />
+          </view>
+        </view>
+      </view>
     </template>
+
+    <view class="footer-bar">
+      <view class="footer-bar__primary pressable" @tap="addRecord">
+        <text class="footer-bar__plus">+</text>
+        <text>补充健康记录</text>
+      </view>
+      <view class="footer-bar__secondary pressable" @tap="openArchiveHub">
+        <AppIcon name="health-record" :size="18" />
+        <text>查看我的健康档案</text>
+      </view>
+    </view>
   </view>
 </template>
 
 <style scoped>
-.health-page { padding: 16px; }
-.page-state { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 32px; }
-.intro-card { display: flex; gap: 12px; padding: 16px; background: var(--surface, #fff); color: var(--text-strong, #2a3547); }
-.intro-icon { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 36px; height: 36px; }
-.intro-copy { min-width: 0; }
-.intro-eyebrow, .intro-title, .intro-sub { display: block; }
-.intro-eyebrow { color: var(--text-secondary, #5a6a85); font-size: var(--font-caption, 14px); font-weight: 500; }
-.intro-title { margin-top: 4px; font-size: var(--font-subheading, 19px); font-weight: 600; line-height: 1.35; color: var(--text-strong, #2a3547); }
-.intro-sub { margin-top: 6px; color: var(--text-secondary, #5a6a85); font-size: var(--font-secondary, 16px); line-height: 1.55; }
-.section-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 20px 0 10px; }
-.category-grid { display: flex; flex-wrap: wrap; gap: 10px; }
-.category-card { position: relative; width: calc(50% - 5px); min-height: 108px; overflow: hidden; padding: 12px; background: var(--surface, #fff); }
-.category-card--active { border-color: var(--primary, #5d87ff); background: var(--primary-soft, #ecf2ff); }
-.category-top { display: flex; align-items: center; justify-content: space-between; }
-.category-icon { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; }
-.category-count { color: var(--primary, #5d87ff); font-size: var(--font-subheading, 19px); font-weight: 600; }
-.category-label, .category-hint { display: block; }
-.category-label { margin-top: 10px; color: var(--text-strong, #2a3547); font-size: var(--font-secondary, 16px); font-weight: 600; line-height: 1.4; }
-.category-hint { margin-top: 2px; color: var(--text-secondary, #5a6a85); font-size: var(--font-caption, 14px); line-height: 1.45; }
-.category-accent { position: absolute; right: 0; bottom: 0; left: 0; height: 2px; opacity: .85; }
-.records-heading { margin-top: 24px; }
-.section-count { color: var(--text-secondary, #5a6a85); font-size: var(--font-secondary, 16px); }
-.record-list { display: flex; flex-direction: column; gap: 10px; }
-.record-card { padding: 14px; background: var(--surface, #fff); }
-.record-date, .record-meta { display: flex; align-items: center; gap: 8px; color: var(--text-secondary, #5a6a85); font-size: var(--font-caption, 14px); }
-.record-title, .record-summary { display: block; }
-.record-title { margin-top: 8px; color: var(--text-strong, #2a3547); font-size: var(--font-body, 18px); font-weight: 600; line-height: 1.4; }
-.record-summary { margin-top: 4px; color: var(--text-secondary, #5a6a85); font-size: var(--font-secondary, 16px); line-height: 1.55; }
-.record-meta { justify-content: space-between; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft, #eef2f6); }
+.health-page {
+  min-height: 100vh;
+  padding: 16px 16px calc(96px + env(safe-area-inset-bottom));
+  background: #f0f3f5;
+  box-sizing: border-box;
+}
+
+.page-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 48px;
+  color: #6a756f;
+  font-size: var(--font-secondary, 16px);
+}
+
+.intro-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(16, 52, 40, 0.06);
+}
+
+.intro-card__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.intro-card__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #2f6b4f;
+  font-size: var(--font-caption, 14px);
+  font-weight: 700;
+}
+
+.intro-card__title {
+  display: block;
+  margin-top: 8px;
+  color: #17201c;
+  font-size: var(--font-subheading, 19px);
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.intro-card__sub {
+  display: block;
+  margin-top: 6px;
+  color: #6a756f;
+  font-size: var(--font-caption, 14px);
+  line-height: 1.55;
+}
+
+.intro-card__count {
+  color: #2f6b4f;
+  font-weight: 800;
+}
+
+.intro-card__hero {
+  width: 88px;
+  height: 88px;
+  flex: 0 0 auto;
+  background: transparent;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 20px 0 12px;
+}
+
+.section-head--records {
+  margin-top: 24px;
+}
+
+.section-head__bar {
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: #2f6b4f;
+}
+
+.section-head__title {
+  flex: 1;
+  color: #17201c;
+  font-size: var(--font-secondary, 16px);
+  font-weight: 800;
+}
+
+.section-head__action,
+.section-head__meta {
+  color: #2f6b4f;
+  font-size: var(--font-caption, 14px);
+  font-weight: 700;
+}
+
+.section-head__meta {
+  color: #6a756f;
+  font-weight: 500;
+}
+
+.category-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.category-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: calc(50% - 5px);
+  padding: 12px;
+  border: 1px solid #e8eeea;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(16, 52, 40, 0.04);
+  box-sizing: border-box;
+}
+
+.category-card--active {
+  border-color: #2f6b4f;
+  background: #f4fbf7;
+}
+
+.category-card__icon {
+  display: flex;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+}
+
+.category-card__icon-img {
+  width: 34px;
+  height: 34px;
+  background: transparent;
+}
+
+.category-card__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.category-card__label,
+.category-card__hint {
+  display: block;
+}
+
+.category-card__label {
+  color: #17201c;
+  font-size: var(--font-caption, 14px);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.category-card__hint {
+  margin-top: 2px;
+  color: #6a756f;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.category-card__badge {
+  display: flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef2f0;
+  color: #6a756f;
+  font-size: var(--font-caption, 14px);
+  font-weight: 700;
+}
+
+.record-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.record-card {
+  padding: 14px;
+  border: 1px solid #e8eeea;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(16, 52, 40, 0.04);
+}
+
+.record-card__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6a756f;
+  font-size: var(--font-caption, 14px);
+}
+
+.record-card__title,
+.record-card__summary {
+  display: block;
+}
+
+.record-card__title {
+  margin-top: 8px;
+  color: #17201c;
+  font-size: var(--font-body, 18px);
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.record-card__summary {
+  margin-top: 4px;
+  color: #6a756f;
+  font-size: var(--font-secondary, 16px);
+  line-height: 1.55;
+}
+
+.record-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #edf1ee;
+  color: #6a756f;
+  font-size: var(--font-caption, 14px);
+}
+
+.empty-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #e8eeea;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(16, 52, 40, 0.04);
+}
+
+.empty-card__visual {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 auto;
+}
+
+.empty-card__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.empty-card__title,
+.empty-card__text {
+  display: block;
+}
+
+.empty-card__title {
+  color: #17201c;
+  font-size: var(--font-secondary, 16px);
+  font-weight: 800;
+}
+
+.empty-card__text {
+  margin-top: 4px;
+  color: #6a756f;
+  font-size: var(--font-caption, 14px);
+  line-height: 1.55;
+}
+
+.empty-card__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 6px 14px;
+  border: 1px solid #2f6b4f;
+  border-radius: 999px;
+  color: #2f6b4f;
+  font-size: var(--font-caption, 14px);
+  font-weight: 700;
+}
+
+.footer-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  gap: 10px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, rgba(240, 243, 245, 0) 0%, #f0f3f5 24%);
+}
+
+.footer-bar__primary,
+.footer-bar__secondary {
+  display: flex;
+  min-height: 48px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 14px;
+  font-size: var(--font-caption, 14px);
+  font-weight: 800;
+}
+
+.footer-bar__primary {
+  background: #0c4535;
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(12, 69, 53, 0.24);
+}
+
+.footer-bar__plus {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.footer-bar__secondary {
+  background: #e5f3ec;
+  color: #0c4535;
+}
+
+.health-page.elder .category-card__hint {
+  font-size: var(--font-caption, 14px);
+}
+
+.health-page.elder .intro-card__title {
+  font-size: var(--font-heading, 24px);
+}
 </style>

@@ -17,7 +17,7 @@ function safeLocalImageSrc(src, fallback = "") {
   return fallback;
 }
 
-assert.strictEqual(safeLocalImageSrc("/uploads/mall-covers/x.jpg"), "https://yht.chunyutianxia.com/uploads/mall-covers/x.jpg");
+assert.strictEqual(safeLocalImageSrc("/uploads/mp-visual/archive-hub/hero.png"), "https://yht.chunyutianxia.com/uploads/mp-visual/archive-hub/hero.png");
 assert.strictEqual(safeLocalImageSrc("uploads/mall-covers/x.jpg"), "https://yht.chunyutianxia.com/uploads/mall-covers/x.jpg");
 assert.strictEqual(safeLocalImageSrc("https://yht.chunyutianxia.com/uploads/x.jpg"), "https://yht.chunyutianxia.com/uploads/x.jpg");
 assert.strictEqual(safeLocalImageSrc(""), "");

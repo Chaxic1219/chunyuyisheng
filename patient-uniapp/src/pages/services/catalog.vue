@@ -12,7 +12,7 @@ import { getMyDoctors, type ConsultingDoctor } from "../../api/patient";
 import { useAppStore } from "../../stores/app";
 import { useAuthStore } from "../../stores/auth";
 import { ensureLogin } from "../../utils/ensureLogin";
-import { safeLocalImageSrc } from "../../utils/mediaSrc";
+import { mpVisual, safeLocalImageSrc } from "../../utils/mediaSrc";
 
 type DoctorOption = {
   doctorId: number;
@@ -29,9 +29,9 @@ const CATEGORIES = [
   { key: "other", label: "其他" },
 ] as const;
 
-const FEATURES = ["医生团队服务", "进度可追踪", "随时问助手"] as const;
-const ICON_DOCTOR = "/static/service-ui/doctor.png";
-const ICON_EMPTY = "/static/service-ui/butler.png";
+const FEATURES = ["医生团队服务", "进度可追踪", "随时问顾问"] as const;
+const ICON_DOCTOR = mpVisual("service-ui/doctor.png");
+const ICON_EMPTY = mpVisual("service-ui/butler.png");
 
 const appStore = useAppStore();
 const auth = useAuthStore();
@@ -450,7 +450,7 @@ async function openDoctorPanel() {
       <text class="empty__text">{{ emptyHint }}</text>
       <view class="empty__actions">
         <AppButton label="返回服务台" icon="nav-back" variant="primary" block @tap="openServices" />
-        <AppButton label="先去问助手" icon="nav-consult" variant="soft" block @tap="openConsult" />
+        <AppButton label="先去问顾问" icon="nav-consult" variant="soft" block @tap="openConsult" />
       </view>
     </view>
 

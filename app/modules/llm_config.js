@@ -8,12 +8,13 @@ function getDb() {
   return require("../db.js").db;
 }
 
-const SCENE_IDS = ["triage", "agent_draft", "science_reminder", "mp_ai", "health_probe"];
+const SCENE_IDS = ["triage", "agent_draft", "science_reminder", "mp_ai", "qiwe_dm", "health_probe"];
 const FALLBACK_ACTIONS = {
   triage: "local_rule_triage",
   agent_draft: "basic_template",
   science_reminder: "stop_and_alert",
   mp_ai: "safe_message",
+  qiwe_dm: "safe_message",
   health_probe: "log_error"
 };
 
@@ -65,6 +66,8 @@ function ensureSchema(database) {
     d.exec("ALTER TABLE llm_models ADD COLUMN multimodal INTEGER NOT NULL DEFAULT 0");
   }
 
+  ensureMissingSceneRoutes(d);
+
   if (d.prepare("SELECT COUNT(*) AS count FROM llm_models").get().count !== 0) return;
   const legacy = d.prepare("SELECT * FROM llm_global_config WHERE id=1").get();
   if (!legacy) {
@@ -92,6 +95,26 @@ function ensureSchema(database) {
   } catch (error) {
     d.exec("ROLLBACK TO llm_config_legacy_migration; RELEASE llm_config_legacy_migration");
     throw error;
+  }
+}
+
+/** 新增业务场景时幂等补路由行（默认复制 mp_ai 的模型分配）。 */
+function ensureMissingSceneRoutes(d){
+  const existing = new Set(d.prepare("SELECT scene_id FROM llm_scene_routes").all().map(r => r.scene_id));
+  const missing = SCENE_IDS.filter(id => !existing.has(id));
+  if(!missing.length) return;
+  const mp = d.prepare("SELECT primary_model_id,fallback_model_id,enabled FROM llm_scene_routes WHERE scene_id='mp_ai'").get();
+  const anyModel = d.prepare("SELECT id FROM llm_models WHERE enabled=1 ORDER BY id LIMIT 1").get();
+  const modelId = (mp && mp.primary_model_id) || (anyModel && anyModel.id);
+  if(!modelId) return;
+  const ts = nowIso();
+  const ins = d.prepare(`INSERT OR IGNORE INTO llm_scene_routes
+    (scene_id,primary_model_id,fallback_model_id,fallback_action,enabled,updated_at,updated_by)
+    VALUES(?,?,?,?,?,?,?)`);
+  for(const sceneId of missing){
+    const fb = (sceneId === "qiwe_dm" && mp && mp.fallback_model_id != null) ? mp.fallback_model_id : null;
+    const en = (sceneId === "qiwe_dm" && mp) ? mp.enabled : 1;
+    ins.run(sceneId, modelId, fb, FALLBACK_ACTIONS[sceneId], en, ts, "schema-migration");
   }
 }
 
@@ -304,7 +327,7 @@ function saveRoutes(routes, username, database) {
   const d = database || getDb();
   ensureSchema(d);
   if (!Array.isArray(routes) || routes.length !== SCENE_IDS.length) {
-    throw llmError("LLM_VALIDATION", "Routes must contain exactly five scenes");
+    throw llmError("LLM_VALIDATION", "Routes must contain every configured scene");
   }
   const sceneIds = routes.map((route) => String(route && route.sceneId || ""));
   if (new Set(sceneIds).size !== sceneIds.length) throw llmError("LLM_VALIDATION", "Duplicate scene");
@@ -530,6 +553,12 @@ function getPublic(database) {
       {
         id: "mp_ai",
         name: "小程序 AI",
+        usesGlobal: true,
+        available: !!runtime
+      },
+      {
+        id: "qiwe_dm",
+        name: "企微私聊 AI",
         usesGlobal: true,
         available: !!runtime
       },

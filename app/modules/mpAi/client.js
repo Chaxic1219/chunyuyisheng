@@ -44,8 +44,9 @@ function resolveConfig() {
  * @param {{ messages: Array<{role:string, content: string | Array<{type:string, text?:string, image_url?:{url:string}}>}>, temperature?: number, max_tokens?: number }} opts
  * @param {{ fetchImpl?: typeof fetch }} [deps]
  */
-async function chatCompletions(opts, deps) {
+async function chatCompletions(opts, deps, sceneId){
   const fetchImpl = (deps && deps.fetchImpl) || globalThis.fetch;
+  const sid = String(sceneId || "mp_ai").trim() || "mp_ai";
   if (typeof fetchImpl !== "function") {
     const err = new Error("fetch_unavailable");
     err.code = "upstream_error";
@@ -53,7 +54,7 @@ async function chatCompletions(opts, deps) {
   }
   try {
     const llmConfig = require("../llm_config.js");
-    return await llmConfig.runWithFallback("mp_ai", async (cfg) => {
+    return await llmConfig.runWithFallback(sid, async (cfg) => {
       const body = { model: cfg.model, messages: opts.messages,
         temperature: opts.temperature != null ? opts.temperature : 0.7,
         max_tokens: opts.max_tokens != null ? opts.max_tokens : 1000 };

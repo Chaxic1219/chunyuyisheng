@@ -1363,6 +1363,10 @@ route("POST", /^\/api\/submit$/, async (req,res)=>{
       "食物、接触物过敏": contactExtracted.foodContactAllergies,
       "药物过敏": contactExtracted.drugAllergies,
       "疾病史": contactExtracted.diseaseHistory,
+      "血型": contactExtracted.bloodType || "",
+      "身高": contactExtracted.heightCm || "",
+      "体重": contactExtracted.weightKg || "",
+      "健康备注": contactExtracted.healthNotes || "",
       "请上传门诊凭证": contactExtracted.outpatientVoucherUrl,
       outpatientVoucherUrl: contactExtracted.outpatientVoucherUrl
     });
@@ -1454,7 +1458,8 @@ route("POST", /^\/api\/submit$/, async (req,res)=>{
           pregnancyStatus: ex.pregnancyStatus || "",
           foodContactAllergies: ex.foodContactAllergies,
           drugAllergies: ex.drugAllergies,
-          diseaseHistory: ex.diseaseHistory
+          diseaseHistory: ex.diseaseHistory,
+          ...patientProfile.extraProfileFields(ex)
         }, "patient", "patient");
         writeVoucherHealthRecord(b.doctorId, pid, contactVoucherUrl);
         const submission = db.prepare(
@@ -1551,7 +1556,8 @@ function applyInviteProfileToPatient(doctorId, pid, extracted, voucherUrl){
       pregnancyStatus: ex.pregnancyStatus || "",
       foodContactAllergies: ex.foodContactAllergies,
       drugAllergies: ex.drugAllergies,
-      diseaseHistory: ex.diseaseHistory
+      diseaseHistory: ex.diseaseHistory,
+      ...patientProfile.extraProfileFields(ex)
     },
     "invite",
     "patient"

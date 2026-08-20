@@ -30,7 +30,8 @@ def optimize_file(path: Path) -> tuple[int, int]:
 
 def main() -> None:
     if not VISUAL_DIR.is_dir():
-        raise SystemExit(f"missing {VISUAL_DIR}")
+        print("visual dir absent (remote mp-visual); skip")
+        return
     total_before = 0
     total_after = 0
     for path in sorted(VISUAL_DIR.glob("*.png")):

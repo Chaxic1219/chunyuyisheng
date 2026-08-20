@@ -658,9 +658,18 @@ function gate(req, res, doctorId){
   return s;
 }
 function gateMessageLog(req, res, msgId){
-  const did = rowDoctorId("message_log", +msgId);
-  if(did == null){ json(res,404,{error:"消息不存在"}); return null; }
-  return gate(req, res, did);
+  const msg = db.prepare("SELECT doctor_id, channel, group_id FROM message_log WHERE id=?").get(+msgId);
+  if(!msg){ json(res,404,{error:"消息不存在"}); return null; }
+  const s = authed(req);
+  if(!s){ json(res,401,{error:"未登录"}); return null; }
+  if(allowDoctor(s, msg.doctor_id)) return s;
+  const { isQiweDmRow } = require("./qiwe_scope.js");
+  if(isQiweDmRow(msg)){
+    const sc = adminScope(s);
+    if(sc === null || sc.size > 0) return s;
+  }
+  json(res,403,{error:"无该医生数据的访问权限"});
+  return null;
 }
 function gateTriageSession(req, res, sessionId){
   const did = rowDoctorId("triage_sessions", +sessionId);

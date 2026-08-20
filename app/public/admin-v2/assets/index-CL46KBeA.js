@@ -1,1 +1,0 @@
-import{cL as a,cM as r,$ as e,a4 as o,k as s}from"./index-j_dyliPa.js";const t={prefix:Math.floor(1e4*Math.random()),current:0},n=Symbol("elIdInjection"),c=()=>o()?e(n,t):t,i=e=>{const o=c(),t=a();return r(()=>s(e)||`${t.value}-id-${o.prefix}-${o.current++}`)};export{c as a,i as u};

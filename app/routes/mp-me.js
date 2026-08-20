@@ -109,9 +109,15 @@ function registerMpMeRoutes(route, ctx) {
     }
 
     // 3) 扩展档案字段（疾病/过敏/疾病史/妊娠）→ patient_profile_fields（身份证号已下线）
+    const currentFields = profileStore.readPersonFields(personId) || {};
     const fieldPayload = {};
-    for (const k of ["disease", "pregnancyStatus", "foodContactAllergies", "drugAllergies", "diseaseHistory"]) {
+    for (const k of ["disease", "pregnancyStatus", "foodContactAllergies", "drugAllergies", "diseaseHistory", "bloodType", "heightCm", "weightKg", "healthNotes"]) {
       if (Object.prototype.hasOwnProperty.call(b, k)) fieldPayload[k] = b[k];
+    }
+    if (Object.prototype.hasOwnProperty.call(fieldPayload, "heightCm") || Object.prototype.hasOwnProperty.call(fieldPayload, "weightKg")) {
+      const heightCm = fieldPayload.heightCm != null ? fieldPayload.heightCm : (currentFields.heightCm || "");
+      const weightKg = fieldPayload.weightKg != null ? fieldPayload.weightKg : (currentFields.weightKg || "");
+      fieldPayload.bmi = patientProfile.computeBmi(heightCm, weightKg);
     }
     if (Object.keys(fieldPayload).length) {
       try {
